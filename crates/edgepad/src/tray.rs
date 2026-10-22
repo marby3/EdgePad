@@ -97,7 +97,9 @@ pub unsafe fn create() -> HWND {
             add_icon(hwnd);
             // Lock and user switch arrive as WM_WTSSESSION_CHANGE; sleep
             // (WM_POWERBROADCAST) reaches every top-level window unasked.
-            WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+            if WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) == 0 {
+                notify("画面ロックの知らせを受け取れません。ロックの前に、押しているキーを離してください");
+            }
         }
         hwnd
     }
@@ -306,18 +308,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 notify("キーを送れませんでした。管理者として動いているアプリへは、EdgePad も管理者として起動しないと送れません。");
                 0
             }
-            // Locked, switched away from or going to sleep: no finger can
-            // lift a key from here on, so let go of them all now.
+            // Locked, switched away from or going to sleep: EdgePad will not
+            // hear of a finger lifting from here on, so let go of every key now.
             WM_WTSSESSION_CHANGE => {
                 if matches!(wp as u32, WTS_SESSION_LOCK | WTS_CONSOLE_DISCONNECT | WTS_REMOTE_DISCONNECT) {
                     panel::release_all();
                 }
                 0
             }
-            WM_POWERBROADCAST => {
-                if wp as u32 == PBT_APMSUSPEND {
-                    panel::release_all();
-                }
+            WM_POWERBROADCAST if wp as u32 == PBT_APMSUSPEND => {
+                panel::release_all();
                 1
             }
             WM_QUERYENDSESSION => 1,
