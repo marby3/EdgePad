@@ -5,6 +5,7 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
 use edgepad_core::config::{Action, Edge, Monitor};
+use edgepad_core::keys::{Key, Mods};
 use edgepad_core::layout::{self, Rect};
 use edgepad_core::press::Presses;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -34,8 +35,31 @@ struct PanelKey {
     width: usize,
     /// Where it sits inside the panel; none while it does not fit.
     rect: Option<Rect>,
-    /// What pressing it holds down; none for kinds that send nothing yet.
-    vk: Option<u16>,
+    sends: Sends,
+}
+
+/// What a key sends, in virtual keys.
+enum Sends {
+    /// Down while pressed, up on release.
+    Hold(u16),
+    /// The whole combination on release: modifiers, then the key.
+    Shortcut { mods: Vec<u16>, key: Option<u16> },
+    /// Kinds that send nothing yet.
+    Nothing,
+}
+
+impl Sends {
+    fn of(action: &Action) -> Sends {
+        match action {
+            Action::Modifier(key) | Action::Hold(key) => Sends::Hold(send::vk(*key)),
+            Action::Shortcut(combo) => {
+                let order = [(Mods::CTRL, Key::Ctrl), (Mods::SHIFT, Key::Shift), (Mods::ALT, Key::Alt), (Mods::WIN, Key::Win)];
+                let mods = order.iter().filter(|(m, _)| combo.mods.contains(*m)).map(|&(_, k)| send::vk(k)).collect();
+                Sends::Shortcut { mods, key: combo.key.map(send::vk) }
+            }
+            _ => Sends::Nothing,
+        }
+    }
 }
 
 struct Panel {
@@ -103,10 +127,7 @@ pub unsafe fn create(p: &EdgePanel, key_size: u32) -> bool {
                 label: k.label.encode_utf16().collect(),
                 width: k.width as usize,
                 rect: None,
-                vk: match k.action {
-                    Action::Modifier(key) | Action::Hold(key) => Some(send::vk(key)),
-                    _ => None,
-                },
+                sends: Sends::of(&k.action),
             })
             .collect();
         let presses = Presses::new(keys.len());
@@ -305,7 +326,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             }
             if let Some(key) = panel.presses.down(id, key) {
                 // Send first, draw after: the key reaches the app sooner.
-                if let Some(vk) = panel.keys[key].vk {
+                if let Sends::Hold(vk) = panel.keys[key].sends {
                     hold(vk, true);
                 }
                 draw(panel);
@@ -320,8 +341,10 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
         let id = pointer_id(wp);
         with_panel(hwnd, |panel| {
             if let Some(key) = panel.presses.up(id) {
-                if let Some(vk) = panel.keys[key].vk {
-                    hold(vk, false);
+                match &panel.keys[key].sends {
+                    Sends::Hold(vk) => hold(*vk, false),
+                    Sends::Shortcut { mods, key } => send::shortcut(mods, *key),
+                    Sends::Nothing => {}
                 }
                 draw(panel);
             }
