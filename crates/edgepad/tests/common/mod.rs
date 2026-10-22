@@ -114,6 +114,11 @@ pub fn launch_with(beside_exe: Option<&str>, in_appdata: Option<&str>) -> Runnin
     start(&exe, &appdata, Some(dir))
 }
 
+/// The folder holding the copy of the exe that `app` runs.
+pub fn exe_dir(app: &Running) -> PathBuf {
+    app.1.as_ref().expect("launched from a scratch folder").join("bin")
+}
+
 /// Pump this thread's messages for `ms` so test windows stay painted.
 pub fn pump(ms: u64) {
     let end = Instant::now() + Duration::from_millis(ms);
@@ -633,6 +638,11 @@ pub fn panel_rect(app: &Running) -> (HWND, RECT) {
 /// all its panels before it first goes idle, so none is still to come.
 pub fn panels(app: &Running) -> Vec<RECT> {
     find_panel(app);
+    panels_now(app)
+}
+
+/// The visible panels of `app` at this moment, without waiting for any.
+pub fn panels_now(app: &Running) -> Vec<RECT> {
     let name = wide(PANEL_CLASS);
     let mut found = Vec::new();
     let mut hwnd = null_mut();
