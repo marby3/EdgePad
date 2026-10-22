@@ -8,8 +8,8 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::io::AsRawHandle;
 use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, MutexGuard, Once};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, Once};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -356,13 +356,42 @@ pub fn mouse_up_at(p: POINT) {
     pump(150);
 }
 
-/// Injected touch contacts. Every frame carries every active contact, and
-/// `hold` keeps them alive with update frames.
+/// Injected touch contacts. Every frame carries every active contact.
+///
+/// Windows cancels an injected contact that goes without an update for a few
+/// hundred milliseconds, which the panel rightly treats as the finger lifting.
+/// A keeper thread therefore re-sends the active contacts every 30 ms, so a
+/// contact stays down however the test waits, until `up` lifts it.
 pub struct Touch {
-    pub contacts: Vec<(u32, POINT)>,
+    contacts: Arc<Mutex<Vec<(u32, POINT)>>>,
+    stop: Arc<AtomicBool>,
+    keeper: Option<std::thread::JoinHandle<()>>,
 }
 
 pub static TOUCH_INIT: Once = Once::new();
+
+fn touch_info(id: u32, p: POINT, flags: POINTER_FLAGS) -> POINTER_TOUCH_INFO {
+    let mut t: POINTER_TOUCH_INFO = unsafe { zeroed() };
+    t.pointerInfo.pointerType = PT_TOUCH;
+    t.pointerInfo.pointerId = id;
+    t.pointerInfo.ptPixelLocation = p;
+    t.pointerInfo.pointerFlags = flags;
+    t.touchMask = TOUCH_MASK_NONE;
+    t
+}
+
+/// Update frames for every active contact.
+fn moving(contacts: &[(u32, POINT)]) -> Vec<POINTER_TOUCH_INFO> {
+    let flags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+    contacts.iter().map(|&(id, p)| touch_info(id, p, flags)).collect()
+}
+
+fn inject(frame: &[POINTER_TOUCH_INFO]) -> std::io::Result<()> {
+    match unsafe { InjectTouchInput(frame.len() as u32, frame.as_ptr()) } {
+        0 => Err(std::io::Error::last_os_error()),
+        _ => Ok(()),
+    }
+}
 
 impl Touch {
     pub fn new() -> Touch {
@@ -370,72 +399,80 @@ impl Touch {
             let ok = unsafe { InitializeTouchInjection(10, TOUCH_FEEDBACK_NONE) };
             assert!(ok != 0, "InitializeTouchInjection");
         });
-        Touch { contacts: Vec::new() }
-    }
-
-    pub fn info(id: u32, p: POINT, flags: POINTER_FLAGS) -> POINTER_TOUCH_INFO {
-        let mut t: POINTER_TOUCH_INFO = unsafe { zeroed() };
-        t.pointerInfo.pointerType = PT_TOUCH;
-        t.pointerInfo.pointerId = id;
-        t.pointerInfo.ptPixelLocation = p;
-        t.pointerInfo.pointerFlags = flags;
-        t.touchMask = TOUCH_MASK_NONE;
-        t
-    }
-
-    pub fn inject(&self, frame: &[POINTER_TOUCH_INFO]) {
-        let ok = unsafe { InjectTouchInput(frame.len() as u32, frame.as_ptr()) };
-        assert!(ok != 0, "InjectTouchInput: {}", std::io::Error::last_os_error());
-    }
-
-    pub fn moving(&self) -> Vec<POINTER_TOUCH_INFO> {
-        let flags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
-        self.contacts.iter().map(|&(id, p)| Touch::info(id, p, flags)).collect()
+        let contacts: Arc<Mutex<Vec<(u32, POINT)>>> = Arc::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let keeper = {
+            let (contacts, stop) = (contacts.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    {
+                        let active = contacts.lock().unwrap();
+                        if !active.is_empty() {
+                            inject(&moving(&active)).expect("keep touch contacts alive");
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+            })
+        };
+        Touch { contacts, stop, keeper: Some(keeper) }
     }
 
     pub fn down(&mut self, id: u32, p: POINT) {
-        let mut frame = self.moving();
-        frame.push(Touch::info(id, p, POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT));
-        self.inject(&frame);
-        self.contacts.push((id, p));
-        self.hold(100);
+        {
+            let mut active = self.contacts.lock().unwrap();
+            let mut frame = moving(&active);
+            frame.push(touch_info(id, p, POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT));
+            inject(&frame).expect("InjectTouchInput (down)");
+            active.push((id, p));
+        }
+        pump(100);
     }
 
     pub fn move_to(&mut self, id: u32, p: POINT) {
-        for c in self.contacts.iter_mut().filter(|c| c.0 == id) {
-            c.1 = p;
+        {
+            let mut active = self.contacts.lock().unwrap();
+            for c in active.iter_mut().filter(|c| c.0 == id) {
+                c.1 = p;
+            }
+            inject(&moving(&active)).expect("InjectTouchInput (move)");
         }
-        self.inject(&self.moving());
-        self.hold(100);
+        pump(100);
     }
 
     pub fn up(&mut self, id: u32) {
-        let mut frame = self.moving();
+        self.lift(id).expect("InjectTouchInput (up)");
+        pump(150);
+    }
+
+    fn lift(&self, id: u32) -> std::io::Result<()> {
+        let mut active = self.contacts.lock().unwrap();
+        let mut frame = moving(&active);
         for f in frame.iter_mut().filter(|f| f.pointerInfo.pointerId == id) {
             f.pointerInfo.pointerFlags = POINTER_FLAG_UP;
         }
-        self.inject(&frame);
-        self.contacts.retain(|c| c.0 != id);
-        self.hold(150);
+        active.retain(|c| c.0 != id);
+        inject(&frame)
     }
 
+    /// Wait with the contacts held. The keeper keeps them alive; this only
+    /// pumps this thread's messages.
     pub fn hold(&self, ms: u64) {
-        let mut left = ms;
-        while left > 0 {
-            if !self.contacts.is_empty() {
-                self.inject(&self.moving());
-            }
-            let step = left.min(30);
-            pump(step);
-            left -= step;
-        }
+        pump(ms);
     }
 }
 
 impl Drop for Touch {
     fn drop(&mut self) {
-        while let Some(&(id, _)) = self.contacts.first() {
-            self.up(id);
+        // Lift whatever is still down. Best effort: the test may already be
+        // failing, and a second panic here would abort the whole run.
+        let ids: Vec<u32> = self.contacts.lock().map(|c| c.iter().map(|c| c.0).collect()).unwrap_or_default();
+        for id in ids {
+            let _ = self.lift(id);
+        }
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(keeper) = self.keeper.take() {
+            let _ = keeper.join();
         }
     }
 }
