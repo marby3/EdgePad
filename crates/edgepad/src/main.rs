@@ -4,6 +4,7 @@
 
 mod panel;
 mod send;
+mod tray;
 
 use std::mem::zeroed;
 use std::process::ExitCode;
@@ -16,12 +17,19 @@ use windows_sys::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG};
 
 fn main() -> ExitCode {
+    // A panic must not leave keys held system-wide: release them, then let
+    // the default hook report it. Runs even with panic = "abort".
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        unsafe { send::release_all() };
+        report(info);
+    }));
     unsafe {
         // Per-monitor awareness arrives with multi-monitor support (v0.2).
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
         // Mouse arrives as WM_POINTER* too, so one code path serves both.
         EnableMouseInPointer(1);
-        if panel::create_left().is_null() {
+        if panel::create_left().is_null() || tray::create().is_null() {
             return ExitCode::FAILURE;
         }
         // Everything is message driven: no timers, no polling.
