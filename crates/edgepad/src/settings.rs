@@ -7,7 +7,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use edgepad_core::config::{self, Edge, KeyDef};
+use edgepad_core::config::{self, Edge, KeyDef, Monitor};
 use edgepad_core::layout;
 
 const FILE: &str = "edgepad.ini";
@@ -32,6 +32,7 @@ pub struct Panels {
 
 pub struct EdgePanel {
     pub edge: Edge,
+    pub monitor: Monitor,
     /// Columns on the left and right, rows on the top and bottom.
     pub lines: usize,
     pub keys: Vec<KeyDef>,
@@ -44,7 +45,7 @@ pub struct EdgePanel {
 pub fn load() -> Panels {
     let fallback = || Panels {
         key_size: layout::KEY_SIZE as u32,
-        edges: vec![EdgePanel { edge: Edge::Left, lines: 1, keys: config::fallback_keys() }],
+        edges: vec![EdgePanel { edge: Edge::Left, monitor: Monitor::Primary, lines: 1, keys: config::fallback_keys() }],
     };
     let Some(path) = path() else { return fallback() };
     let mut bytes = Vec::new();
@@ -60,7 +61,8 @@ pub fn load() -> Panels {
         .filter(|&edge| config.edges[edge as usize].enabled)
         .filter_map(|edge| {
             let set = config.set(default.edges[edge as usize].as_deref()?)?;
-            Some(EdgePanel { edge, lines: config.edges[edge as usize].lines as usize, keys: set.keys.clone() })
+            let e = &config.edges[edge as usize];
+            Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone() })
         })
         .collect();
     Panels { key_size: config.general.key_size, edges }

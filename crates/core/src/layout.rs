@@ -1,6 +1,6 @@
 //! Panel geometry in physical pixels.
 
-use crate::config::Edge;
+use crate::config::{Edge, Monitor};
 
 /// Side of a key in logical pixels (96 DPI).
 pub const KEY_SIZE: i32 = 56;
@@ -95,4 +95,20 @@ fn place(widths: &[usize], lines: usize, length: usize) -> Vec<(usize, usize, us
         at += w;
     }
     cells
+}
+
+/// Which of `monitors` an edge set to `choice` goes on, as an index into
+/// `monitors`. Numbers count the monitors left to right, and top to bottom
+/// where their left edges match; a number past the last one, or a cursor
+/// outside every monitor, means the primary one.
+pub fn pick_monitor(monitors: &[Rect], primary: usize, cursor: (i32, i32), choice: Monitor) -> usize {
+    match choice {
+        Monitor::Primary => primary,
+        Monitor::Number(n) => {
+            let mut order: Vec<usize> = (0..monitors.len()).collect();
+            order.sort_by_key(|&i| (monitors[i].x, monitors[i].y));
+            (n as usize).checked_sub(1).and_then(|i| order.get(i)).copied().unwrap_or(primary)
+        }
+        Monitor::Cursor => monitors.iter().position(|m| m.contains(cursor.0, cursor.1)).unwrap_or(primary),
+    }
 }

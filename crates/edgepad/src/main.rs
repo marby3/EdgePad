@@ -33,7 +33,7 @@ fn main() -> ExitCode {
         // An edge set to none shows no panel; the tray runs regardless.
         let panels = settings::load();
         for p in &panels.edges {
-            if !panel::create(p.edge, p.lines, panels.key_size, &p.keys) {
+            if !panel::create(p, panels.key_size) {
                 return ExitCode::FAILURE;
             }
         }

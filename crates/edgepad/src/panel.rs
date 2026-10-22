@@ -4,19 +4,20 @@ use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
-use edgepad_core::config::{Action, Edge, KeyDef};
+use edgepad_core::config::{Action, Edge, Monitor};
 use edgepad_core::layout::{self, Rect};
 use edgepad_core::press::Presses;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::send;
+use crate::settings::EdgePanel;
 
 /// Opacity of the shown panel: 90%.
 const OPACITY: u8 = 230;
@@ -40,6 +41,7 @@ struct PanelKey {
 struct Panel {
     hwnd: HWND,
     edge: Edge,
+    monitor: Monitor,
     lines: usize,
     /// Side of a key in logical pixels.
     key_size: u32,
@@ -61,11 +63,11 @@ thread_local! {
     static HOLDS: RefCell<[u8; 256]> = const { RefCell::new([0; 256]) };
 }
 
-/// Create and show a panel of `keys` on `edge` of the primary monitor,
-/// `lines` keys thick with keys `key_size` logical pixels square at the
-/// monitor's DPI. Keys that do not fit are left out; with none left, no panel
-/// is made. Returns false if the window could not be created.
-pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -> bool {
+/// Create and show the panel `p`, keys `key_size` logical pixels square at
+/// the DPI of the monitor it goes on. Keys that do not fit are left out; with
+/// none left, no panel is made. Returns false if the window could not be
+/// created.
+pub unsafe fn create(p: &EdgePanel, key_size: u32) -> bool {
     unsafe {
         let instance = GetModuleHandleW(null());
         let mut wc: WNDCLASSW = zeroed();
@@ -76,16 +78,14 @@ pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -
         // Fails harmlessly for every panel after the first.
         RegisterClassW(&wc);
 
-        // Made on the monitor first, so it can tell that monitor's DPI; the
-        // first draw gives it its real place and size.
-        let monitor = primary_monitor();
+        // The first draw gives the window its real place and size.
         let hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             wc.lpszClassName,
             w!("EdgePad"),
             WS_POPUP,
-            monitor.x,
-            monitor.y,
+            0,
+            0,
             1,
             1,
             null_mut(),
@@ -96,7 +96,8 @@ pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -
         if hwnd.is_null() {
             return false;
         }
-        let keys: Vec<PanelKey> = keys
+        let keys: Vec<PanelKey> = p
+            .keys
             .iter()
             .map(|k| PanelKey {
                 label: k.label.encode_utf16().collect(),
@@ -110,8 +111,10 @@ pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -
             .collect();
         let presses = Presses::new(keys.len());
         let rect = Rect { x: 0, y: 0, w: 0, h: 0 };
-        let mut panel = Panel { hwnd, edge, lines, key_size, rect, key: 0, keys, presses, captured: None };
-        lay_out(&mut panel, GetDpiForWindow(hwnd));
+        let (edge, monitor, lines) = (p.edge, p.monitor, p.lines);
+        let mut panel =
+            Panel { hwnd, edge, monitor, lines, key_size, rect, key: 0, keys, presses, captured: None };
+        lay_out(&mut panel, None);
         if panel.keys.iter().all(|k| k.rect.is_none()) {
             DestroyWindow(hwnd);
             return true;
@@ -126,16 +129,62 @@ pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -
     }
 }
 
-/// Place the panel and its keys for `dpi`. What is held stays held.
-unsafe fn lay_out(panel: &mut Panel, dpi: u32) {
-    panel.key = layout::scale(panel.key_size as i32, dpi);
-    let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
-    let monitor = unsafe { primary_monitor() };
-    let (rect, rects) = layout::edge_panel(monitor, panel.edge, panel.key, panel.lines, &widths);
-    panel.rect = rect;
-    let mut rects = rects.into_iter();
-    for key in &mut panel.keys {
-        key.rect = rects.next();
+/// Place the panel and its keys: pick its monitor afresh and size the keys
+/// for `dpi`, or for that monitor's DPI when none is given. What is held
+/// stays held.
+unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
+    unsafe {
+        let (monitors, primary) = monitors();
+        if monitors.is_empty() {
+            return;
+        }
+        let mut cursor = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut cursor);
+        let rects: Vec<Rect> = monitors.iter().map(|&(_, r)| r).collect();
+        let (handle, monitor) = monitors[layout::pick_monitor(&rects, primary, (cursor.x, cursor.y), panel.monitor)];
+        let dpi = dpi.unwrap_or_else(|| {
+            let (mut x, mut y) = (0, 0);
+            match GetDpiForMonitor(handle, MDT_EFFECTIVE_DPI, &mut x, &mut y) {
+                0 => x,
+                _ => 96,
+            }
+        });
+        panel.key = layout::scale(panel.key_size as i32, dpi);
+        let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
+        let (rect, rects) = layout::edge_panel(monitor, panel.edge, panel.key, panel.lines, &widths);
+        panel.rect = rect;
+        let mut rects = rects.into_iter();
+        for key in &mut panel.keys {
+            key.rect = rects.next();
+        }
+    }
+}
+
+unsafe extern "system" fn gather(monitor: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> i32 {
+    unsafe { (*(out as *mut Vec<HMONITOR>)).push(monitor) };
+    1
+}
+
+/// Every monitor with its rectangle, and the index of the primary one.
+unsafe fn monitors() -> (Vec<(HMONITOR, Rect)>, usize) {
+    unsafe {
+        let mut handles: Vec<HMONITOR> = Vec::new();
+        EnumDisplayMonitors(null_mut(), null(), Some(gather), &mut handles as *mut _ as LPARAM);
+        let mut primary = 0;
+        let mut found = Vec::new();
+        for handle in handles {
+            let mut info: MONITORINFO = zeroed();
+            info.cbSize = size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(handle, &mut info) == 0 {
+                continue;
+            }
+            if info.dwFlags & MONITORINFOF_PRIMARY != 0 {
+                primary = found.len();
+            }
+            let m = info.rcMonitor;
+            found.push((handle, Rect { x: m.left, y: m.top, w: m.right - m.left, h: m.bottom - m.top }));
+        }
+        (found, primary)
     }
 }
 
@@ -156,8 +205,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_POINTERUPDATE => 0,
             // The scale of the panel's monitor changed. The suggested
             // rectangle in lParam is ignored: a panel keeps to its edge, so
-            // its place is worked out again from scratch. (Panels live on the
-            // primary monitor until monitor choice arrives.)
+            // its place is worked out again from scratch.
             WM_DPICHANGED => {
                 let dpi = (wp >> 16 & 0xFFFF) as u32;
                 // Windows never sends 0, but any process can send this
@@ -166,7 +214,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     return 0;
                 }
                 with_panel(hwnd, |panel| {
-                    lay_out(panel, dpi);
+                    lay_out(panel, Some(dpi));
+                    draw(panel);
+                });
+                0
+            }
+            // Monitors were added, removed, moved or resized: every panel
+            // picks its monitor again, at that monitor's DPI.
+            WM_DISPLAYCHANGE => {
+                with_panel(hwnd, |panel| {
+                    lay_out(panel, None);
                     draw(panel);
                 });
                 0
@@ -185,8 +242,13 @@ fn pointer_id(wp: WPARAM) -> u32 {
 }
 
 /// Run `f` on the panel of window `hwnd`, if it is one of ours.
+///
+/// Skipped while the panels are already in use further up the stack: moving
+/// a panel onto a monitor of another DPI makes Windows send WM_DPICHANGED
+/// from inside the draw that moved it, and that layout is already done.
 fn with_panel(hwnd: HWND, f: impl FnOnce(&mut Panel)) {
-    PANELS.with_borrow_mut(|panels| {
+    PANELS.with(|panels| {
+        let Ok(mut panels) = panels.try_borrow_mut() else { return };
         if let Some(panel) = panels.iter_mut().find(|p| p.hwnd == hwnd) {
             f(panel);
         }
@@ -260,17 +322,6 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
                 ReleaseCapture();
             }
         });
-    }
-}
-
-unsafe fn primary_monitor() -> Rect {
-    unsafe {
-        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut info: MONITORINFO = zeroed();
-        info.cbSize = size_of::<MONITORINFO>() as u32;
-        GetMonitorInfoW(monitor, &mut info);
-        let m = info.rcMonitor;
-        Rect { x: m.left, y: m.top, w: m.right - m.left, h: m.bottom - m.top }
     }
 }
 
