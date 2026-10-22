@@ -1,7 +1,9 @@
 """Measure the release exe against the lightness targets (spec, chapter 8).
 
-Launches target/release/edgepad.exe, times how long the panel takes to
-appear, waits idle, then reads memory and CPU time and stops the process.
+Launches a copy of target/release/edgepad.exe from a scratch folder with its
+own %APPDATA%, so an EdgePad already running is neither met as the running
+instance nor toggled. Times how long the panel takes to appear, waits idle,
+then reads memory and CPU time and stops the process.
 The startup time runs from just before the launch call, so it includes
 process creation and errs on the slow side. KB and MB mean KiB and MiB.
 Needs Windows 10 20H2 or later (the spec's floor is 21H2).
@@ -9,6 +11,7 @@ Needs Windows 10 20H2 or later (the spec's floor is 21H2).
     python ci/measure.py              # markdown table, 60 s idle
     python ci/measure.py --idle 10    # shorter idle wait
     python ci/measure.py --json       # machine-readable
+    python ci/measure.py --settings ci/example.ini   # with a settings file
 
 Build first: cargo build --release
 """
@@ -16,9 +19,12 @@ Build first: cargo build --release
 import argparse
 import ctypes
 import json
+import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import winreg
 from ctypes import wintypes
@@ -66,16 +72,21 @@ psapi.GetProcessMemoryInfo.argtypes = [
 ]
 
 
-def panel_visible(pid):
-    hwnd = None
+def panels_visible(pid):
+    """How many panels of process `pid` are on screen."""
+    count, hwnd = 0, None
     while True:
         hwnd = user32.FindWindowExW(None, hwnd, PANEL_CLASS, None)
         if not hwnd:
-            return False
+            return count
         owner = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
         if owner.value == pid and user32.IsWindowVisible(hwnd):
-            return True
+            count += 1
+
+
+def panel_visible(pid):
+    return panels_visible(pid) > 0
 
 
 def cpu_ms(handle):
@@ -114,11 +125,24 @@ def environment():
     }
 
 
-def measure(idle):
+def measure(idle, settings=None):
     if not EXE.is_file():
         sys.exit(f"{EXE} not found: run cargo build --release first")
+    with tempfile.TemporaryDirectory(prefix="edgepad-measure-") as scratch:
+        scratch = pathlib.Path(scratch)
+        (scratch / "bin").mkdir()
+        (scratch / "appdata").mkdir()
+        exe = scratch / "bin" / "edgepad.exe"
+        shutil.copy2(EXE, exe)
+        if settings:
+            shutil.copy2(settings, scratch / "bin" / "edgepad.ini")
+        env = os.environ | {"APPDATA": str(scratch / "appdata")}
+        return run(exe, env, idle)
+
+
+def run(exe, env, idle):
     started = time.perf_counter()
-    app = subprocess.Popen([str(EXE)])
+    app = subprocess.Popen([str(exe)], env=env)
     try:
         while not panel_visible(app.pid):
             if app.poll() is not None:
@@ -135,6 +159,7 @@ def measure(idle):
             time.sleep(idle)
             idle_cpu = cpu_ms(handle) - before
             private, working_set = memory(handle)
+            panels = panels_visible(app.pid)
         finally:
             kernel32.CloseHandle(handle)
     finally:
@@ -147,6 +172,7 @@ def measure(idle):
         "working_set_bytes": working_set,
         "idle_seconds": idle,
         "idle_cpu_ms": round(idle_cpu, 1),
+        "panels": panels,
     }
 
 
@@ -170,12 +196,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--idle", type=int, default=60, help="seconds to wait idle (default 60)")
     parser.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    parser.add_argument("--settings", type=pathlib.Path, help="settings file to put beside the exe")
     args = parser.parse_args()
+    if args.settings and not args.settings.is_file():
+        parser.error(f"--settings {args.settings}: no such file")
     if args.idle < 1:
         parser.error("--idle must be at least 1 second")
     # Environment first: a failure here should not throw away a long run.
     env = environment()
-    result = measure(args.idle)
+    result = measure(args.idle, args.settings)
     if args.json:
         print(json.dumps(result | {"environment": env}))
     else:

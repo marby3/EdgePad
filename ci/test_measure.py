@@ -74,7 +74,9 @@ class MemoryTest(unittest.TestCase):
         out = measure("--idle", "5", "--settings", "ci/example.ini")
         self.assertEqual(out.returncode, 0, out.stderr)
         result = json.loads(out.stdout)
-        self.assertEqual(result["panels"], 2, "the spec example shows a panel on the left and one on the right")
+        # Its default profile has the left edge only (right = none); the
+        # right-hand set belongs to the CSP profile, which comes with v0.3.
+        self.assertEqual(result["panels"], 1, "the spec example's default profile shows the left panel")
         private = result["private_bytes"]
         self.assertLessEqual(
             private, PRIVATE_LIMIT,
