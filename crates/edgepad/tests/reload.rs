@@ -152,7 +152,7 @@ fn other_files_and_unchanged_content_leave_the_panels_alone() {
     save(&app, &text);
     touch.hold(1000);
     assert_eq!(log.keys(), [d(A)], "A stays held: nothing was rebuilt");
-    assert_eq!(rects(&app), [(panel.left, panel.top, panel.right, panel.bottom)], "the same panel");
+    assert_eq!(rects(&app), [(panel.left, panel.top, panel.right, panel.bottom)], "the panel stays where it was");
     touch.up(1);
 
     save(&app, &keys_on("left", 3));

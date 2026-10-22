@@ -43,15 +43,17 @@ pub struct EdgePanel {
 /// missing, unreadable or wrong. Reporting what was wrong comes with the tray
 /// notifications.
 pub fn load() -> (Panels, Option<Vec<u8>>) {
-    match read().and_then(|bytes| Some((panels(&bytes)?, bytes))) {
-        Some((panels, bytes)) => (panels, Some(bytes)),
+    let Some(bytes) = read() else { return (fallback(), None) };
+    match panels(&bytes) {
+        Some(panels) => (panels, Some(bytes)),
         None => (fallback(), None),
     }
 }
 
 /// The panels for the settings file now, if it differs from `applied` (the
 /// bytes in use, `None` for the fixed keys) and can be used. A file that is
-/// gone, unreadable or wrong gives `None`: EdgePad keeps what it has.
+/// gone, unreadable or wrong gives `None`: EdgePad keeps what it has. The
+/// error notifications to come will need to tell those cases apart.
 pub fn reload(applied: Option<&[u8]>) -> Option<(Panels, Vec<u8>)> {
     let bytes = read()?;
     if applied == Some(&bytes[..]) {

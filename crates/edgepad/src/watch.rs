@@ -55,9 +55,7 @@ pub unsafe fn run(mut applied: Option<Vec<u8>>) {
             let mut msg: MSG = unsafe { zeroed() };
             while unsafe { PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) } != 0 {
                 if msg.message == WM_QUIT {
-                    for &h in &watches {
-                        unsafe { FindCloseChangeNotification(h) };
-                    }
+                    close(&watches);
                     return;
                 }
                 unsafe { DispatchMessageW(&msg) };
@@ -65,17 +63,27 @@ pub unsafe fn run(mut applied: Option<Vec<u8>>) {
         } else if woke == WAIT_TIMEOUT {
             due = None;
             if let Some((panels, bytes)) = settings::reload(applied.as_deref()) {
-                unsafe { panel::rebuild(&panels) };
-                applied = Some(bytes);
+                // Recorded only once every panel is up: after a failure the
+                // same content, saved again, is tried again.
+                if unsafe { panel::rebuild(&panels) } {
+                    applied = Some(bytes);
+                }
             }
         } else {
             // WAIT_FAILED: nothing sensible to wait on; keep the app alive
             // on messages alone.
+            close(&watches);
             let mut msg: MSG = unsafe { zeroed() };
             while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {
                 unsafe { DispatchMessageW(&msg) };
             }
             return;
         }
+    }
+}
+
+fn close(watches: &[HANDLE]) {
+    for &h in watches {
+        unsafe { FindCloseChangeNotification(h) };
     }
 }

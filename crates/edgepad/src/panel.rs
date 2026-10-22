@@ -166,7 +166,8 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
                 send::key(vk as u16, false);
             }
         }
-        panels.edges.iter().all(|p| create(p, panels.key_size))
+        // Every edge is tried, even after one fails.
+        panels.edges.iter().fold(true, |ok, p| create(p, panels.key_size) && ok)
     }
 }
 
