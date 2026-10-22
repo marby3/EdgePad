@@ -182,7 +182,7 @@ pub unsafe fn post_send_failed() {
 
 /// Test builds record what a person would see or get opened, one line each
 /// in %APPDATA%\edgepad-test-events.txt.
-pub(crate) fn test_event(line: &str) {
+fn test_event(line: &str) {
     #[cfg(feature = "fault-injection")]
     if let Some(appdata) = std::env::var_os("APPDATA") {
         use std::io::Write;
