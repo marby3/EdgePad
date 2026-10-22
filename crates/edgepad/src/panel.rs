@@ -6,7 +6,7 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 
-use edgepad_core::config::{Action, Edge, Handle, Monitor};
+use edgepad_core::config::{Action, Edge, Handle, Monitor, Step};
 use edgepad_core::gesture::{self, Swipe};
 use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Rect};
@@ -62,6 +62,10 @@ enum Sends {
     /// The whole combination as pressed, then every `interval` ms once held
     /// for REPEAT_DELAY.
     Repeat { mods: Vec<u16>, key: Option<u16>, interval: u32 },
+    /// Steps sent in order on release, waiting where they say.
+    Macro(Vec<MacroStep>),
+    /// Typed as Unicode characters on release.
+    Text(String),
     /// Kinds that send nothing yet.
     Nothing,
 }
@@ -79,9 +83,29 @@ impl Sends {
                 let (mods, key) = vks(combo);
                 Sends::Repeat { mods, key, interval: interval_ms }
             }
+            Action::Macro(steps) => Sends::Macro(
+                steps
+                    .iter()
+                    .map(|step| match step {
+                        Step::Keys(combo) => {
+                            let (mods, key) = vks(combo);
+                            MacroStep::Keys { mods, key }
+                        }
+                        &Step::Wait(ms) => MacroStep::Wait(ms),
+                    })
+                    .collect(),
+            ),
+            Action::Text(text) => Sends::Text(text.clone()),
             _ => Sends::Nothing,
         }
     }
+}
+
+enum MacroStep {
+    /// A combination, as a shortcut sends it.
+    Keys { mods: Vec<u16>, key: Option<u16> },
+    /// Milliseconds before the next step.
+    Wait(u32),
 }
 
 /// The virtual keys of `combo`: its modifiers in Ctrl, Shift, Alt, Win
@@ -101,6 +125,9 @@ fn repeat_timer(index: usize) -> usize {
     index + 1
 }
 
+/// The timer ending a macro's wait: past any repeat key's.
+const MACRO_TIMER: usize = 0x1_0000;
+
 struct Panel {
     hwnd: HWND,
     edge: Edge,
@@ -116,6 +143,8 @@ struct Panel {
     key: i32,
     keys: Vec<PanelKey>,
     presses: Presses,
+    /// The macro running on this panel: its key, and the step to send next.
+    running: Option<(usize, usize)>,
     /// The mouse pointer that holds the window's capture, if any.
     captured: Option<u32>,
     /// Where each pointer down on the panel started.
@@ -286,6 +315,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             key: 0,
             keys,
             presses,
+            running: None,
             captured: None,
             starts: Vec::new(),
             handle: p.handle,
@@ -434,6 +464,10 @@ unsafe fn let_go(panel: &mut Panel) {
             }
         }
         panel.presses = Presses::new(panel.keys.len());
+        // A macro stops between steps, so it leaves nothing down.
+        if panel.running.take().is_some() {
+            KillTimer(panel.hwnd, MACRO_TIMER);
+        }
         panel.starts.clear();
         if panel.captured.take().is_some() {
             ReleaseCapture();
@@ -544,7 +578,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_TIMER => {
-                repeat(hwnd, wp);
+                match wp {
+                    MACRO_TIMER => macro_wait_over(hwnd),
+                    _ => repeat(hwnd, wp),
+                }
                 0
             }
             // The scale of the panel's monitor changed. The suggested
@@ -769,15 +806,25 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
 
 /// A pointer lifted, or was taken away (`cancelled`): release its key if
 /// nobody else holds it. A modifier tapped briefly latches instead, and a
-/// shortcut sent ends the one-shot latches.
+/// shortcut sent ends the one-shot latches. Macros and text end them first.
 unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
     unsafe {
         let id = pointer_id(wp);
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
             panel.starts.retain(|s| s.id != id);
+            let released = panel.presses.up(id);
+            // A whole sequence under a latched Ctrl would go wrong: Esc
+            // would open Start, and typed text would turn into shortcuts.
+            if let Some(key) = released {
+                if matches!(panel.keys[key].sends, Sends::Macro(_) | Sends::Text(_)) {
+                    let mode = panel.latch_mode;
+                    end_one_shot_latches(panels, mode);
+                }
+            }
+            let panel = &mut panels[i];
             let mut sent = false;
-            if let Some(key) = panel.presses.up(id) {
+            if let Some(key) = released {
                 match &mut panel.keys[key].sends {
                     Sends::Hold(vk) => hold(*vk, false),
                     Sends::Modifier { vk, state } => match state.release(Instant::now(), panel.latch_time, cancelled) {
@@ -793,7 +840,14 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                         KillTimer(hwnd, repeat_timer(key));
                         sent = true;
                     }
+                    // One macro at a time on a panel: their steps would mix.
+                    Sends::Macro(_) if panel.running.is_some() => debug_log!("マクロの実行中: 押されたマクロは送らない"),
+                    Sends::Macro(_) => panel.running = Some((key, 0)),
+                    Sends::Text(text) => send::text(text),
                     Sends::Nothing => {}
+                }
+                if matches!(panel.running, Some((k, 0)) if k == key) {
+                    run_macro(panel);
                 }
                 draw(panel);
             }
@@ -805,7 +859,7 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
             }
             if sent {
                 let mode = panel.latch_mode;
-                shortcut_sent(panels, mode);
+                end_one_shot_latches(panels, mode);
             }
         });
     }
@@ -829,9 +883,37 @@ unsafe fn repeat(hwnd: HWND, timer: WPARAM) {
     });
 }
 
-/// A shortcut, or a repeat key, went out: under one-shot latches, let go of
-/// every latched modifier on every panel.
-unsafe fn shortcut_sent(panels: &mut [Panel], mode: LatchMode) {
+/// Send the running macro's steps from the next one on, up to a wait, which
+/// a timer ends, or to the last step.
+unsafe fn run_macro(panel: &mut Panel) {
+    while let Some((key, step)) = panel.running {
+        let Some(Sends::Macro(steps)) = panel.keys.get(key).map(|k| &k.sends) else { break };
+        let Some(next) = steps.get(step) else { break };
+        panel.running = Some((key, step + 1));
+        match *next {
+            MacroStep::Keys { ref mods, key } => unsafe { send::shortcut(mods, key) },
+            MacroStep::Wait(0) => {}
+            MacroStep::Wait(ms) => {
+                unsafe { SetTimer(panel.hwnd, MACRO_TIMER, ms, None) };
+                return;
+            }
+        }
+    }
+    panel.running = None;
+}
+
+/// A macro's wait is over: carry on with its steps. While the panels are in
+/// use the timer stays, and fires again.
+unsafe fn macro_wait_over(hwnd: HWND) {
+    with_panel(hwnd, |panel| unsafe {
+        KillTimer(hwnd, MACRO_TIMER);
+        run_macro(panel);
+    });
+}
+
+/// A shortcut or a repeat key went out, or a macro or text is about to:
+/// under one-shot latches, let go of every latched modifier on every panel.
+unsafe fn end_one_shot_latches(panels: &mut [Panel], mode: LatchMode) {
     for panel in panels {
         let mut changed = false;
         for key in &mut panel.keys {

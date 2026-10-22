@@ -127,14 +127,8 @@ unsafe fn send(events: &[(u16, bool)]) {
             false => crate::log::debug_log!("送信できない 0x{vk:02X} {what}"),
         }
     }
-    if sent < events.len() {
-        // UIPI blocks input to an app running elevated. Posted, not shown
-        // here: this may run from the panic hook.
-        if !FAILURE_REPORTED.swap(true, Ordering::Relaxed) {
-            unsafe { crate::tray::post_send_failed() };
-        }
-    } else if !events.is_empty() {
-        FAILURE_REPORTED.store(false, Ordering::Relaxed);
+    if !events.is_empty() {
+        report(sent == events.len());
     }
     for &(vk, down) in &events[..sent.min(events.len())] {
         let (word, bit) = (&HELD[(vk as usize >> 6) & 3], 1u64 << (vk & 63));
@@ -144,6 +138,46 @@ unsafe fn send(events: &[(u16, bool)]) {
             word.fetch_and(!bit, Ordering::Relaxed);
         }
     }
+}
+
+/// Note whether a SendInput got everything through: one notice per run of
+/// failures.
+fn report(all_sent: bool) {
+    if all_sent {
+        FAILURE_REPORTED.store(false, Ordering::Relaxed);
+    } else if !FAILURE_REPORTED.swap(true, Ordering::Relaxed) {
+        // UIPI blocks input to an app running elevated. Posted, not shown
+        // here: this may run from the panic hook.
+        unsafe { crate::tray::post_send_failed() };
+    }
+}
+
+/// Type `text` as Unicode characters: a key-down and a key-up for each UTF-16
+/// unit, all in one SendInput. Nothing is left down, so nothing is recorded
+/// as held.
+pub unsafe fn text(text: &str) {
+    let inputs: Vec<INPUT> = text
+        .encode_utf16()
+        .flat_map(|unit| [0, KEYEVENTF_KEYUP].map(move |up| (unit, up)))
+        .map(|(unit, up)| {
+            let mut input: INPUT = unsafe { zeroed() };
+            input.r#type = INPUT_KEYBOARD;
+            input.Anonymous.ki.wScan = unit;
+            input.Anonymous.ki.dwFlags = KEYEVENTF_UNICODE | up;
+            input.Anonymous.ki.dwExtraInfo = SEND_TAG;
+            input
+        })
+        .collect();
+    if inputs.is_empty() {
+        return;
+    }
+    let sent = match failing() {
+        true => 0,
+        false => (unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) }) as usize,
+    };
+    // The count, not the text: the log should not keep what was typed.
+    crate::log::debug_log!("送信 文字 {} 単位中 {} 単位", inputs.len() / 2, sent / 2);
+    report(sent == inputs.len());
 }
 
 /// Release every key EdgePad still holds.
