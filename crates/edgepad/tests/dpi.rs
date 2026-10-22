@@ -22,9 +22,11 @@ fn key_at(dpi: i32) -> i32 {
 
 /// Tell `panel` its DPI is now `dpi`, as Windows does when the scale changes.
 fn change_dpi(panel: HWND, dpi: u32) {
-    // EdgePad recomputes the position itself and ignores the suggested
-    // rectangle in lParam, so none is sent.
-    unsafe { SendMessageW(panel, WM_DPICHANGED, (dpi << 16 | dpi) as usize, 0) };
+    // Windows passes a suggested rectangle. EdgePad ignores it, but the
+    // message must carry one: sent to another process with a null lParam,
+    // it never arrives (the rectangle is copied across, and null is refused).
+    let suggested = window_rect(panel);
+    unsafe { SendMessageW(panel, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
     pump(200);
 }
 

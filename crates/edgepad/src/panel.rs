@@ -10,7 +10,7 @@ use edgepad_core::press::Presses;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -29,16 +29,22 @@ const KEY_TEXT: u32 = 0x00F0_F0F0;
 /// One key as the panel needs it.
 struct PanelKey {
     label: Vec<u16>,
-    /// Where it sits inside the panel.
-    rect: Rect,
+    /// In keys along the edge.
+    width: usize,
+    /// Where it sits inside the panel; none while it does not fit.
+    rect: Option<Rect>,
     /// What pressing it holds down; none for kinds that send nothing yet.
     vk: Option<u16>,
 }
 
 struct Panel {
     hwnd: HWND,
+    edge: Edge,
+    lines: usize,
+    /// Side of a key in logical pixels.
+    key_size: u32,
+    /// The panel on screen, and the side of a key, in pixels at the current DPI.
     rect: Rect,
-    /// Side of a key in pixels.
     key: i32,
     keys: Vec<PanelKey>,
     presses: Presses,
@@ -56,9 +62,9 @@ thread_local! {
 }
 
 /// Create and show a panel of `keys` on `edge` of the primary monitor,
-/// `lines` keys thick with keys `key_size` logical pixels square. Keys that
-/// do not fit are left out; with none left, no panel is made. Returns false
-/// if the window could not be created.
+/// `lines` keys thick with keys `key_size` logical pixels square at the
+/// monitor's DPI. Keys that do not fit are left out; with none left, no panel
+/// is made. Returns false if the window could not be created.
 pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -> bool {
     unsafe {
         let instance = GetModuleHandleW(null());
@@ -70,21 +76,18 @@ pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -
         // Fails harmlessly for every panel after the first.
         RegisterClassW(&wc);
 
-        let key = layout::scale(key_size as i32, GetDpiForSystem());
-        let widths: Vec<usize> = keys.iter().map(|k| k.width as usize).collect();
-        let (r, rects) = layout::edge_panel(primary_monitor(), edge, key, lines, &widths);
-        if rects.is_empty() {
-            return true;
-        }
+        // Made on the monitor first, so it can tell that monitor's DPI; the
+        // first draw gives it its real place and size.
+        let monitor = primary_monitor();
         let hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             wc.lpszClassName,
             w!("EdgePad"),
             WS_POPUP,
-            r.x,
-            r.y,
-            r.w,
-            r.h,
+            monitor.x,
+            monitor.y,
+            1,
+            1,
             null_mut(),
             null_mut(),
             instance,
@@ -95,10 +98,10 @@ pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -
         }
         let keys: Vec<PanelKey> = keys
             .iter()
-            .zip(rects)
-            .map(|(k, rect)| PanelKey {
+            .map(|k| PanelKey {
                 label: k.label.encode_utf16().collect(),
-                rect,
+                width: k.width as usize,
+                rect: None,
                 vk: match k.action {
                     Action::Modifier(key) | Action::Hold(key) => Some(send::vk(key)),
                     _ => None,
@@ -106,7 +109,13 @@ pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -
             })
             .collect();
         let presses = Presses::new(keys.len());
-        let panel = Panel { hwnd, rect: r, key, keys, presses, captured: None };
+        let rect = Rect { x: 0, y: 0, w: 0, h: 0 };
+        let mut panel = Panel { hwnd, edge, lines, key_size, rect, key: 0, keys, presses, captured: None };
+        lay_out(&mut panel, GetDpiForWindow(hwnd));
+        if panel.keys.iter().all(|k| k.rect.is_none()) {
+            DestroyWindow(hwnd);
+            return true;
+        }
         if !draw(&panel) {
             DestroyWindow(hwnd);
             return false;
@@ -114,6 +123,19 @@ pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -
         PANELS.with_borrow_mut(|p| p.push(panel));
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         true
+    }
+}
+
+/// Place the panel and its keys for `dpi`. What is held stays held.
+unsafe fn lay_out(panel: &mut Panel, dpi: u32) {
+    panel.key = layout::scale(panel.key_size as i32, dpi);
+    let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
+    let monitor = unsafe { primary_monitor() };
+    let (rect, rects) = layout::edge_panel(monitor, panel.edge, panel.key, panel.lines, &widths);
+    panel.rect = rect;
+    let mut rects = rects.into_iter();
+    for key in &mut panel.keys {
+        key.rect = rects.next();
     }
 }
 
@@ -132,6 +154,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_POINTERUPDATE => 0,
+            // The scale changed or the panel moved to another monitor. The
+            // suggested rectangle in lParam is ignored: a panel keeps to its
+            // edge, so its place is worked out again from scratch.
+            WM_DPICHANGED => {
+                let dpi = (wp >> 16 & 0xFFFF) as u32;
+                with_panel(hwnd, |panel| {
+                    lay_out(panel, dpi);
+                    draw(panel);
+                });
+                0
+            }
             WM_DESTROY => {
                 PostQuitMessage(0);
                 0
@@ -184,7 +217,9 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
         let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
         with_panel(hwnd, |panel| {
             let (x, y) = (x - panel.rect.x, y - panel.rect.y);
-            let Some(key) = panel.keys.iter().position(|k| k.rect.contains(x, y)) else { return };
+            let Some(key) = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y))) else {
+                return;
+            };
             if kind == PT_MOUSE {
                 // Keep receiving the button-up even after leaving the panel.
                 SetCapture(hwnd);
@@ -288,7 +323,7 @@ unsafe fn draw(panel: &Panel) -> bool {
         let gap = (key / 16).max(2);
         let corner = key / 6;
         for (i, k) in panel.keys.iter().enumerate() {
-            let at = k.rect;
+            let Some(at) = k.rect else { continue };
             let mut cell = RECT { left: at.x + gap, top: at.y + gap, right: at.x + at.w - gap, bottom: at.y + at.h - gap };
             SelectObject(mem, if panel.presses.is_down(i) { held } else { face });
             RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);

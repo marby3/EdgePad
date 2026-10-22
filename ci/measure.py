@@ -100,8 +100,8 @@ def environment():
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") as key:
         display = winreg.QueryValueEx(key, "DisplayVersion")[0]
         build = winreg.QueryValueEx(key, "CurrentBuildNumber")[0]
-    # Physical pixels at the system DPI, as EdgePad v0.1 (system DPI aware)
-    # sees them. Without the awareness the figures would be virtualised.
+    # Physical pixels of the primary monitor at the system DPI. Without the
+    # awareness the figures would be virtualised.
     if not user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-2)):
         raise ctypes.WinError(ctypes.get_last_error())
     width, height = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
