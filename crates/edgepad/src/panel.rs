@@ -12,7 +12,7 @@ use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetCapture, ReleaseCapture, SetCapture, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_SPACE,
+    ReleaseCapture, SetCapture, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_SPACE,
 };
 use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -37,6 +37,8 @@ struct Panel {
     rect: Rect,
     key: i32,
     presses: Presses<KEYS>,
+    /// The mouse pointer that holds the window's capture, if any.
+    captured: Option<u32>,
 }
 
 thread_local! {
@@ -75,7 +77,7 @@ pub unsafe fn create_left() -> HWND {
         if hwnd.is_null() {
             return hwnd;
         }
-        let panel = Panel { rect: r, key, presses: Presses::default() };
+        let panel = Panel { rect: r, key, presses: Presses::default(), captured: None };
         if !draw(hwnd, &panel) {
             DestroyWindow(hwnd);
             return null_mut();
@@ -130,6 +132,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             if kind == PT_MOUSE {
                 // Keep receiving the button-up even after leaving the panel.
                 SetCapture(hwnd);
+                panel.captured = Some(id);
             }
             if let Some(key) = panel.presses.down(id, key) {
                 // Send first, draw after: the key reaches the app sooner.
@@ -150,10 +153,13 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
                 send::key(M0_VKS[key], false);
                 draw(hwnd, panel);
             }
+            // Only the mouse that took the capture gives it back; a finger
+            // lifting meanwhile must not cut the mouse off from its button-up.
+            if panel.captured == Some(id) {
+                panel.captured = None;
+                ReleaseCapture();
+            }
         });
-        if GetCapture() == hwnd {
-            ReleaseCapture();
-        }
     }
 }
 
