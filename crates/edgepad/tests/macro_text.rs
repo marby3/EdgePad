@@ -92,11 +92,20 @@ fn a_text_key_types_its_text_as_unicode_characters_on_release() {
     touch.hold(200);
     assert_eq!(log.keys(), [], "nothing while it is held");
     touch.up(1);
-    let units: Vec<u32> = "Hi お疲れ😀".encode_utf16().map(u32::from).collect();
-    let expect: Vec<(u16, u32, bool)> = units.iter().flat_map(|&c| [(VK_PACKET, c, false), (VK_PACKET, c, false)]).collect();
-    assert_eq!(log.scans(), expect, "each UTF-16 unit as a Unicode key press");
-    let ups: Vec<bool> = log.keys().iter().map(|&(_, up)| up).collect();
-    assert!(ups.chunks(2).all(|c| c == [false, true]), "down then up for each: {ups:?}");
+    // Each character's units go down, then come up: an emoji is two units.
+    let mut expect: Vec<(u16, u32, bool)> = Vec::new();
+    let mut ups = Vec::new();
+    for c in "Hi お疲れ😀".chars() {
+        let mut buf = [0u16; 2];
+        let units = c.encode_utf16(&mut buf);
+        for up in [false, true] {
+            expect.extend(units.iter().map(|&u| (VK_PACKET, u as u32, false)));
+            ups.extend(units.iter().map(|_| up));
+        }
+    }
+    assert_eq!(log.scans(), expect, "each character as Unicode key presses");
+    let got: Vec<bool> = log.keys().iter().map(|&(_, up)| up).collect();
+    assert_eq!(got, ups, "each character's units down, then up");
 }
 
 // AC4
