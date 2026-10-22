@@ -34,7 +34,6 @@ pub unsafe fn key(vk: u16, down: bool) {
         input.Anonymous.ki.dwExtraInfo = SEND_TAG;
         SendInput(1, &input, size_of::<INPUT>() as i32) == 1
     };
-    diag(format_args!("SEND vk={vk:#x} down={down} sent={sent}"));
     if !sent {
         return;
     }
@@ -43,18 +42,6 @@ pub unsafe fn key(vk: u16, down: bool) {
         word.fetch_or(bit, Ordering::Relaxed);
     } else {
         word.fetch_and(!bit, Ordering::Relaxed);
-    }
-}
-
-/// TEMPORARY diagnostics for #12 (removed before merge).
-pub fn diag(line: std::fmt::Arguments) {
-    use std::io::Write;
-    if let Some(dir) = std::env::var_os("EDGEPAD_DIAG") {
-        let path = std::path::Path::new(&dir).join(format!("edgepad-diag-{}.log", std::process::id()));
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
-            let _ = writeln!(f, "{t} {line}");
-        }
     }
 }
 

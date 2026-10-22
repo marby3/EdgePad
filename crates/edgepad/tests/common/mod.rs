@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::Graphics::Dwm::DwmFlush;
 use windows_sys::Win32::System::Threading::{
+    WaitForInputIdle,
     AttachThreadInput, GetCurrentThreadId, GetProcessTimes,
 };
 use windows_sys::Win32::UI::HiDpi::{
@@ -59,11 +61,12 @@ impl Drop for Running {
 }
 
 pub fn launch() -> Running {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_edgepad"));
-    if let Some(dir) = std::env::var_os("EDGEPAD_DIAG") {
-        cmd.env("EDGEPAD_DIAG", dir);
-    }
-    Running(cmd.spawn().expect("launch edgepad.exe"))
+    let app = Running(Command::new(env!("CARGO_BIN_EXE_edgepad")).spawn().expect("launch edgepad.exe"));
+    // Wait until EdgePad has finished starting (panel, then tray) and sits in
+    // its message loop waiting for input.
+    let idle = unsafe { WaitForInputIdle(app.0.as_raw_handle(), 10_000) };
+    assert_eq!(idle, 0, "edgepad.exe did not become idle within 10s");
+    app
 }
 
 /// Pump this thread's messages for `ms` so test windows stay painted.
@@ -105,8 +108,18 @@ pub fn find_window(app: &Running, class: &str, visible: bool) -> HWND {
 }
 
 /// Wait for the panel of `app` to appear and return its window.
+///
+/// A touch that lands in the first moments after the panel appears can miss
+/// it: the system's touch hit-testing learns of a new window only once the
+/// desktop compositor has drawn it, and until then the contact is turned into
+/// mouse input instead. Waiting for a composition pass closes that gap.
 pub fn find_panel(app: &Running) -> HWND {
-    find_window(app, PANEL_CLASS, true)
+    let panel = find_window(app, PANEL_CLASS, true);
+    unsafe {
+        DwmFlush();
+        DwmFlush();
+    }
+    panel
 }
 
 pub fn window_rect(hwnd: HWND) -> RECT {
@@ -290,9 +303,6 @@ pub unsafe extern "system" fn keyboard_hook(code: i32, wp: WPARAM, lp: LPARAM) -
         if code == HC_ACTION as i32 {
             let k = &*(lp as *const KBDLLHOOKSTRUCT);
             if k.flags & LLKHF_INJECTED != 0 {
-                if std::env::var_os("EDGEPAD_DIAG").is_some() {
-                    eprintln!("HOOK vk={:#x} up={} extra={:#x}", k.vkCode, k.flags & LLKHF_UP != 0, k.dwExtraInfo);
-                }
                 EVENTS.lock().unwrap().push((k.vkCode as u16, k.flags & LLKHF_UP != 0, k.dwExtraInfo));
                 return 1;
             }
@@ -449,10 +459,6 @@ impl Touch {
             let mut frame = moving(&active);
             frame.push(touch_info(id, p, POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT));
             inject(&frame).expect("InjectTouchInput (down)");
-            if std::env::var_os("EDGEPAD_DIAG").is_some() {
-                let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
-                eprintln!("{t} INJECT DOWN id={id} at=({},{})", p.x, p.y);
-            }
             active.push((id, p));
         }
         pump(100);

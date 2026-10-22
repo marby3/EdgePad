@@ -17,12 +17,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: cargo test
-        run: cargo test --workspace --all-features -- --nocapture
-        env:
-          EDGEPAD_DIAG: ${{ runner.temp }}
-      - name: TEMPORARY diagnostics for #12
-        if: failure()
-        shell: bash
-        run: for f in "$RUNNER_TEMP"/edgepad-diag-*.log; do echo "== $f"; cat "$f"; done
+        run: cargo test --workspace --all-features
       - name: Release build checks (size, static CRT, GUI subsystem)
         run: python -m unittest -v ci/test_build.py ci/test_measure.py
