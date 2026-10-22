@@ -22,6 +22,11 @@ use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, GetDpiForSystem, SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+use windows_sys::Win32::UI::Controls::{
+    CreateSyntheticPointerDevice, DestroySyntheticPointerDevice, POINTER_FEEDBACK_NONE,
+    POINTER_TYPE_INFO,
+};
+use windows_sys::Win32::UI::Input::Pointer::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 pub const PANEL_CLASS: &str = "EdgePadPanel";
@@ -72,26 +77,32 @@ pub fn pump(ms: u64) {
     }
 }
 
-/// Wait for the panel of `app` to appear and return its window.
-pub fn find_panel(app: &Running) -> HWND {
-    let class = wide(PANEL_CLASS);
+/// Wait for a top-level window of class `class` owned by `app` to appear.
+/// With `visible`, only a visible one counts.
+pub fn find_window(app: &Running, class: &str, visible: bool) -> HWND {
+    let name = wide(class);
     let end = Instant::now() + Duration::from_secs(5);
     while Instant::now() < end {
         let mut hwnd = null_mut();
         loop {
-            hwnd = unsafe { FindWindowExW(null_mut(), hwnd, class.as_ptr(), null()) };
+            hwnd = unsafe { FindWindowExW(null_mut(), hwnd, name.as_ptr(), null()) };
             if hwnd.is_null() {
                 break;
             }
             let mut pid = 0;
             unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-            if pid == app.0.id() && unsafe { IsWindowVisible(hwnd) } != 0 {
+            if pid == app.0.id() && (!visible || unsafe { IsWindowVisible(hwnd) } != 0) {
                 return hwnd;
             }
         }
         pump(50);
     }
-    panic!("no visible {PANEL_CLASS} window from edgepad.exe within 5s");
+    panic!("no {class} window from edgepad.exe within 5s");
+}
+
+/// Wait for the panel of `app` to appear and return its window.
+pub fn find_panel(app: &Running) -> HWND {
+    find_window(app, PANEL_CLASS, true)
 }
 
 pub fn window_rect(hwnd: HWND) -> RECT {
@@ -254,4 +265,218 @@ pub fn force_foreground(hwnd: HWND) {
         AttachThreadInput(me, fg_thread, 0);
     }
     pump(200);
+}
+
+// ---- Key output and pointer input ----
+
+pub const VK: [u16; 5] = [VK_ESCAPE, VK_LCONTROL, VK_LSHIFT, VK_LMENU, VK_SPACE];
+pub const ESC: usize = 0;
+pub const CTRL: usize = 1;
+pub const SHIFT: usize = 2;
+pub const ALT: usize = 3;
+pub const SPACE: usize = 4;
+
+/// (virtual key, is key-up, dwExtraInfo) of one injected key event.
+pub type KeyEvent = (u16, bool, usize);
+
+pub static EVENTS: Mutex<Vec<KeyEvent>> = Mutex::new(Vec::new());
+
+pub unsafe extern "system" fn keyboard_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        if code == HC_ACTION as i32 {
+            let k = &*(lp as *const KBDLLHOOKSTRUCT);
+            if k.flags & LLKHF_INJECTED != 0 {
+                EVENTS.lock().unwrap().push((k.vkCode as u16, k.flags & LLKHF_UP != 0, k.dwExtraInfo));
+                return 1;
+            }
+        }
+        CallNextHookEx(null_mut(), code, wp, lp)
+    }
+}
+
+/// Records and swallows injected key events while alive.
+pub struct KeyLog(pub HHOOK);
+
+impl KeyLog {
+    pub fn start() -> KeyLog {
+        EVENTS.lock().unwrap().clear();
+        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), null_mut(), 0) };
+        assert!(!hook.is_null(), "install keyboard hook");
+        KeyLog(hook)
+    }
+
+    /// Key events so far as (virtual key, is key-up).
+    pub fn keys(&self) -> Vec<(u16, bool)> {
+        EVENTS.lock().unwrap().iter().map(|&(vk, up, _)| (vk, up)).collect()
+    }
+
+    pub fn all(&self) -> Vec<KeyEvent> {
+        EVENTS.lock().unwrap().clone()
+    }
+}
+
+impl Drop for KeyLog {
+    fn drop(&mut self) {
+        unsafe { UnhookWindowsHookEx(self.0) };
+    }
+}
+
+pub fn down(key: usize) -> (u16, bool) {
+    (VK[key], false)
+}
+
+pub fn up(key: usize) -> (u16, bool) {
+    (VK[key], true)
+}
+
+/// Centre of key `i` of the panel.
+pub fn key_centre(panel: RECT, i: usize) -> POINT {
+    let size = panel.right - panel.left;
+    POINT { x: panel.left + size / 2, y: panel.top + size * i as i32 + size / 2 }
+}
+
+/// A point well outside the panel, level with key `i`.
+pub fn outside(panel: RECT, i: usize) -> POINT {
+    let p = key_centre(panel, i);
+    POINT { x: panel.right + 300, y: p.y }
+}
+
+pub fn mouse_down_at(p: POINT) {
+    mouse_at(p, MOUSEEVENTF_LEFTDOWN);
+    pump(100);
+}
+
+pub fn mouse_move_to(p: POINT) {
+    mouse_at(p, 0);
+    pump(100);
+}
+
+pub fn mouse_up_at(p: POINT) {
+    mouse_at(p, MOUSEEVENTF_LEFTUP);
+    pump(150);
+}
+
+/// Injected touch contacts. Every frame carries every active contact, and
+/// `hold` keeps them alive with update frames.
+pub struct Touch {
+    pub contacts: Vec<(u32, POINT)>,
+}
+
+pub static TOUCH_INIT: Once = Once::new();
+
+impl Touch {
+    pub fn new() -> Touch {
+        TOUCH_INIT.call_once(|| {
+            let ok = unsafe { InitializeTouchInjection(10, TOUCH_FEEDBACK_NONE) };
+            assert!(ok != 0, "InitializeTouchInjection");
+        });
+        Touch { contacts: Vec::new() }
+    }
+
+    pub fn info(id: u32, p: POINT, flags: POINTER_FLAGS) -> POINTER_TOUCH_INFO {
+        let mut t: POINTER_TOUCH_INFO = unsafe { zeroed() };
+        t.pointerInfo.pointerType = PT_TOUCH;
+        t.pointerInfo.pointerId = id;
+        t.pointerInfo.ptPixelLocation = p;
+        t.pointerInfo.pointerFlags = flags;
+        t.touchMask = TOUCH_MASK_NONE;
+        t
+    }
+
+    pub fn inject(&self, frame: &[POINTER_TOUCH_INFO]) {
+        let ok = unsafe { InjectTouchInput(frame.len() as u32, frame.as_ptr()) };
+        assert!(ok != 0, "InjectTouchInput: {}", std::io::Error::last_os_error());
+    }
+
+    pub fn moving(&self) -> Vec<POINTER_TOUCH_INFO> {
+        let flags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+        self.contacts.iter().map(|&(id, p)| Touch::info(id, p, flags)).collect()
+    }
+
+    pub fn down(&mut self, id: u32, p: POINT) {
+        let mut frame = self.moving();
+        frame.push(Touch::info(id, p, POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT));
+        self.inject(&frame);
+        self.contacts.push((id, p));
+        self.hold(100);
+    }
+
+    pub fn move_to(&mut self, id: u32, p: POINT) {
+        for c in self.contacts.iter_mut().filter(|c| c.0 == id) {
+            c.1 = p;
+        }
+        self.inject(&self.moving());
+        self.hold(100);
+    }
+
+    pub fn up(&mut self, id: u32) {
+        let mut frame = self.moving();
+        for f in frame.iter_mut().filter(|f| f.pointerInfo.pointerId == id) {
+            f.pointerInfo.pointerFlags = POINTER_FLAG_UP;
+        }
+        self.inject(&frame);
+        self.contacts.retain(|c| c.0 != id);
+        self.hold(150);
+    }
+
+    pub fn hold(&self, ms: u64) {
+        let mut left = ms;
+        while left > 0 {
+            if !self.contacts.is_empty() {
+                self.inject(&self.moving());
+            }
+            let step = left.min(30);
+            pump(step);
+            left -= step;
+        }
+    }
+}
+
+impl Drop for Touch {
+    fn drop(&mut self) {
+        while let Some(&(id, _)) = self.contacts.first() {
+            self.up(id);
+        }
+    }
+}
+
+pub fn pen_frame(p: POINT, flags: POINTER_FLAGS) -> POINTER_TYPE_INFO {
+    let mut info: POINTER_TYPE_INFO = unsafe { zeroed() };
+    info.r#type = PT_PEN;
+    let mut pen: POINTER_PEN_INFO = unsafe { zeroed() };
+    pen.pointerInfo.pointerType = PT_PEN;
+    pen.pointerInfo.ptPixelLocation = p;
+    pen.pointerInfo.pointerFlags = flags;
+    pen.penMask = PEN_MASK_NONE;
+    info.Anonymous.penInfo = pen;
+    info
+}
+
+/// Press a key with an injected pen: hover in, touch down, hold, lift.
+pub fn pen_tap(p: POINT) {
+    unsafe {
+        let pen = CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_NONE);
+        assert!(!pen.is_null(), "CreateSyntheticPointerDevice");
+        let steps = [
+            POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE,
+            POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT,
+            POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT,
+            POINTER_FLAG_UP | POINTER_FLAG_INRANGE,
+            POINTER_FLAG_UPDATE,
+        ];
+        for flags in steps {
+            let frame = pen_frame(p, flags);
+            let ok = InjectSyntheticPointerInput(pen, &frame, 1);
+            assert!(ok != 0, "InjectSyntheticPointerInput: {}", std::io::Error::last_os_error());
+            pump(100);
+        }
+        DestroySyntheticPointerDevice(pen);
+    }
+}
+
+pub fn panel_rect(app: &Running) -> (HWND, RECT) {
+    let hwnd = find_panel(app);
+    let mut r: RECT = unsafe { zeroed() };
+    unsafe { GetWindowRect(hwnd, &mut r) };
+    (hwnd, r)
 }
