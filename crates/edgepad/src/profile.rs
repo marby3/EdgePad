@@ -5,14 +5,19 @@
 //! nothing is polled. The hook only posts the window to the tray, and the
 //! switch happens there, from the message loop, never in the middle of
 //! other work on the panels.
+//!
+//! The tray can pin the profile shown, so that a dialog of another app
+//! coming to the front does not switch it. Pinned or not, the app in front
+//! is remembered, and unpinning switches to its profile.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ptr::null_mut;
 
 use edgepad_core::config::Config;
 use windows_sys::Win32::Foundation::{CloseHandle, HWND};
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
 };
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -29,41 +34,92 @@ thread_local! {
     static CONFIG: RefCell<Option<Config>> = const { RefCell::new(None) };
     // The name of the profile the panels show.
     static ACTIVE: RefCell<String> = const { RefCell::new(String::new()) };
+    // Whether the tray pinned it.
+    static PINNED: Cell<bool> = const { Cell::new(false) };
+    // The executable of the app last in front, EdgePad's own windows aside.
+    static LAST: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Use `config` from now on (none: the fixed keys), and return the panels of
-/// the profile for the app in front.
+/// the profile for the app in front, or of the pinned one while it is still
+/// there.
 pub unsafe fn use_config(config: Option<Config>) -> Panels {
     CONFIG.set(config);
-    let process = unsafe { process_name(GetForegroundWindow()) };
-    panels_for(process.as_deref())
+    // The tray menu brings EdgePad to the front: that is no app to follow.
+    let front = unsafe { GetForegroundWindow() };
+    if !unsafe { is_own(front) } {
+        LAST.set(unsafe { process_name(front) });
+    }
+    LAST.with_borrow(|process| panels_for(process.as_deref()))
 }
 
-/// The panels of the profile for `process`, which becomes the one shown.
+/// The panels of the pinned profile, or else of the one for `process`; the
+/// profile becomes the one shown. A pin on a profile no longer there ends.
 fn panels_for(process: Option<&str>) -> Panels {
     CONFIG.with_borrow(|config| {
-        let Some(config) = config else { return settings::fallback() };
-        let profile = config.profile_for(process);
+        let Some(config) = config else {
+            PINNED.set(false);
+            return settings::fallback();
+        };
+        let pinned = if PINNED.get() { ACTIVE.with_borrow(|active| config.profile(active)) } else { None };
+        PINNED.set(pinned.is_some());
+        let profile = pinned.unwrap_or_else(|| config.profile_for(process));
         debug_log!("プロファイル {}（前面: {}）", profile.name, process.unwrap_or("不明"));
         ACTIVE.set(profile.name.clone());
         settings::panels(config, profile)
     })
 }
 
-/// `hwnd` came to the front: if its app has another profile than the one
-/// shown, show that one. Rebuilding the panels lets go of every key first.
+/// `hwnd` came to the front: unless pinned, follow its app.
 pub unsafe fn foreground_changed(hwnd: HWND) {
-    let process = unsafe { process_name(hwnd) };
-    let name = CONFIG.with_borrow(|c| c.as_ref().map(|c| c.profile_for(process.as_deref()).name.clone()));
+    LAST.set(unsafe { process_name(hwnd) });
+    if !PINNED.get() {
+        unsafe { follow() };
+    }
+}
+
+/// If the app last in front has another profile than the one shown, show
+/// that one. Rebuilding the panels lets go of every key first.
+unsafe fn follow() {
+    let name = LAST.with_borrow(|process| {
+        CONFIG.with_borrow(|c| c.as_ref().map(|c| c.profile_for(process.as_deref()).name.clone()))
+    });
     // With the fixed keys there is one profile only.
     let Some(name) = name else { return };
     if ACTIVE.with_borrow(|active| *active == name) {
         return;
     }
-    let panels = panels_for(process.as_deref());
+    let panels = LAST.with_borrow(|process| panels_for(process.as_deref()));
     if !unsafe { panel::rebuild(&panels) } {
         debug_log!("プロファイルの切替: パネルを作れないものがあった");
     }
+}
+
+/// The profile shown and whether it is pinned, for the tray menu; none with
+/// the fixed keys.
+pub fn shown() -> Option<(String, bool)> {
+    let configured = CONFIG.with_borrow(Option::is_some);
+    configured.then(|| (ACTIVE.with_borrow(String::clone), PINNED.get()))
+}
+
+/// Pin the profile shown, or unpin it and follow the app in front again.
+pub unsafe fn toggle_pin() {
+    if shown().is_none() {
+        return;
+    }
+    let pin = !PINNED.get();
+    PINNED.set(pin);
+    debug_log!("プロファイル {}: {}", ACTIVE.with_borrow(String::clone), if pin { "固定" } else { "固定を解除" });
+    if !pin {
+        unsafe { follow() };
+    }
+}
+
+/// Whether `hwnd` is one of EdgePad's own windows.
+unsafe fn is_own(hwnd: HWND) -> bool {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid == unsafe { GetCurrentProcessId() }
 }
 
 /// The executable's file name of the process owning `hwnd`, if it can be

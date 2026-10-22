@@ -43,6 +43,7 @@ const CMD_RELOAD: usize = 1003;
 const CMD_PAUSE: usize = 1004;
 const CMD_RELEASE: usize = 1005;
 const CMD_AUTOSTART: usize = 1006;
+const CMD_PIN: usize = 1007;
 /// The one hotkey registered with the tray window.
 const HOTKEY_ID: i32 = 1;
 /// One per edge, CMD_EDGE + Edge as usize.
@@ -231,6 +232,13 @@ unsafe fn show_menu(hwnd: HWND) {
             AppendMenuW(menu, MF_STRING | flags, CMD_EDGE + edge as usize, text);
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        let (pin, flags) = match profile::shown() {
+            Some((name, pinned)) => (format!("プロファイル「{name}」を固定(&F)"), check(pinned)),
+            None => ("プロファイルを固定(&F)".into(), MF_GRAYED),
+        };
+        let pin: Vec<u16> = pin.encode_utf16().chain([0]).collect();
+        AppendMenuW(menu, MF_STRING | flags, CMD_PIN, pin.as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, CMD_OPEN, w!("設定ファイルを開く(&O)"));
         AppendMenuW(menu, MF_STRING, CMD_RELOAD, w!("設定を再読込(&E)"));
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
@@ -287,6 +295,7 @@ unsafe fn command(hwnd: HWND, id: usize) {
             CMD_OPEN => open_settings(hwnd),
             CMD_RELOAD => watch::reload(true),
             CMD_PAUSE => panel::toggle_pause(),
+            CMD_PIN => profile::toggle_pin(),
             CMD_RELEASE => {
                 debug_log!("全キー解放: メニュー");
                 panel::release_all();
