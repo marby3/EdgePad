@@ -109,13 +109,11 @@ class BuildTest(unittest.TestCase):
         bad = [d for d in dlls if d.lower().startswith(FORBIDDEN_DLL_PREFIXES)]
         self.assertEqual(bad, [], f"imports: {dlls}")
 
-    # AC4
-    def test_release_exe_is_gui_subsystem_and_exits_zero(self):
+    # AC4 (the exe stays resident since #3, so only the subsystem is checked)
+    def test_release_exe_is_gui_subsystem(self):
         self.assertTrue(EXE.is_file(), f"{EXE} was not built")
         _, subsystem, _ = read_pe(EXE)
         self.assertEqual(subsystem, IMAGE_SUBSYSTEM_WINDOWS_GUI)
-        result = subprocess.run([str(EXE)], timeout=10)
-        self.assertEqual(result.returncode, 0)
 
     # AC5
     def test_ci_runs_tests_and_these_checks_on_windows(self):
