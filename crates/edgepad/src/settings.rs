@@ -22,11 +22,19 @@ fn path() -> Option<PathBuf> {
     appdata.is_file().then_some(appdata)
 }
 
-/// What the panels need from the settings: the key size, and for each edge
-/// that shows a panel, its line count and keys.
+/// What the panels need from the settings.
 pub struct Panels {
+    /// Side of a key in logical pixels.
     pub key_size: u32,
-    pub edges: Vec<(Edge, usize, Vec<KeyDef>)>,
+    /// One per edge that shows a panel.
+    pub edges: Vec<EdgePanel>,
+}
+
+pub struct EdgePanel {
+    pub edge: Edge,
+    /// Columns on the left and right, rows on the top and bottom.
+    pub lines: usize,
+    pub keys: Vec<KeyDef>,
 }
 
 /// The panels of the default profile: one per enabled edge with a key set.
@@ -34,7 +42,10 @@ pub struct Panels {
 /// unreadable or wrong. Reporting what was wrong comes with the tray
 /// notifications.
 pub fn load() -> Panels {
-    let fallback = || Panels { key_size: layout::KEY_SIZE as u32, edges: vec![(Edge::Left, 1, config::fallback_keys())] };
+    let fallback = || Panels {
+        key_size: layout::KEY_SIZE as u32,
+        edges: vec![EdgePanel { edge: Edge::Left, lines: 1, keys: config::fallback_keys() }],
+    };
     let Some(path) = path() else { return fallback() };
     let mut bytes = Vec::new();
     // One byte over the limit is enough for the parser to refuse it.
@@ -49,7 +60,7 @@ pub fn load() -> Panels {
         .filter(|&edge| config.edges[edge as usize].enabled)
         .filter_map(|edge| {
             let set = config.set(default.edges[edge as usize].as_deref()?)?;
-            Some((edge, config.edges[edge as usize].lines as usize, set.keys.clone()))
+            Some(EdgePanel { edge, lines: config.edges[edge as usize].lines as usize, keys: set.keys.clone() })
         })
         .collect();
     Panels { key_size: config.general.key_size, edges }

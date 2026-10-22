@@ -15,17 +15,17 @@ enum Side {
     Bottom,
 }
 
-/// Which edge `r` touches, by position alone.
+/// Which edge `r` sits against. A panel is longer along its edge than it is
+/// thick, so a tall one is on the left or right and a wide one on the top or
+/// bottom; the tests give every panel more keys than lines to keep it so.
+/// This holds even for a panel spanning its whole edge.
 fn touching(r: RECT) -> Side {
     let m = primary_monitor();
-    if r.left == m.left && r.top != m.top {
-        Side::Left
-    } else if r.right == m.right {
-        Side::Right
-    } else if r.top == m.top {
-        Side::Top
-    } else {
-        Side::Bottom
+    match (r.bottom - r.top > r.right - r.left, r.left == m.left, r.top == m.top) {
+        (true, true, _) => Side::Left,
+        (true, false, _) => Side::Right,
+        (false, _, true) => Side::Top,
+        (false, _, false) => Side::Bottom,
     }
 }
 
@@ -185,6 +185,7 @@ top   = top
 #[test]
 fn keys_on_every_edge_are_held_while_pressed_by_touch_or_mouse() {
     let _desktop = desktop();
+    // Two keys per set, so no panel is square (see `touching`).
     let text = "\
 [set.r]
 key = R | hold | R

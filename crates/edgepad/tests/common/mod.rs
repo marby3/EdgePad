@@ -180,8 +180,7 @@ pub fn primary_monitor() -> RECT {
 }
 
 pub fn key_px() -> i32 {
-    let dpi = unsafe { GetDpiForSystem() } as i32;
-    (KEY_LOGICAL_PX * dpi + 48) / 96
+    px(KEY_LOGICAL_PX)
 }
 
 /// Copy a screen rectangle, layered windows included, as 0x00RRGGBB pixels.

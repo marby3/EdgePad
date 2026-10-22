@@ -32,8 +32,8 @@ fn main() -> ExitCode {
         EnableMouseInPointer(1);
         // An edge set to none shows no panel; the tray runs regardless.
         let panels = settings::load();
-        for (edge, lines, keys) in &panels.edges {
-            if !panel::create(*edge, *lines, panels.key_size, keys) {
+        for p in &panels.edges {
+            if !panel::create(p.edge, p.lines, panels.key_size, &p.keys) {
                 return ExitCode::FAILURE;
             }
         }

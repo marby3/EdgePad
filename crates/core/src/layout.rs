@@ -34,7 +34,12 @@ impl Rect {
 /// starts the next line. The panel is `lines` keys thick, as short as holds
 /// every key, and centred along the edge. Keys that do not fit within the
 /// edge's length are left out, along with every key after them.
+///
+/// No panel shorter than all the cells spread over `lines`, or than the
+/// longest key, can hold every key, so the search for the length starts
+/// there. `lines` is at least 1.
 pub fn edge_panel(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[usize]) -> (Rect, Vec<Rect>) {
+    debug_assert!(lines >= 1, "a panel is at least one key thick");
     let side = edge.is_side();
     let edge_length = if side { monitor.h } else { monitor.w };
     let room = (edge_length / key).max(0) as usize;
