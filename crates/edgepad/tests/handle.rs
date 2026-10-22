@@ -140,7 +140,8 @@ fn swiping_inward_from_the_handle_shows_the_panel() {
     touch.move_to(1, POINT { x: start.x + key_px(), y: start.y });
     touch.up(1);
     pump(200);
-    assert_eq!(shown(&app), ["left"], "the swipe shows the panel");
+    assert_eq!(shown(&app), ["left"], "the swipe shows the panel; handle {:?} start {:?}; trace {:?}",
+        (handle.left, handle.top, handle.right, handle.bottom), (start.x, start.y), test_events(&app));
     assert!(handle_on(&app, "left").is_none(), "the handle is gone");
 }
 

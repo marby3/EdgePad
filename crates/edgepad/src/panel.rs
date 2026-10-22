@@ -535,6 +535,12 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
 
 unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        // TEMPORARY trace for the CI swipe failure (#30); removed before merge.
+        if matches!(msg, WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERCAPTURECHANGED) {
+            let mut kind = 0;
+            GetPointerType(pointer_id(wp), &mut kind);
+            crate::tray::test_event(&format!("handle msg={msg:#x} kind={kind} at={:?}", pointer_at(lp)));
+        }
         match msg {
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
             WM_POINTERDOWN => {
