@@ -13,6 +13,10 @@ import tempfile
 import time
 import unittest
 
+ROOT_CI = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT_CI))
+import measure as m  # noqa: E402  (ci/measure.py: panel_visible, EXE)
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FIGURES = (
     "exe_bytes",
@@ -53,7 +57,6 @@ class MeasureTest(unittest.TestCase):
 
 # Spec, chapter 8: private memory 2 MiB or less (MiB as the spec's MB).
 PRIVATE_LIMIT = 2 * 1024 * 1024
-EXE = ROOT / "target" / "release" / "edgepad.exe"
 
 
 def measure(*args, env=None):
@@ -67,13 +70,18 @@ def measure(*args, env=None):
 class MemoryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        subprocess.run(["cargo", "build", "--release"], cwd=ROOT, check=True, timeout=600)
+        subprocess.run(["cargo", "build", "--release"], cwd=ROOT, check=True, timeout=600, capture_output=True)
 
     # Issue #34, AC1
     def test_private_memory_with_the_spec_example_is_at_most_2_mib(self):
         out = measure("--idle", "5", "--settings", "ci/example.ini")
         self.assertEqual(out.returncode, 0, out.stderr)
         result = json.loads(out.stdout)
+        # In the CI log, so the margin on the runner is on record.
+        print(f"\n  private memory: {result['private_bytes']:,} bytes", file=sys.stderr)
+        # The fixed keys it would fall back to have no hotkey: a registered
+        # one shows the file was read.
+        self.assertEqual(result["hotkey"], "registered", "the spec example was applied")
         # Its default profile has the left edge only (right = none); the
         # right-hand set belongs to the CSP profile, which comes with v0.3.
         self.assertEqual(result["panels"], 1, "the spec example's default profile shows the left panel")
@@ -87,26 +95,23 @@ class MemoryTest(unittest.TestCase):
     def test_measuring_leaves_an_edgepad_already_running_alone(self):
         with tempfile.TemporaryDirectory() as appdata:
             env = os.environ | {"APPDATA": appdata}
-            running = subprocess.Popen([str(EXE)], env=env)
+            running = subprocess.Popen([str(m.EXE)], env=env)
             try:
-                time.sleep(1.5)
+                end = time.monotonic() + 10
+                while not m.panel_visible(running.pid) and running.poll() is None and time.monotonic() < end:
+                    time.sleep(0.05)
                 self.assertIsNone(running.poll(), "precondition: an EdgePad is running")
-                self.assertTrue(panel_shown(running.pid), "precondition: its panel is shown")
+                self.assertTrue(m.panel_visible(running.pid), "precondition: its panel is shown")
 
                 out = measure("--idle", "1", env=env)
                 self.assertEqual(out.returncode, 0, out.stderr)
                 self.assertGreater(json.loads(out.stdout)["private_bytes"], 0)
                 self.assertIsNone(running.poll(), "the running EdgePad is still running")
-                self.assertTrue(panel_shown(running.pid), "and its panel was not toggled away")
+                self.assertTrue(m.panel_visible(running.pid), "and its panel was not toggled away")
             finally:
                 running.kill()
                 running.wait()
 
-
-def panel_shown(pid):
-    sys.path.insert(0, str(ROOT / "ci"))
-    import measure as m
-    return m.panel_visible(pid)
 
 
 if __name__ == "__main__":
