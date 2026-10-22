@@ -340,17 +340,38 @@ pub type KeyEvent = (u16, bool, usize);
 
 pub static EVENTS: Mutex<Vec<KeyEvent>> = Mutex::new(Vec::new());
 
+/// (virtual key, scan code, is extended) of each recorded key event.
+pub static SCANS: Mutex<Vec<(u16, u32, bool)>> = Mutex::new(Vec::new());
+
+/// dwExtraInfo of key events a test sends in place of the physical keyboard.
+/// The hook lets them through unrecorded, so Windows sees the key as down.
+pub const KEYBOARD_TAG: usize = 0x5445_5354;
+
 pub unsafe extern "system" fn keyboard_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         if code == HC_ACTION as i32 {
             let k = &*(lp as *const KBDLLHOOKSTRUCT);
-            if k.flags & LLKHF_INJECTED != 0 {
+            if k.flags & LLKHF_INJECTED != 0 && k.dwExtraInfo != KEYBOARD_TAG {
                 EVENTS.lock().unwrap().push((k.vkCode as u16, k.flags & LLKHF_UP != 0, k.dwExtraInfo));
+                SCANS.lock().unwrap().push((k.vkCode as u16, k.scanCode, k.flags & LLKHF_EXTENDED != 0));
                 return 1;
             }
         }
         CallNextHookEx(null_mut(), code, wp, lp)
     }
+}
+
+/// Press or release `vk` as if on the physical keyboard (see `KEYBOARD_TAG`).
+pub fn keyboard(vk: u16, down: bool) {
+    unsafe {
+        let mut input: INPUT = zeroed();
+        input.r#type = INPUT_KEYBOARD;
+        input.Anonymous.ki.wVk = vk;
+        input.Anonymous.ki.dwFlags = if down { 0 } else { KEYEVENTF_KEYUP };
+        input.Anonymous.ki.dwExtraInfo = KEYBOARD_TAG;
+        assert_eq!(SendInput(1, &input, size_of::<INPUT>() as i32), 1, "SendInput");
+    }
+    pump(100);
 }
 
 /// Records and swallows injected key events while alive.
@@ -359,6 +380,7 @@ pub struct KeyLog(pub HHOOK);
 impl KeyLog {
     pub fn start() -> KeyLog {
         EVENTS.lock().unwrap().clear();
+        SCANS.lock().unwrap().clear();
         let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), null_mut(), 0) };
         assert!(!hook.is_null(), "install keyboard hook");
         KeyLog(hook)
@@ -371,6 +393,11 @@ impl KeyLog {
 
     pub fn all(&self) -> Vec<KeyEvent> {
         EVENTS.lock().unwrap().clone()
+    }
+
+    /// Key events so far as (virtual key, scan code, is extended).
+    pub fn scans(&self) -> Vec<(u16, u32, bool)> {
+        SCANS.lock().unwrap().clone()
     }
 }
 
