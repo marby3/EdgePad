@@ -87,11 +87,11 @@ fn start(exe: &Path, appdata: &Path, dir: Option<PathBuf>) -> Running {
     app
 }
 
-/// Launch the exe with no settings file: %APPDATA% points at a folder that
-/// does not exist, so a settings file on this machine cannot leak in.
+/// Launch the exe with no settings file. It runs from a scratch copy, so a
+/// settings file beside the built exe or in this machine's %APPDATA% cannot
+/// leak in.
 pub fn launch() -> Running {
-    let nowhere = std::env::temp_dir().join(format!("edgepad-test-{}-no-appdata", std::process::id()));
-    start(Path::new(env!("CARGO_BIN_EXE_edgepad")), &nowhere, None)
+    launch_with(None, None)
 }
 
 /// Launch a copy of the exe from a scratch folder, with `beside_exe` written

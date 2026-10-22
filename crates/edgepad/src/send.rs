@@ -75,6 +75,7 @@ pub fn vk(key: Key) -> u16 {
         Key::Char(b'/') => VK_OEM_2,
         Key::Char(b'\\') => VK_OEM_5,
         Key::Char(b'`') => VK_OEM_3,
+        // Key::parse makes no other Char (keys.rs, SYMBOLS).
         Key::Char(c) => unreachable!("the parser admits no key {c}"),
         Key::F(n) => VK_F1 + n as u16 - 1,
         Key::Space => VK_SPACE,

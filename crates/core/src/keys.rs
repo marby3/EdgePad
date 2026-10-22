@@ -39,7 +39,7 @@ pub enum Key {
 
 const SYMBOLS: &[u8] = b"[]-=;',./\\`";
 
-const NAMED: [(&str, Key); 19] = [
+const NAMED: [(&str, Key); 20] = [
     ("ctrl", Key::Ctrl),
     ("shift", Key::Shift),
     ("alt", Key::Alt),
@@ -59,6 +59,8 @@ const NAMED: [(&str, Key); 19] = [
     ("right", Key::Right),
     ("up", Key::Up),
     ("down", Key::Down),
+    // Inside a macro "," separates the steps, so the comma key has a name.
+    ("comma", Key::Char(b',')),
 ];
 
 impl Key {
@@ -68,17 +70,16 @@ impl Key {
         if let Some(&(_, key)) = NAMED.iter().find(|(n, _)| *n == lower) {
             return Some(key);
         }
-        if lower == "comma" {
-            return Some(Key::Char(b','));
-        }
         if let [c] = name.as_bytes() {
             let c = c.to_ascii_uppercase();
             if c.is_ascii_uppercase() || c.is_ascii_digit() || SYMBOLS.contains(&c) {
                 return Some(Key::Char(c));
             }
         }
-        let n: u8 = lower.strip_prefix('f')?.parse().ok()?;
-        (lower.len() <= 3 && (1..=24).contains(&n)).then_some(Key::F(n))
+        let digits = lower.strip_prefix('f')?;
+        let n: u8 = digits.parse().ok()?;
+        let plain = digits.len() <= 2 && digits.bytes().all(|b| b.is_ascii_digit());
+        (plain && (1..=24).contains(&n)).then_some(Key::F(n))
     }
 
     /// The modifier bit of Ctrl, Shift, Alt and Win; none for other keys.

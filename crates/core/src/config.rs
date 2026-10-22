@@ -546,8 +546,10 @@ fn valid_name(name: &str) -> bool {
 }
 
 fn number(name: &str, value: &str, min: u32, max: u32) -> Result<u32, String> {
+    // Digits only: u32's parser would also take a leading "+".
+    let digits = !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
     match value.parse::<u32>() {
-        Ok(v) if (min..=max).contains(&v) => Ok(v),
+        Ok(v) if digits && (min..=max).contains(&v) => Ok(v),
         _ => Err(format!("{name} は {min}〜{max} の整数（「{value}」）")),
     }
 }
