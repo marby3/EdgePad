@@ -22,7 +22,8 @@ use windows_sys::Win32::System::Threading::{
     AttachThreadInput, GetCurrentThreadId, GetProcessTimes,
 };
 use windows_sys::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, GetDpiForSystem, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
+    SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Controls::{
@@ -43,10 +44,11 @@ pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
-/// Serialise tests and make this process see physical pixels like the exe does.
+/// Serialise tests and make this process see physical pixels like the exe
+/// does: Per-Monitor V2, so no coordinate is ever scaled for it.
 pub fn desktop() -> MutexGuard<'static, ()> {
     DPI.call_once(|| {
-        let ok = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE) };
+        let ok = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
         assert!(ok != 0, "SetProcessDpiAwarenessContext failed: coordinates would be virtualised");
     });
     DESKTOP.lock().unwrap_or_else(|e| e.into_inner())
@@ -626,9 +628,14 @@ pub fn left_panel(app: &Running) -> RECT {
     *panels(app).iter().find(|r| r.left == m.left).expect("no panel on the left edge")
 }
 
-/// `logical` pixels at the system DPI, rounded as EdgePad rounds them.
+/// `logical` pixels at the primary monitor's DPI, rounded as EdgePad rounds them.
 pub fn px(logical: i32) -> i32 {
-    let dpi = unsafe { GetDpiForSystem() } as i32;
+    // The primary monitor's DPI now, which EdgePad follows; the system DPI
+    // is fixed at sign-in and goes stale when the scale changes.
+    let (mut dpi, mut y) = (0, 0);
+    let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    assert_eq!(unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut y) }, 0, "GetDpiForMonitor");
+    let dpi = dpi as i32;
     (logical * dpi + 48) / 96
 }
 
