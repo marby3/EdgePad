@@ -364,11 +364,17 @@ pub fn mouse_up_at(p: POINT) {
 /// contact stays down however the test waits, until `up` lifts it.
 pub struct Touch {
     contacts: Arc<Mutex<Vec<(u32, POINT)>>>,
+    /// The first error the keeper hit; surfaced by the next touch call.
+    failure: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     keeper: Option<std::thread::JoinHandle<()>>,
 }
 
-pub static TOUCH_INIT: Once = Once::new();
+static TOUCH_INIT: Once = Once::new();
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn touch_info(id: u32, p: POINT, flags: POINTER_FLAGS) -> POINTER_TOUCH_INFO {
     let mut t: POINTER_TOUCH_INFO = unsafe { zeroed() };
@@ -400,53 +406,68 @@ impl Touch {
             assert!(ok != 0, "InitializeTouchInjection");
         });
         let contacts: Arc<Mutex<Vec<(u32, POINT)>>> = Arc::default();
+        let failure: Arc<Mutex<Option<String>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let keeper = {
-            let (contacts, stop) = (contacts.clone(), stop.clone());
+            let (contacts, failure, stop) = (contacts.clone(), failure.clone(), stop.clone());
+            // Never panics: an error is recorded for the test thread and the
+            // keeper keeps going, so the real cause is what the test reports.
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     {
-                        let active = contacts.lock().unwrap();
+                        let active = lock(&contacts);
                         if !active.is_empty() {
-                            inject(&moving(&active)).expect("keep touch contacts alive");
+                            if let Err(e) = inject(&moving(&active)) {
+                                lock(&failure).get_or_insert(format!("keeping touch contacts alive: {e}"));
+                            }
                         }
                     }
                     std::thread::sleep(Duration::from_millis(30));
                 }
             })
         };
-        Touch { contacts, stop, keeper: Some(keeper) }
+        Touch { contacts, failure, stop, keeper: Some(keeper) }
+    }
+
+    /// Panic with the keeper's error, if it hit one.
+    fn check(&self) {
+        if let Some(e) = lock(&self.failure).take() {
+            panic!("{e}");
+        }
     }
 
     pub fn down(&mut self, id: u32, p: POINT) {
         {
-            let mut active = self.contacts.lock().unwrap();
+            let mut active = lock(&self.contacts);
             let mut frame = moving(&active);
             frame.push(touch_info(id, p, POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT));
             inject(&frame).expect("InjectTouchInput (down)");
             active.push((id, p));
         }
         pump(100);
+        self.check();
     }
 
     pub fn move_to(&mut self, id: u32, p: POINT) {
         {
-            let mut active = self.contacts.lock().unwrap();
+            let mut active = lock(&self.contacts);
             for c in active.iter_mut().filter(|c| c.0 == id) {
                 c.1 = p;
             }
             inject(&moving(&active)).expect("InjectTouchInput (move)");
         }
         pump(100);
+        self.check();
     }
 
     pub fn up(&mut self, id: u32) {
+        self.check();
         self.lift(id).expect("InjectTouchInput (up)");
         pump(150);
     }
 
     fn lift(&self, id: u32) -> std::io::Result<()> {
-        let mut active = self.contacts.lock().unwrap();
+        let mut active = lock(&self.contacts);
         let mut frame = moving(&active);
         for f in frame.iter_mut().filter(|f| f.pointerInfo.pointerId == id) {
             f.pointerInfo.pointerFlags = POINTER_FLAG_UP;
@@ -455,10 +476,11 @@ impl Touch {
         inject(&frame)
     }
 
-    /// Wait with the contacts held. The keeper keeps them alive; this only
-    /// pumps this thread's messages.
+    /// Wait in place. Contacts stay down on their own (the keeper refreshes
+    /// them); this only pumps this thread's messages.
     pub fn hold(&self, ms: u64) {
         pump(ms);
+        self.check();
     }
 }
 
@@ -466,7 +488,7 @@ impl Drop for Touch {
     fn drop(&mut self) {
         // Lift whatever is still down. Best effort: the test may already be
         // failing, and a second panic here would abort the whole run.
-        let ids: Vec<u32> = self.contacts.lock().map(|c| c.iter().map(|c| c.0).collect()).unwrap_or_default();
+        let ids: Vec<u32> = lock(&self.contacts).iter().map(|&(id, _)| id).collect();
         for id in ids {
             let _ = self.lift(id);
         }
