@@ -116,6 +116,8 @@ fn the_panels_follow_the_profile_of_the_app_in_front() {
 #[test]
 fn a_profile_naming_no_edges_shows_no_panel() {
     let _desktop = desktop();
+    // This process in front first, so that the app it starts comes to the front.
+    let _mine = my_window();
     let _other = other_app_window();
     let app = launch_with(Some(&settings("")), None);
     wait_for_left_keys(&app, 2, "the default profile");
@@ -134,6 +136,7 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
     let _desktop = desktop();
     // This process is not named by any profile: both apps get the default.
     let text = settings("").replace(&format!("process = {}", me()), "process = nothing-here.exe");
+    let _mine = my_window();
     let _other = other_app_window();
     let app = launch_with(Some(&text), None);
     let panel = left_panel(&app);
