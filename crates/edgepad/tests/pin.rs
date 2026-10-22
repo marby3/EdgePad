@@ -2,11 +2,13 @@
 //! spec 4.1 and 4.4): while pinned, the app in front changes nothing.
 //!
 //! As in tests/profile.rs, this test process and a copy of it under another
-//! name take turns in the foreground.
+//! name take turns in the foreground, a new window each turn (see
+//! `wait_in_front`).
 
 mod common;
 
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HWND, RECT};
@@ -32,8 +34,12 @@ fn me() -> String {
     std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned()
 }
 
+/// Start the other app, a new one each time, and return it once its window
+/// is in front.
 fn other_app_window() -> (Running, HWND) {
-    let dir = std::env::temp_dir().join(format!("edgepad-pin-other-{}", std::process::id()));
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("edgepad-pin-other-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let exe = dir.join("edgepad-pin-other.exe");
@@ -45,7 +51,17 @@ fn other_app_window() -> (Running, HWND) {
         .expect("start the other app");
     let other = Running(child, Some(dir));
     let hwnd = find_window(&other, OTHER_CLASS, true);
+    wait_in_front(hwnd);
     (other, hwnd)
+}
+
+/// A new window of this process, once it is in front.
+fn my_window() -> TestWindow {
+    let m = primary_monitor();
+    let r = RECT { left: m.left + 400, top: m.top + 350, right: m.left + 700, bottom: m.top + 550 };
+    let window = test_window("EdgePadTestPinMine", 0, r);
+    wait_in_front(window.0);
+    window
 }
 
 fn left_keys(app: &Running) -> i32 {
@@ -77,9 +93,7 @@ fn settings(mine: usize) -> String {
 #[test]
 fn a_pinned_profile_stays_whatever_comes_to_the_front_until_unpinned() {
     let _desktop = desktop();
-    let m = primary_monitor();
-    let mine = test_window("EdgePadTestPinMine", 0, RECT { left: m.left + 400, top: m.top + 350, right: m.left + 700, bottom: m.top + 550 });
-    click_to_front(mine.0);
+    let _mine = my_window();
     let app = launch_with(Some(&settings(3)), None);
     wait_for_left_keys(&app, 3, "this app's profile");
 
@@ -88,8 +102,10 @@ fn a_pinned_profile_stays_whatever_comes_to_the_front_until_unpinned() {
     choose(&app, "プロファイル");
     assert!(menu_item(&app, "プロファイル").checked, "pinned");
 
-    let (_other, other) = other_app_window();
-    click_to_front(other);
+    // The menu put EdgePad in front: this process takes the front back
+    // first, so that the app it starts can come to the front.
+    let _mine = my_window();
+    let _other = other_app_window();
     pump(500);
     assert_eq!(left_keys(&app), 3, "pinned: another app in front changes nothing");
 
@@ -102,14 +118,12 @@ fn a_pinned_profile_stays_whatever_comes_to_the_front_until_unpinned() {
 #[test]
 fn a_pin_holds_through_a_reload_while_the_profile_is_still_there() {
     let _desktop = desktop();
-    let m = primary_monitor();
-    let mine = test_window("EdgePadTestPinMine", 0, RECT { left: m.left + 400, top: m.top + 350, right: m.left + 700, bottom: m.top + 550 });
-    click_to_front(mine.0);
+    let _mine = my_window();
     let app = launch_with(Some(&settings(3)), None);
     wait_for_left_keys(&app, 3, "this app's profile");
     choose(&app, "プロファイル");
-    let (_other, other) = other_app_window();
-    click_to_front(other);
+    let _mine = my_window();
+    let _other = other_app_window();
 
     std::fs::write(exe_dir(&app).join("edgepad.ini"), settings(4)).unwrap();
     wait_for_left_keys(&app, 4, "reloaded, still on the pinned profile");
