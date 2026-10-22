@@ -172,19 +172,13 @@ fn report(all_sent: bool) {
     }
 }
 
-/// Type `text` as Unicode characters, all in one SendInput: for each
-/// character, a key-down for each of its UTF-16 units, then a key-up for
-/// each. A character outside the BMP is two units, and Windows drops the
-/// second if the first comes up before it goes down. Nothing is left down,
-/// so nothing is recorded as held.
+/// Type `text` as Unicode characters: a key-down and a key-up for each UTF-16
+/// unit, all in one SendInput. Nothing is left down, so nothing is recorded
+/// as held.
 pub unsafe fn text(text: &str) {
     let inputs: Vec<INPUT> = text
-        .chars()
-        .flat_map(|c| {
-            let mut units = [0u16; 2];
-            let units = c.encode_utf16(&mut units).to_vec();
-            [0, KEYEVENTF_KEYUP].into_iter().flat_map(move |up| units.clone().into_iter().map(move |unit| (unit, up)))
-        })
+        .encode_utf16()
+        .flat_map(|unit| [0, KEYEVENTF_KEYUP].map(move |up| (unit, up)))
         .map(|(unit, up)| {
             let mut input: INPUT = unsafe { zeroed() };
             input.r#type = INPUT_KEYBOARD;
