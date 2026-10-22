@@ -37,8 +37,9 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// Serialise tests and make this process see physical pixels like the exe does.
 fn desktop() -> MutexGuard<'static, ()> {
-    DPI.call_once(|| unsafe {
-        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+    DPI.call_once(|| {
+        let ok = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE) };
+        assert!(ok != 0, "SetProcessDpiAwarenessContext failed: coordinates would be virtualised");
     });
     DESKTOP.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -163,8 +164,17 @@ unsafe extern "system" fn backdrop_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
     }
 }
 
+/// A test window, destroyed on drop even when an assertion fails.
+struct TestWindow(HWND);
+
+impl Drop for TestWindow {
+    fn drop(&mut self) {
+        unsafe { DestroyWindow(self.0) };
+    }
+}
+
 /// A plain test window of a single colour.
-fn test_window(class: &str, ex_style: u32, r: RECT) -> HWND {
+fn test_window(class: &str, ex_style: u32, r: RECT) -> TestWindow {
     unsafe {
         let class = wide(class);
         let instance = GetModuleHandleW(null());
@@ -190,7 +200,7 @@ fn test_window(class: &str, ex_style: u32, r: RECT) -> HWND {
         assert!(!hwnd.is_null(), "create test window");
         UpdateWindow(hwnd);
         pump(100);
-        hwnd
+        TestWindow(hwnd)
     }
 }
 
@@ -290,8 +300,8 @@ fn clicking_the_panel_keeps_focus_on_the_previous_foreground_window() {
         bottom: monitor.top + 400,
     };
     let foreground = test_window("EdgePadTestForeground", 0, area);
-    force_foreground(foreground);
-    assert_eq!(unsafe { GetForegroundWindow() }, foreground, "precondition: test window in front");
+    force_foreground(foreground.0);
+    assert_eq!(unsafe { GetForegroundWindow() }, foreground.0, "precondition: test window in front");
 
     let mut saved = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut saved) };
@@ -299,8 +309,7 @@ fn clicking_the_panel_keeps_focus_on_the_previous_foreground_window() {
     pump(300);
     unsafe { SetCursorPos(saved.x, saved.y) };
 
-    assert_eq!(unsafe { GetForegroundWindow() }, foreground, "focus moved off the test window");
-    unsafe { DestroyWindow(foreground) };
+    assert_eq!(unsafe { GetForegroundWindow() }, foreground.0, "focus moved off the test window");
 }
 
 // AC4
@@ -327,11 +336,17 @@ fn panel_is_drawn_with_update_layered_window_at_90_percent_with_a_label_on_every
     assert_eq!(attrs, 0, "GetLayeredWindowAttributes works only without UpdateLayeredWindow");
 
     // 90% opaque: 10% of the backdrop shows through, so white vs black differs by ~25.
-    let corner = RECT { left: panel.left + 1, top: panel.top + 1, right: panel.left + 2, bottom: panel.top + 2 };
-    set_backdrop(backdrop, 0x00FF_FFFF);
-    let on_white = channels(capture(corner)[0]);
-    set_backdrop(backdrop, 0x0000_0000);
-    let on_black = channels(capture(corner)[0]);
+    // Averaged over a 3x3 patch of panel background in the top-left corner.
+    let corner = RECT { left: panel.left, top: panel.top, right: panel.left + 3, bottom: panel.top + 3 };
+    let average = |pixels: Vec<u32>| {
+        let n = pixels.len() as i32;
+        let sum = pixels.iter().map(|&p| channels(p)).fold([0; 3], |a, c| [a[0] + c[0], a[1] + c[1], a[2] + c[2]]);
+        sum.map(|v| v / n)
+    };
+    set_backdrop(backdrop.0, 0x00FF_FFFF);
+    let on_white = average(capture(corner));
+    set_backdrop(backdrop.0, 0x0000_0000);
+    let on_black = average(capture(corner));
     for c in 0..3 {
         let diff = on_white[c] - on_black[c];
         assert!((20..=31).contains(&diff), "backdrop shows through by {diff}/255, want ~25");
@@ -355,7 +370,6 @@ fn panel_is_drawn_with_update_layered_window_at_90_percent_with_a_label_on_every
             .count();
         assert!(ink >= 20, "key {i} shows no label ({ink} ink pixels)");
     }
-    unsafe { DestroyWindow(backdrop) };
 }
 
 // AC5
