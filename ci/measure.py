@@ -2,6 +2,9 @@
 
 Launches target/release/edgepad.exe, times how long the panel takes to
 appear, waits idle, then reads memory and CPU time and stops the process.
+The startup time runs from just before the launch call, so it includes
+process creation and errs on the slow side. KB and MB mean KiB and MiB.
+Needs Windows 10 20H2 or later (the spec's floor is 21H2).
 
     python ci/measure.py              # markdown table, 60 s idle
     python ci/measure.py --idle 10    # shorter idle wait
@@ -22,6 +25,7 @@ from ctypes import wintypes
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXE = ROOT / "target" / "release" / "edgepad.exe"
+# Same class as crates/edgepad/src/panel.rs registers.
 PANEL_CLASS = "EdgePadPanel"
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -150,10 +154,10 @@ def table(r, env):
     kib = lambda b: f"{b / 1024:,.0f} KiB"
     mib = lambda b: f"{b / 1024 / 1024:.2f} MiB"
     rows = [
-        ("exe size", kib(r["exe_bytes"]), "500 KB or less"),
+        ("exe size", kib(r["exe_bytes"]), "500 KiB or less"),
         ("startup (launch to panel shown)", f'{r["startup_ms"]} ms', "100 ms or less"),
-        ("private memory", mib(r["private_bytes"]), "2 MB or less"),
-        ("working set", mib(r["working_set_bytes"]), "5 MB or less"),
+        ("private memory", mib(r["private_bytes"]), "2 MiB or less"),
+        ("working set", mib(r["working_set_bytes"]), "5 MiB or less"),
         (f'idle CPU time over {r["idle_seconds"]} s', f'{r["idle_cpu_ms"]} ms', "0% (no timers, no polling)"),
     ]
     lines = [f"{k}: {v}" for k, v in env.items()]
@@ -169,11 +173,13 @@ def main():
     args = parser.parse_args()
     if args.idle < 1:
         parser.error("--idle must be at least 1 second")
+    # Environment first: a failure here should not throw away a long run.
+    env = environment()
     result = measure(args.idle)
     if args.json:
-        print(json.dumps(result | {"environment": environment()}))
+        print(json.dumps(result | {"environment": env}))
     else:
-        print(table(result, environment()))
+        print(table(result, env))
 
 
 if __name__ == "__main__":
