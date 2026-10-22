@@ -19,4 +19,4 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-features
       - name: Release build checks (size, static CRT, GUI subsystem)
-        run: python -m unittest -v ci/test_build.py
+        run: python -m unittest -v ci/test_build.py ci/test_measure.py
