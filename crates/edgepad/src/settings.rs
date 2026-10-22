@@ -6,8 +6,9 @@
 
 use std::io::Read;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use edgepad_core::config::{self, Edge, Handle, KeyDef, Monitor};
+use edgepad_core::config::{self, Edge, Handle, KeyDef, KeySet, Monitor};
 use edgepad_core::keys::Combo;
 use edgepad_core::layout;
 use edgepad_core::modifier::LatchMode;
@@ -77,6 +78,8 @@ pub struct Panels {
     pub latch_ms: u32,
     /// Whether a shortcut ends a latch.
     pub latch: LatchMode,
+    /// Every key set, for page keys that switch a panel to another.
+    pub sets: Rc<[KeySet]>,
 }
 
 pub struct EdgePanel {
@@ -170,6 +173,7 @@ fn fallback() -> Panels {
         hotkey: None,
         latch_ms: general.latch_ms,
         latch: general.latch,
+        sets: Rc::new([]),
     }
 }
 
@@ -187,5 +191,6 @@ fn panels(bytes: &[u8]) -> Result<Panels, Vec<config::Error>> {
         })
         .collect();
     let g = &config.general;
-    Ok(Panels { key_size: g.key_size, edges, hotkey: g.hotkey, latch_ms: g.latch_ms, latch: g.latch })
+    let (key_size, hotkey, latch_ms, latch) = (g.key_size, g.hotkey, g.latch_ms, g.latch);
+    Ok(Panels { key_size, edges, hotkey, latch_ms, latch, sets: config.sets.into() })
 }

@@ -4,9 +4,10 @@
 use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use edgepad_core::config::{Action, Edge, Handle, Monitor, Step};
+use edgepad_core::config::{Action, Edge, Handle, KeyDef, KeySet, Monitor, Page, Step};
 use edgepad_core::gesture::{self, Swipe};
 use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Rect};
@@ -24,7 +25,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::log::debug_log;
-use crate::send;
+use crate::{launch, send};
 use crate::settings::{EdgePanel, Panels};
 
 /// Opacity of the shown panel: 90%.
@@ -51,6 +52,17 @@ struct PanelKey {
     sends: Sends,
 }
 
+impl PanelKey {
+    fn of(k: &KeyDef) -> PanelKey {
+        PanelKey { label: k.label.encode_utf16().collect(), width: k.width as usize, rect: None, sends: Sends::of(&k.action) }
+    }
+
+    /// Whether it is on every page: it turns them.
+    fn turns_pages(&self) -> bool {
+        matches!(self.sends, Sends::Page(Page::Next | Page::Prev))
+    }
+}
+
 /// What a key sends, in virtual keys.
 enum Sends {
     /// Down while pressed, up on release.
@@ -66,8 +78,10 @@ enum Sends {
     Macro(Vec<MacroStep>),
     /// Typed as Unicode characters on release.
     Text(String),
-    /// Kinds that send nothing yet.
-    Nothing,
+    /// A program or URL started on release.
+    Run(String),
+    /// Turns the page, or switches to another key set, on release.
+    Page(Page),
 }
 
 impl Sends {
@@ -96,7 +110,8 @@ impl Sends {
                     .collect(),
             ),
             Action::Text(text) => Sends::Text(text.clone()),
-            _ => Sends::Nothing,
+            Action::Run(command) => Sends::Run(command.clone()),
+            Action::Page(page) => Sends::Page(page.clone()),
         }
     }
 }
@@ -141,7 +156,14 @@ struct Panel {
     /// The panel on screen, and the side of a key, in pixels at the current DPI.
     rect: Rect,
     key: i32,
+    /// The monitor the panel is on.
+    screen: Rect,
     keys: Vec<PanelKey>,
+    /// The page shown, of how many.
+    page: usize,
+    pages: usize,
+    /// Every key set, for a page key that switches to another.
+    sets: Rc<[KeySet]>,
     presses: Presses,
     /// The macro running on this panel: its key, and the step to send next.
     running: Option<(usize, usize)>,
@@ -289,16 +311,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         if hwnd.is_null() {
             return false;
         }
-        let keys: Vec<PanelKey> = p
-            .keys
-            .iter()
-            .map(|k| PanelKey {
-                label: k.label.encode_utf16().collect(),
-                width: k.width as usize,
-                rect: None,
-                sends: Sends::of(&k.action),
-            })
-            .collect();
+        let keys: Vec<PanelKey> = p.keys.iter().map(PanelKey::of).collect();
         let presses = Presses::new(keys.len());
         let rect = Rect { x: 0, y: 0, w: 0, h: 0 };
         let (edge, monitor, lines) = (p.edge, p.monitor, p.lines);
@@ -313,7 +326,11 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             latch_mode: panels.latch,
             rect,
             key: 0,
+            screen: rect,
             keys,
+            page: 0,
+            pages: 1,
+            sets: panels.sets.clone(),
             presses,
             running: None,
             captured: None,
@@ -513,18 +530,55 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
             }
         });
         panel.key = layout::scale(panel.key_size as i32, dpi);
-        let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
-        let (rect, rects) = layout::edge_panel(screen, panel.edge, panel.key, panel.lines, &widths);
-        panel.rect = rect;
-        let mut rects = rects.into_iter();
-        for key in &mut panel.keys {
-            key.rect = rects.next();
-        }
+        panel.screen = screen;
+        place_keys(panel);
         if let (Some(h), false) = (panel.handle, panel.handle_hwnd.is_null()) {
             let r = layout::handle(screen, panel.edge, layout::scale(h.width as i32, dpi), h.length, h.position);
             SetWindowPos(panel.handle_hwnd, HWND_TOPMOST, r.x, r.y, r.w, r.h, SWP_NOACTIVATE);
         }
     }
+}
+
+/// Put the keys of the page shown in place on the panel's monitor; the keys
+/// of other pages get no place. The panel takes the size of the page.
+fn place_keys(panel: &mut Panel) {
+    let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
+    let sticky: Vec<bool> = panel.keys.iter().map(PanelKey::turns_pages).collect();
+    let pages = layout::pages(panel.screen, panel.edge, panel.key, panel.lines, &widths, &sticky);
+    panel.pages = pages.len().max(1);
+    panel.page = panel.page.min(panel.pages - 1);
+    let shown = pages.get(panel.page).map_or(&[][..], Vec::as_slice);
+    let shown_widths: Vec<usize> = shown.iter().map(|&i| widths[i]).collect();
+    let (rect, rects) = layout::edge_panel(panel.screen, panel.edge, panel.key, panel.lines, &shown_widths);
+    panel.rect = rect;
+    for key in &mut panel.keys {
+        key.rect = None;
+    }
+    for (&i, r) in shown.iter().zip(rects) {
+        panel.keys[i].rect = Some(r);
+    }
+}
+
+/// Turn the page of `panel`, or switch it to another key set, as a page key
+/// says. Keys held or latched on other pages stay so; switching sets lets go
+/// of the panel's keys first, as the keys under them change.
+unsafe fn turn(panel: &mut Panel, page: &Page) {
+    match page {
+        Page::Next => panel.page = (panel.page + 1) % panel.pages,
+        Page::Prev => panel.page = (panel.page + panel.pages - 1) % panel.pages,
+        Page::Set(name) => {
+            // The parser makes sure the set is there.
+            let Some(set) = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(name)) else { return };
+            let keys: Vec<PanelKey> = set.keys.iter().map(PanelKey::of).collect();
+            unsafe { let_go(panel) };
+            panel.presses = Presses::new(keys.len());
+            panel.keys = keys;
+            panel.page = 0;
+        }
+    }
+    debug_log!("パネル {}: ページ {}/{}", edge_name(panel.edge), panel.page + 1, panel.pages);
+    place_keys(panel);
+    unsafe { draw(panel) };
 }
 
 unsafe extern "system" fn gather(monitor: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> i32 {
@@ -813,7 +867,17 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
             panel.starts.retain(|s| s.id != id);
-            let released = panel.presses.up(id);
+            let lifted = panel.presses.up(id);
+            let mut released = lifted;
+            // What a key does on release is for a finger that lifted: a
+            // contact the system took away starts no program, and sends
+            // nothing more. Held keys still come up.
+            if let Some(key) = released.filter(|_| cancelled) {
+                if !matches!(panel.keys[key].sends, Sends::Hold(_) | Sends::Modifier { .. } | Sends::Repeat { .. }) {
+                    debug_log!("取り消された接触: キー {key} は送らない");
+                    released = None;
+                }
+            }
             // A whole sequence under a latched Ctrl would go wrong: Esc
             // would open Start, and typed text would turn into shortcuts.
             if let Some(key) = released {
@@ -823,7 +887,7 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                 }
             }
             let panel = &mut panels[i];
-            let mut sent = false;
+            let (mut sent, mut turned) = (false, None);
             if let Some(key) = released {
                 match &mut panel.keys[key].sends {
                     Sends::Hold(vk) => hold(*vk, false),
@@ -844,12 +908,18 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                     Sends::Macro(_) if panel.running.is_some() => debug_log!("マクロの実行中: 押されたマクロは送らない"),
                     Sends::Macro(_) => panel.running = Some((key, 0)),
                     Sends::Text(text) => send::text(text),
-                    Sends::Nothing => {}
+                    Sends::Run(command) => launch::run(command),
+                    Sends::Page(page) => turned = Some(page.clone()),
                 }
                 if matches!(panel.running, Some((k, 0)) if k == key) {
                     run_macro(panel);
                 }
+            }
+            if lifted.is_some() {
                 draw(panel);
+            }
+            if let Some(page) = turned {
+                turn(panel, &page);
             }
             // Only the mouse that took the capture gives it back; a finger
             // lifting meanwhile must not cut the mouse off from its button-up.
