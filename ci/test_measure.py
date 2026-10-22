@@ -23,9 +23,10 @@ FIGURES = (
 class MeasureTest(unittest.TestCase):
     # AC1
     def test_measure_reports_every_figure_for_the_release_exe(self):
-        subprocess.run(["cargo", "build", "--release"], cwd=ROOT, check=True)
+        subprocess.run(["cargo", "build", "--release"], cwd=ROOT, check=True, timeout=600)
+        idle = 2
         out = subprocess.run(
-            [sys.executable, "ci/measure.py", "--idle", "2", "--json"],
+            [sys.executable, "ci/measure.py", "--idle", str(idle), "--json"],
             cwd=ROOT, capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -36,7 +37,7 @@ class MeasureTest(unittest.TestCase):
             self.assertGreaterEqual(result[name], 0, name)
         self.assertGreater(result["exe_bytes"], 0)
         self.assertGreater(result["working_set_bytes"], 0)
-        self.assertEqual(result["idle_seconds"], 2)
+        self.assertEqual(result["idle_seconds"], idle)
 
         table = subprocess.run(
             [sys.executable, "ci/measure.py", "--idle", "1"],

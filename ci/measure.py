@@ -34,6 +34,12 @@ user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR,
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
 user32.IsWindowVisible.argtypes = [wintypes.HWND]
 kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_VM_READ = 0x0010
 
 
 class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
@@ -115,11 +121,16 @@ def measure(idle):
                 sys.exit("no panel within 10 s")
             time.sleep(0.002)
         startup_ms = (time.perf_counter() - started) * 1000
-        handle = int(app._handle)
-        before = cpu_ms(handle)
-        time.sleep(idle)
-        idle_cpu = cpu_ms(handle) - before
-        private, working_set = memory(handle)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, False, app.pid)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            before = cpu_ms(handle)
+            time.sleep(idle)
+            idle_cpu = cpu_ms(handle) - before
+            private, working_set = memory(handle)
+        finally:
+            kernel32.CloseHandle(handle)
     finally:
         app.kill()
         app.wait()
