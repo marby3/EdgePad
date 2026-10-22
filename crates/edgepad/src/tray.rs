@@ -24,6 +24,7 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
+use crate::log::debug_log;
 use crate::{autostart, panel, send, settings, watch};
 
 // The class name, TRAY_ID, TRAY_CALLBACK, the menu texts and the test
@@ -163,6 +164,7 @@ pub unsafe fn set_hotkey(hotkey: Option<Combo>) {
     if HOTKEY_ON.swap(false, Ordering::Relaxed) && unsafe { UnregisterHotKey(hwnd, HOTKEY_ID) } == 0 {
         // Still registered: a new one under the same id would fail too.
         HOTKEY_ON.store(true, Ordering::Relaxed);
+        debug_log!("ホットキー: 前のものを解除できない（新しいものは登録しない）");
         notify("ホットキーを解除できませんでした");
         return;
     }
@@ -175,7 +177,9 @@ pub unsafe fn set_hotkey(hotkey: Option<Combo>) {
     let mods = flags.iter().filter(|(m, _)| combo.mods.contains(*m)).fold(MOD_NOREPEAT, |all, (_, f)| all | f);
     if unsafe { RegisterHotKey(hwnd, HOTKEY_ID, mods, send::vk(key) as u32) } != 0 {
         HOTKEY_ON.store(true, Ordering::Relaxed);
+        debug_log!("ホットキー {combo}: 登録した");
     } else {
+        debug_log!("ホットキー {combo}: 登録できない");
         notify(&format!("ホットキー {combo} を登録できませんでした。ほかのアプリが使っているかもしれません"));
     }
 }
@@ -256,10 +260,12 @@ unsafe fn open_settings(hwnd: HWND) {
 /// Leave: let go of every held key first, then take the icon down and quit.
 unsafe fn exit(hwnd: HWND) {
     unsafe {
+        debug_log!("全キー解放: 終了");
         send::release_all();
         WTSUnRegisterSessionNotification(hwnd);
         Shell_NotifyIconW(NIM_DELETE, &icon_data(hwnd));
         PostQuitMessage(0);
+        debug_log!("終了");
     }
 }
 
@@ -270,7 +276,10 @@ unsafe fn command(hwnd: HWND, id: usize) {
             CMD_OPEN => open_settings(hwnd),
             CMD_RELOAD => watch::reload(true),
             CMD_PAUSE => panel::toggle_pause(),
-            CMD_RELEASE => panel::release_all(),
+            CMD_RELEASE => {
+                debug_log!("全キー解放: メニュー");
+                panel::release_all();
+            }
             CMD_AUTOSTART => {
                 if !autostart::toggle() {
                     notify("自動起動の設定を変えられませんでした");
@@ -311,12 +320,19 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // Locked, switched away from or going to sleep: EdgePad will not
             // hear of a finger lifting from here on, so let go of every key now.
             WM_WTSSESSION_CHANGE => {
-                if matches!(wp as u32, WTS_SESSION_LOCK | WTS_CONSOLE_DISCONNECT | WTS_REMOTE_DISCONNECT) {
+                let why = match wp as u32 {
+                    WTS_SESSION_LOCK => Some("画面ロック"),
+                    WTS_CONSOLE_DISCONNECT | WTS_REMOTE_DISCONNECT => Some("ユーザー切り替え"),
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    debug_log!("全キー解放: {why}");
                     panel::release_all();
                 }
                 0
             }
             WM_POWERBROADCAST if wp as u32 == PBT_APMSUSPEND => {
+                debug_log!("全キー解放: スリープ");
                 panel::release_all();
                 1
             }

@@ -22,6 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     QS_ALLINPUT, WM_QUIT,
 };
 
+use crate::log::debug_log;
 use crate::{panel, settings, tray};
 
 /// An editor may write a file several times for one save: read it once the
@@ -31,6 +32,10 @@ const SETTLE: Duration = Duration::from_millis(200);
 thread_local! {
     // The settings file's content as last read, usable or not.
     static SEEN: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    // The last notice of a file that could not be read at all. Reported once:
+    // each report writes the --debug log into a watched folder, which would
+    // wake this up again for the same failure.
+    static UNREADABLE: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Read the settings file and apply it if it changed since it was last read,
@@ -39,15 +44,27 @@ thread_local! {
 pub unsafe fn reload(force: bool) {
     let seen = SEEN.take();
     match settings::reload(seen.as_deref(), force) {
-        // Recorded only once every panel is up: after a failure the same
-        // content, saved again, is tried again.
+        // Recorded as read even when a panel could not be made: retrying the
+        // same content on every change in the folder would loop, as the
+        // --debug log is written there. The tray's 設定を再読込 (force), or a
+        // changed file, tries again.
         settings::Outcome::Loaded(panels, bytes) => {
+            UNREADABLE.set(None);
             let built = unsafe { panel::rebuild(&panels) };
             unsafe { tray::set_hotkey(panels.hotkey) };
-            SEEN.set(if built { Some(bytes) } else { seen });
+            match built {
+                true => debug_log!("再読込: パネル {} 枚", panels.edges.len()),
+                false => debug_log!("再読込: パネルを作れないものがあった"),
+            }
+            SEEN.set(Some(bytes));
         }
         settings::Outcome::Failed(notice, bytes) => {
-            tray::notify(&notice);
+            let again = bytes.is_none() && UNREADABLE.with_borrow(|last| last.as_deref() == Some(notice.as_str()));
+            if !again {
+                debug_log!("再読込できない（そのまま動く）: {notice}");
+                tray::notify(&notice);
+            }
+            UNREADABLE.set(if bytes.is_none() { Some(notice) } else { None });
             SEEN.set(bytes.or(seen));
         }
         settings::Outcome::Unchanged | settings::Outcome::Missing => SEEN.set(seen),
@@ -56,9 +73,12 @@ pub unsafe fn reload(force: bool) {
 
 /// Dispatch messages until WM_QUIT, applying the settings file whenever it
 /// changes, and toggling every panel whenever `toggle` (a second launch) is
-/// signalled. `seen` is the settings file's content as read at start.
-pub unsafe fn run(seen: Option<Vec<u8>>, toggle: HANDLE) {
+/// signalled. `seen` is the settings file's content as read at start, and
+/// `unreadable` the notice already given if it could not be read at all.
+pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HANDLE) {
     SEEN.set(seen);
+    // A file that could not be read at start was reported then already.
+    UNREADABLE.set(unreadable);
     let watches: Vec<HANDLE> = settings::folders()
         .iter()
         .filter_map(|dir| {

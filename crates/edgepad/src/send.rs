@@ -120,6 +120,13 @@ unsafe fn send(events: &[(u16, bool)]) {
         true => 0,
         false => (unsafe { SendInput(events.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) }) as usize,
     };
+    for (i, &(vk, down)) in events.iter().enumerate() {
+        let what = if down { "押す" } else { "離す" };
+        match i < sent {
+            true => crate::log::debug_log!("送信 0x{vk:02X} {what}"),
+            false => crate::log::debug_log!("送信できない 0x{vk:02X} {what}"),
+        }
+    }
     if sent < events.len() {
         // UIPI blocks input to an app running elevated. Posted, not shown
         // here: this may run from the panic hook.

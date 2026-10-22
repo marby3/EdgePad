@@ -81,8 +81,8 @@ fn scratch_dir() -> PathBuf {
 /// Start `exe` with %APPDATA% pointing at `appdata`, and wait until its UI
 /// thread first sits idle in its message loop. EdgePad creates the panel and
 /// the tray before entering that loop.
-fn start(exe: &Path, appdata: &Path, dir: Option<PathBuf>) -> Running {
-    let child = Command::new(exe).env("APPDATA", appdata).spawn().expect("launch edgepad.exe");
+fn start(exe: &Path, appdata: &Path, dir: Option<PathBuf>, args: &[&str]) -> Running {
+    let child = Command::new(exe).args(args).env("APPDATA", appdata).spawn().expect("launch edgepad.exe");
     let app = Running(child, dir);
     let idle = unsafe { WaitForInputIdle(app.0.as_raw_handle(), 10_000) };
     assert_eq!(idle, 0, "edgepad.exe did not become input-idle (timeout or exit)");
@@ -99,6 +99,11 @@ pub fn launch() -> Running {
 /// Launch a copy of the exe from a scratch folder, with `beside_exe` written
 /// as edgepad.ini next to it and `in_appdata` as %APPDATA%\EdgePad\edgepad.ini.
 pub fn launch_with(beside_exe: Option<&str>, in_appdata: Option<&str>) -> Running {
+    launch_with_args(beside_exe, in_appdata, &[])
+}
+
+/// As `launch_with`, passing `args` on the command line.
+pub fn launch_with_args(beside_exe: Option<&str>, in_appdata: Option<&str>, args: &[&str]) -> Running {
     let dir = scratch_dir();
     let (bin, appdata) = (dir.join("bin"), dir.join("appdata"));
     std::fs::create_dir_all(&bin).unwrap();
@@ -111,7 +116,7 @@ pub fn launch_with(beside_exe: Option<&str>, in_appdata: Option<&str>) -> Runnin
     if let Some(text) = in_appdata {
         std::fs::write(appdata.join("EdgePad").join("edgepad.ini"), text).unwrap();
     }
-    start(&exe, &appdata, Some(dir))
+    start(&exe, &appdata, Some(dir), args)
 }
 
 /// The folder holding the copy of the exe that `app` runs.
