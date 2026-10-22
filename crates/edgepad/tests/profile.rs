@@ -4,12 +4,13 @@
 //! Two apps take turns in the foreground: this test process, and a copy of
 //! it under another name that only opens a window (`other_app`). A profile
 //! names this test's own executable, so which one is in front decides the
-//! profile EdgePad shows.
+//! profile EdgePad shows. Each turn opens a new window (see `wait_in_front`).
 
 mod common;
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HWND, RECT};
@@ -37,9 +38,12 @@ fn me() -> String {
     std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned()
 }
 
-/// Start the other app and return it with its window.
+/// Start the other app, a new one each time, and return it once its window
+/// is in front.
 fn other_app_window() -> (Running, HWND) {
-    let dir = std::env::temp_dir().join(format!("edgepad-other-app-{}", std::process::id()));
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("edgepad-other-app-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let exe: PathBuf = dir.join("edgepad-other-app.exe");
@@ -51,14 +55,17 @@ fn other_app_window() -> (Running, HWND) {
         .expect("start the other app");
     let other = Running(child, Some(dir));
     let hwnd = find_window(&other, OTHER_CLASS, true);
+    wait_in_front(hwnd);
     (other, hwnd)
 }
 
-/// A window of this process, to bring to the front.
+/// A new window of this process, once it is in front.
 fn my_window() -> TestWindow {
     let m = primary_monitor();
     let r = RECT { left: m.left + 400, top: m.top + 350, right: m.left + 700, bottom: m.top + 550 };
-    test_window("EdgePadTestMyApp", 0, r)
+    let window = test_window("EdgePadTestMyApp", 0, r);
+    wait_in_front(window.0);
+    window
 }
 
 /// How many keys tall the left panel of `app` is now; 0 without one.
@@ -94,16 +101,14 @@ fn settings(mine: &str) -> String {
 #[test]
 fn the_panels_follow_the_profile_of_the_app_in_front() {
     let _desktop = desktop();
-    let mine = my_window();
-    click_to_front(mine.0);
+    let _mine = my_window();
     let app = launch_with(Some(&settings("left = three\n")), None);
     wait_for_left_keys(&app, 3, "started with this app in front");
 
-    let (_other, other) = other_app_window();
-    click_to_front(other);
+    let _other = other_app_window();
     wait_for_left_keys(&app, 2, "another app in front: the default profile");
 
-    click_to_front(mine.0);
+    let _mine = my_window();
     wait_for_left_keys(&app, 3, "this app in front again");
 }
 
@@ -111,17 +116,17 @@ fn the_panels_follow_the_profile_of_the_app_in_front() {
 #[test]
 fn a_profile_naming_no_edges_shows_no_panel() {
     let _desktop = desktop();
-    let (_other, other) = other_app_window();
-    click_to_front(other);
+    // This process in front first, so that the app it starts comes to the front.
+    let _mine = my_window();
+    let _other = other_app_window();
     let app = launch_with(Some(&settings("")), None);
     wait_for_left_keys(&app, 2, "the default profile");
 
-    let mine = my_window();
-    click_to_front(mine.0);
+    let _mine = my_window();
     wait_for_left_keys(&app, 0, "this app's profile shows nothing");
     assert_eq!(panels_now(&app).len(), 0, "no panel on any edge");
 
-    click_to_front(other);
+    let _other = other_app_window();
     wait_for_left_keys(&app, 2, "back to the default profile");
 }
 
@@ -131,8 +136,8 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
     let _desktop = desktop();
     // This process is not named by any profile: both apps get the default.
     let text = settings("").replace(&format!("process = {}", me()), "process = nothing-here.exe");
-    let (_other, other) = other_app_window();
-    click_to_front(other);
+    let _mine = my_window();
+    let _other = other_app_window();
     let app = launch_with(Some(&text), None);
     let panel = left_panel(&app);
     let log = KeyLog::start();
@@ -140,8 +145,7 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
 
     touch.down(1, key_centre(panel, 1));
     touch.hold(300);
-    let mine = my_window();
-    click_to_front(mine.0);
+    let _mine = my_window();
     pump(300);
     assert_eq!(log.keys(), [(b'A' as u16, false)], "same profile: A stays down");
     touch.up(1);
@@ -149,8 +153,8 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
 
     // Now with this process named: switching lets go.
     drop(app);
+    let _other = other_app_window();
     let app = launch_with(Some(&settings("left = three\n")), None);
-    click_to_front(other);
     wait_for_left_keys(&app, 2, "the default profile");
     let panel = left_panel(&app);
     let before = log.keys().len();
@@ -160,7 +164,7 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
     touch.hold(300);
     assert_eq!(log.keys()[before..], [(VK_LCONTROL, false), (b'A' as u16, false)], "Ctrl latched, A held");
 
-    click_to_front(mine.0);
+    let _mine = my_window();
     wait_for_left_keys(&app, 3, "this app's profile");
     let mut released = log.keys()[before + 2..].to_vec();
     released.sort();
