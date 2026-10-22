@@ -49,7 +49,10 @@ pub unsafe fn create_left() -> HWND {
         if hwnd.is_null() {
             return hwnd;
         }
-        draw(hwnd, r, key);
+        if !draw(hwnd, r, key) {
+            DestroyWindow(hwnd);
+            return null_mut();
+        }
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         hwnd
     }
@@ -81,8 +84,8 @@ unsafe fn primary_monitor() -> Rect {
 
 /// Paint the keys into a 32-bit DIB and hand it to the window with
 /// UpdateLayeredWindow. The DIB is freed right after; the window keeps its
-/// own copy, so nothing is held between redraws.
-unsafe fn draw(hwnd: HWND, r: Rect, key: i32) {
+/// own copy, so nothing is held between redraws. Returns false on failure.
+unsafe fn draw(hwnd: HWND, r: Rect, key: i32) -> bool {
     unsafe {
         let screen = GetDC(null_mut());
         let mem = CreateCompatibleDC(screen);
@@ -95,6 +98,11 @@ unsafe fn draw(hwnd: HWND, r: Rect, key: i32) {
         bmi.bmiHeader.biCompression = BI_RGB;
         let mut bits = null_mut();
         let dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if dib.is_null() || bits.is_null() {
+            DeleteDC(mem);
+            ReleaseDC(null_mut(), screen);
+            return false;
+        }
         let old_bitmap = SelectObject(mem, dib);
 
         let background = CreateSolidBrush(PANEL_BG);
@@ -153,7 +161,7 @@ unsafe fn draw(hwnd: HWND, r: Rect, key: i32) {
             SourceConstantAlpha: OPACITY,
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
-        UpdateLayeredWindow(
+        let shown = UpdateLayeredWindow(
             hwnd,
             screen,
             &POINT { x: r.x, y: r.y },
@@ -163,11 +171,12 @@ unsafe fn draw(hwnd: HWND, r: Rect, key: i32) {
             0,
             &blend,
             ULW_ALPHA,
-        );
+        ) != 0;
 
         SelectObject(mem, old_bitmap);
         DeleteObject(dib);
         DeleteDC(mem);
         ReleaseDC(null_mut(), screen);
+        shown
     }
 }

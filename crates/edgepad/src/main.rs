@@ -5,6 +5,7 @@
 mod panel;
 
 use std::mem::zeroed;
+use std::process::ExitCode;
 use std::ptr::null_mut;
 
 use windows_sys::Win32::UI::HiDpi::{
@@ -12,12 +13,12 @@ use windows_sys::Win32::UI::HiDpi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG};
 
-fn main() {
+fn main() -> ExitCode {
     unsafe {
         // Per-monitor awareness arrives with multi-monitor support (v0.2).
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
         if panel::create_left().is_null() {
-            return;
+            return ExitCode::FAILURE;
         }
         // Everything is message driven: no timers, no polling.
         let mut msg: MSG = zeroed();
@@ -25,4 +26,5 @@ fn main() {
             DispatchMessageW(&msg);
         }
     }
+    ExitCode::SUCCESS
 }
