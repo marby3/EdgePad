@@ -6,6 +6,7 @@ mod common;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+use windows_sys::Win32::Graphics::Dwm::DwmFlush;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use common::*;
 
@@ -49,6 +50,15 @@ fn wait_handle(app: &Running, edge: &str) -> Option<RECT> {
         }
         pump(20);
     }
+}
+
+/// The handle on `edge`, once it can be touched. As with a new panel (see
+/// `find_panel`), touch reaches a new window only after the compositor has
+/// drawn it; before that the contact turns into mouse input.
+fn touchable_handle(app: &Running, edge: &str) -> RECT {
+    let handle = wait_handle(app, edge).expect("handle");
+    assert_eq!(unsafe { DwmFlush() }, 0, "DwmFlush failed");
+    handle
 }
 
 /// Which sides have a visible panel, as "left" / "right".
@@ -121,7 +131,7 @@ fn swiping_inward_from_the_handle_shows_the_panel() {
     let app = launch_with(Some("[set.pad]\nkey = A | hold | A\n[profile.default]\nleft = pad\n"), None);
     find_panel(&app);
     choose(&app, "左辺");
-    let handle = handle_on(&app, "left").expect("handle");
+    let handle = touchable_handle(&app, "left");
 
     let start = centre(handle);
     let mut touch = Touch::new();
@@ -143,7 +153,7 @@ fn tapping_or_clicking_the_handle_shows_the_panel() {
 
     choose(&app, "左辺");
     let mut touch = Touch::new();
-    touch.down(1, centre(handle_on(&app, "left").expect("handle")));
+    touch.down(1, centre(touchable_handle(&app, "left")));
     touch.up(1);
     pump(200);
     assert_eq!(shown(&app), ["left"], "a tap shows the panel");
@@ -152,7 +162,7 @@ fn tapping_or_clicking_the_handle_shows_the_panel() {
     choose(&app, "左辺");
     let mut saved = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut saved) };
-    click(centre(handle_on(&app, "left").expect("handle")));
+    click(centre(touchable_handle(&app, "left")));
     unsafe { SetCursorPos(saved.x, saved.y) };
     pump(200);
     assert_eq!(shown(&app), ["left"], "a click shows the panel");
