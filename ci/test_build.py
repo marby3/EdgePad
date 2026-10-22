@@ -12,24 +12,37 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXE = ROOT / "target" / "release" / "edgepad.exe"
-MAX_EXE_BYTES = 500 * 1024
+MAX_EXE_BYTES = 500 * 1024  # 500 KiB
+IMAGE_FILE_MACHINE_AMD64 = 0x8664
 FORBIDDEN_DLL_PREFIXES = ("vcruntime", "ucrtbase", "api-ms-win-crt-")
 IMAGE_SUBSYSTEM_WINDOWS_GUI = 2
 
 
 def read_pe(path):
-    """Return (subsystem, [imported dll names]) of a PE32+ image."""
-    data = path.read_bytes()
+    """Return (machine, subsystem, [imported dll names]) of a PE32+ image.
+
+    Both the import and the delay-import directories are read. A truncated
+    or malformed image raises ValueError.
+    """
+    try:
+        return _read_pe(path.read_bytes())
+    except (struct.error, IndexError, UnicodeDecodeError) as e:
+        raise ValueError(f"malformed PE image: {e}") from e
+
+
+def _read_pe(data):
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     if data[pe:pe + 4] != b"PE\0\0":
         raise ValueError("not a PE image")
-    sections_count = struct.unpack_from("<H", data, pe + 6)[0]
+    machine, sections_count = struct.unpack_from("<HH", data, pe + 4)
     optional_size = struct.unpack_from("<H", data, pe + 20)[0]
     optional = pe + 24
     if struct.unpack_from("<H", data, optional)[0] != 0x20B:
         raise ValueError("not PE32+")
     subsystem = struct.unpack_from("<H", data, optional + 68)[0]
-    import_rva = struct.unpack_from("<I", data, optional + 112 + 8)[0]
+    directories = optional + 112
+    import_rva = struct.unpack_from("<I", data, directories + 1 * 8)[0]
+    delay_import_rva = struct.unpack_from("<I", data, directories + 13 * 8)[0]
 
     sections = []
     table = optional + optional_size
@@ -44,17 +57,23 @@ def read_pe(path):
                 return rva - vaddr + raw_ptr
         raise ValueError(f"rva {rva:#x} outside sections")
 
-    dlls = []
-    if import_rva:
-        desc = offset(import_rva)
-        while True:
-            fields = struct.unpack_from("<IIIII", data, desc)
-            if not any(fields):
-                break
-            name = offset(fields[3])
-            dlls.append(data[name:data.index(b"\0", name)].decode("ascii"))
-            desc += 20
-    return subsystem, dlls
+    def dll_names(directory_rva, descriptor_format, name_field):
+        names = []
+        if directory_rva:
+            desc = offset(directory_rva)
+            while True:
+                fields = struct.unpack_from(descriptor_format, data, desc)
+                if not any(fields):
+                    break
+                name = offset(fields[name_field])
+                names.append(data[name:data.index(b"\0", name)].decode("ascii"))
+                desc += struct.calcsize(descriptor_format)
+        return names
+
+    # IMAGE_IMPORT_DESCRIPTOR: 5 dwords, Name is the 4th.
+    # IMAGE_DELAYLOAD_DESCRIPTOR: 8 dwords, DllNameRVA is the 2nd.
+    dlls = dll_names(import_rva, "<IIIII", 3) + dll_names(delay_import_rva, "<IIIIIIII", 1)
+    return machine, subsystem, dlls
 
 
 class BuildTest(unittest.TestCase):
@@ -79,19 +98,21 @@ class BuildTest(unittest.TestCase):
     # AC2
     def test_release_exe_is_at_most_500kb(self):
         self.assertTrue(EXE.is_file(), f"{EXE} was not built")
+        machine, _, _ = read_pe(EXE)
+        self.assertEqual(machine, IMAGE_FILE_MACHINE_AMD64)
         self.assertLessEqual(EXE.stat().st_size, MAX_EXE_BYTES)
 
     # AC3
     def test_release_exe_links_crt_statically(self):
         self.assertTrue(EXE.is_file(), f"{EXE} was not built")
-        _, dlls = read_pe(EXE)
+        _, _, dlls = read_pe(EXE)
         bad = [d for d in dlls if d.lower().startswith(FORBIDDEN_DLL_PREFIXES)]
         self.assertEqual(bad, [], f"imports: {dlls}")
 
     # AC4
     def test_release_exe_is_gui_subsystem_and_exits_zero(self):
         self.assertTrue(EXE.is_file(), f"{EXE} was not built")
-        subsystem, _ = read_pe(EXE)
+        _, subsystem, _ = read_pe(EXE)
         self.assertEqual(subsystem, IMAGE_SUBSYSTEM_WINDOWS_GUI)
         result = subprocess.run([str(EXE)], timeout=10)
         self.assertEqual(result.returncode, 0)
