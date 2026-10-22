@@ -9,7 +9,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx};
+use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows_sys::Win32::UI::Shell::ShellLink;
 use windows_sys::core::{GUID, HRESULT};
 
@@ -71,8 +71,19 @@ pub unsafe fn toggle() -> bool {
 
 unsafe fn create(link: &Path, exe: &Path) -> bool {
     unsafe {
-        // Already initialised on this thread is fine (S_FALSE).
-        CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32);
+        // Already initialised on this thread is fine (S_FALSE); either way
+        // it is balanced by CoUninitialize below.
+        let initialised = CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) >= 0;
+        let made = with_link(link, exe);
+        if initialised {
+            CoUninitialize();
+        }
+        made
+    }
+}
+
+unsafe fn with_link(link: &Path, exe: &Path) -> bool {
+    unsafe {
         let mut shell_link: *mut c_void = null_mut();
         if CoCreateInstance(&ShellLink, null_mut(), CLSCTX_INPROC_SERVER, &IID_ISHELLLINKW, &mut shell_link) < 0 {
             return false;

@@ -126,7 +126,8 @@ pub fn reload(seen: Option<&[u8]>, force: bool) -> Outcome {
 
 /// The first error, with its line, and how many more there are.
 fn notice(errors: &[config::Error]) -> String {
-    let Some(first) = errors.first() else { return format!("{FILE} を読めません") };
+    // The parser never fails without saying why.
+    let first = &errors[0];
     let mut text = match first.line {
         0 => format!("{FILE}: {}", first.reason),
         n => format!("{FILE} の {n} 行目: {}", first.reason),

@@ -97,10 +97,15 @@ fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
     data
 }
 
-/// Copy `text` into a fixed UTF-16 field, cut to fit with its terminator.
+/// Copy `text` into a fixed UTF-16 field, cut to fit with its terminator,
+/// never between the halves of a surrogate pair.
 fn fill(dst: &mut [u16], text: &str) {
-    let room = dst.len() - 1;
-    for (d, s) in dst[..room].iter_mut().zip(text.encode_utf16()) {
+    let mut room = dst.len() - 1;
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.len() > room && (0xD800..0xDC00).contains(&units[room - 1]) {
+        room -= 1;
+    }
+    for (d, s) in dst[..room].iter_mut().zip(units) {
         *d = s;
     }
 }
