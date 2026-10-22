@@ -46,7 +46,7 @@ fn main() -> ExitCode {
             (None, None) => log::debug_log!("設定ファイルなし: 固定のキーで動く"),
         }
         for p in &panels.edges {
-            if !panel::create(p, panels.key_size) {
+            if !panel::create(p, &panels) {
                 log::debug_log!("終了（パネルを作れない）");
                 return ExitCode::FAILURE;
             }

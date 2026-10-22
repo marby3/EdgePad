@@ -10,6 +10,7 @@ use edgepad_core::config::{Action, Edge, Handle, Monitor};
 use edgepad_core::gesture::{self, Swipe};
 use edgepad_core::keys::{Key, Mods};
 use edgepad_core::layout::{self, Rect};
+use edgepad_core::modifier::{LatchMode, Modifier};
 use edgepad_core::press::Presses;
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
@@ -32,6 +33,8 @@ const PANEL_BG: u32 = 0x0020_2020;
 const KEY_FACE: u32 = 0x003A_3A3A;
 /// Face of a held key: accent blue, RGB(0, 120, 215).
 const KEY_HELD: u32 = 0x00D7_7800;
+/// Face of a latched modifier: deeper blue, RGB(0, 70, 140).
+const KEY_LATCHED: u32 = 0x008C_4600;
 const KEY_TEXT: u32 = 0x00F0_F0F0;
 /// The handle: light grey, 30% opaque. A placeholder until themes (v0.4)
 /// give it a colour of their own.
@@ -52,6 +55,8 @@ struct PanelKey {
 enum Sends {
     /// Down while pressed, up on release.
     Hold(u16),
+    /// As Hold, but a short tap latches it down (spec 4.3).
+    Modifier { vk: u16, state: Modifier },
     /// The whole combination on release: modifiers, then the key.
     Shortcut { mods: Vec<u16>, key: Option<u16> },
     /// Kinds that send nothing yet.
@@ -61,7 +66,8 @@ enum Sends {
 impl Sends {
     fn of(action: &Action) -> Sends {
         match action {
-            Action::Modifier(key) | Action::Hold(key) => Sends::Hold(send::vk(*key)),
+            Action::Modifier(key) => Sends::Modifier { vk: send::vk(*key), state: Modifier::Up },
+            Action::Hold(key) => Sends::Hold(send::vk(*key)),
             Action::Shortcut(combo) => {
                 let order = [(Mods::CTRL, Key::Ctrl), (Mods::SHIFT, Key::Shift), (Mods::ALT, Key::Alt), (Mods::WIN, Key::Win)];
                 let mods = order.iter().filter(|(m, _)| combo.mods.contains(*m)).map(|&(_, k)| send::vk(k)).collect();
@@ -79,6 +85,9 @@ struct Panel {
     lines: usize,
     /// Side of a key in logical pixels.
     key_size: u32,
+    /// A modifier tapped for less than this latches.
+    latch_time: Duration,
+    latch_mode: LatchMode,
     /// The panel on screen, and the side of a key, in pixels at the current DPI.
     rect: Rect,
     key: i32,
@@ -195,11 +204,11 @@ unsafe fn create_handle() -> HWND {
     }
 }
 
-/// Create and show the panel `p`, keys `key_size` logical pixels square at
-/// the DPI of the monitor it goes on. Keys that do not fit are left out; with
-/// none left, no panel is made. Returns false if the window could not be
-/// created.
-pub unsafe fn create(p: &EdgePanel, key_size: u32) -> bool {
+/// Create and show the panel `p` of `panels`, keys as many logical pixels
+/// square as they say at the DPI of the monitor it goes on. Keys that do not
+/// fit are left out; with none left, no panel is made. Returns false if the
+/// window could not be created.
+pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
     unsafe {
         let instance = GetModuleHandleW(null());
         let mut wc: WNDCLASSW = zeroed();
@@ -247,7 +256,9 @@ pub unsafe fn create(p: &EdgePanel, key_size: u32) -> bool {
             edge,
             monitor,
             lines,
-            key_size,
+            key_size: panels.key_size,
+            latch_time: Duration::from_millis(panels.latch_ms as u64),
+            latch_mode: panels.latch,
             rect,
             key: 0,
             keys,
@@ -304,7 +315,7 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
             }
         }
         // Every edge is tried, even after one fails.
-        panels.edges.iter().fold(true, |ok, p| create(p, panels.key_size) && ok)
+        panels.edges.iter().fold(true, |ok, p| create(p, panels) && ok)
     }
 }
 
@@ -381,13 +392,18 @@ unsafe fn apply_visibility() {
     });
 }
 
-/// Release the keys held on `panel` and forget its pointers. A shortcut
-/// still under a finger is dropped, not sent.
+/// Release the keys held or latched on `panel` and forget its pointers. A
+/// shortcut still under a finger is dropped, not sent.
 unsafe fn let_go(panel: &mut Panel) {
     unsafe {
-        for (i, key) in panel.keys.iter().enumerate() {
-            if let (true, Sends::Hold(vk)) = (panel.presses.is_down(i), &key.sends) {
-                hold(*vk, false);
+        for (i, key) in panel.keys.iter_mut().enumerate() {
+            let up = match &mut key.sends {
+                Sends::Hold(vk) => panel.presses.is_down(i).then_some(*vk),
+                Sends::Modifier { vk, state } => state.let_go().then_some(*vk),
+                _ => None,
+            };
+            if let Some(vk) = up {
+                hold(vk, false);
             }
         }
         panel.presses = Presses::new(panel.keys.len());
@@ -488,8 +504,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 pointer_down(hwnd, wp, lp);
                 0
             }
-            WM_POINTERUP | WM_POINTERCAPTURECHANGED => {
-                pointer_up(hwnd, wp);
+            WM_POINTERUP => {
+                pointer_up(hwnd, wp, (wp >> 16) as u32 & POINTER_MESSAGE_FLAG_CANCELED != 0);
+                0
+            }
+            WM_POINTERCAPTURECHANGED => {
+                pointer_up(hwnd, wp, true);
                 0
             }
             WM_POINTERUPDATE => {
@@ -621,10 +641,15 @@ unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
 /// run: moving a panel onto a monitor of another DPI makes Windows send
 /// WM_DPICHANGED from inside the draw that moved it.
 fn with_panel(hwnd: HWND, f: impl FnOnce(&mut Panel)) -> bool {
+    with_panels(hwnd, |panels, i| f(&mut panels[i]))
+}
+
+/// As `with_panel`, giving `f` every panel and the index of `hwnd`'s.
+fn with_panels(hwnd: HWND, f: impl FnOnce(&mut [Panel], usize)) -> bool {
     PANELS.with(|panels| {
         let Ok(mut panels) = panels.try_borrow_mut() else { return false };
-        if let Some(panel) = panels.iter_mut().find(|p| p.hwnd == hwnd) {
-            f(panel);
+        if let Some(i) = panels.iter().position(|p| p.hwnd == hwnd) {
+            f(&mut panels, i);
         }
         true
     })
@@ -663,13 +688,15 @@ unsafe fn hold(vk: u16, down: bool) {
 }
 
 /// A pointer went down: press the key under it, unless it is a pen. The key
-/// stays held by this pointer until it lifts, wherever it moves.
+/// stays held by this pointer until it lifts, wherever it moves. Modifiers
+/// held meanwhile, on any panel, no longer latch.
 unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     unsafe {
         let id = pointer_id(wp);
         let Some(kind) = finger_or_mouse(id) else { return };
         let (sx, sy) = pointer_at(lp);
-        with_panel(hwnd, |panel| {
+        with_panels(hwnd, |panels, i| {
+            let panel = &mut panels[i];
             panel.starts.retain(|s| s.id != id);
             panel.starts.push(Start { hwnd, id, x: sx, y: sy, at: Instant::now() });
             if kind == PT_MOUSE {
@@ -682,27 +709,49 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             let Some(key) = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y))) else {
                 return;
             };
-            if let Some(key) = panel.presses.down(id, key) {
-                // Send first, draw after: the key reaches the app sooner.
-                if let Sends::Hold(vk) = panel.keys[key].sends {
-                    hold(vk, true);
+            let Some(key) = panel.presses.down(id, key) else { return };
+            // The key just pressed is up or latched, which this leaves alone.
+            for k in panels.iter_mut().flat_map(|p| &mut p.keys) {
+                if let Sends::Modifier { state, .. } = &mut k.sends {
+                    state.other_key();
                 }
-                draw(panel);
             }
+            let panel = &mut panels[i];
+            // Send first, draw after: the key reaches the app sooner.
+            let down = match &mut panel.keys[key].sends {
+                Sends::Hold(vk) => Some(*vk),
+                Sends::Modifier { vk, state } => state.press(Instant::now()).then_some(*vk),
+                _ => None,
+            };
+            if let Some(vk) = down {
+                hold(vk, true);
+            }
+            draw(panel);
         });
     }
 }
 
-/// A pointer lifted or was cancelled: release its key if nobody else holds it.
-unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
+/// A pointer lifted, or was taken away (`cancelled`): release its key if
+/// nobody else holds it. A modifier tapped briefly latches instead, and a
+/// shortcut sent ends the one-shot latches.
+unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
     unsafe {
         let id = pointer_id(wp);
-        with_panel(hwnd, |panel| {
+        with_panels(hwnd, |panels, i| {
+            let panel = &mut panels[i];
             panel.starts.retain(|s| s.id != id);
+            let mut sent = false;
             if let Some(key) = panel.presses.up(id) {
-                match &panel.keys[key].sends {
+                match &mut panel.keys[key].sends {
                     Sends::Hold(vk) => hold(*vk, false),
-                    Sends::Shortcut { mods, key } => send::shortcut(mods, *key),
+                    Sends::Modifier { vk, state } => match state.release(Instant::now(), panel.latch_time, cancelled) {
+                        true => hold(*vk, false),
+                        false => debug_log!("ラッチ 0x{vk:02X}"),
+                    },
+                    Sends::Shortcut { mods, key } => {
+                        send::shortcut(mods, *key);
+                        sent = true;
+                    }
                     Sends::Nothing => {}
                 }
                 draw(panel);
@@ -713,7 +762,30 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
                 panel.captured = None;
                 ReleaseCapture();
             }
+            if sent {
+                let mode = panel.latch_mode;
+                shortcut_sent(panels, mode);
+            }
         });
+    }
+}
+
+/// A shortcut went out: under one-shot latches, let go of every latched
+/// modifier on every panel.
+unsafe fn shortcut_sent(panels: &mut [Panel], mode: LatchMode) {
+    for panel in panels {
+        let mut changed = false;
+        for key in &mut panel.keys {
+            if let Sends::Modifier { vk, state } = &mut key.sends {
+                if state.shortcut_sent(mode) {
+                    unsafe { hold(*vk, false) };
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            unsafe { draw(panel) };
+        }
     }
 }
 
@@ -747,6 +819,7 @@ unsafe fn draw(panel: &Panel) -> bool {
 
         let face = CreateSolidBrush(KEY_FACE);
         let held = CreateSolidBrush(KEY_HELD);
+        let latched_face = CreateSolidBrush(KEY_LATCHED);
         let font = CreateFontW(
             -(key * 2 / 7),
             0,
@@ -774,7 +847,12 @@ unsafe fn draw(panel: &Panel) -> bool {
         for (i, k) in panel.keys.iter().enumerate() {
             let Some(at) = k.rect else { continue };
             let mut cell = RECT { left: at.x + gap, top: at.y + gap, right: at.x + at.w - gap, bottom: at.y + at.h - gap };
-            SelectObject(mem, if panel.presses.is_down(i) { held } else { face });
+            let latched = matches!(k.sends, Sends::Modifier { state, .. } if state.is_latched());
+            SelectObject(mem, match () {
+                _ if panel.presses.is_down(i) => held,
+                _ if latched => latched_face,
+                _ => face,
+            });
             RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
             DrawTextW(mem, k.label.as_ptr(), k.label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
@@ -785,6 +863,7 @@ unsafe fn draw(panel: &Panel) -> bool {
         DeleteObject(font);
         DeleteObject(face);
         DeleteObject(held);
+        DeleteObject(latched_face);
 
         // GDI leaves alpha at 0; make every pixel opaque and let the constant
         // alpha below give the panel its 90%.
