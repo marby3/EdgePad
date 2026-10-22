@@ -122,10 +122,12 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     unsafe {
         let id = pointer_id(wp);
         let mut kind = 0;
-        if GetPointerType(id, &mut kind) == 0 || kind == PT_PEN {
+        let got = GetPointerType(id, &mut kind);
+        let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
+        send::diag(format_args!("DOWN id={id} type_ok={got} kind={kind} at=({x},{y})"));
+        if got == 0 || kind == PT_PEN {
             return;
         }
-        let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
         PANEL.with_borrow_mut(|panel| {
             let Some(panel) = panel else { return };
             let Some(key) = layout::key_at(panel.rect, panel.key, x, y) else { return };
@@ -147,6 +149,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
 unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
     unsafe {
         let id = pointer_id(wp);
+        send::diag(format_args!("UP/CAPTURECHANGED id={id}"));
         PANEL.with_borrow_mut(|panel| {
             let Some(panel) = panel else { return };
             if let Some(key) = panel.presses.up(id) {

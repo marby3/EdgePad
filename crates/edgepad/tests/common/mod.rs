@@ -59,7 +59,11 @@ impl Drop for Running {
 }
 
 pub fn launch() -> Running {
-    Running(Command::new(env!("CARGO_BIN_EXE_edgepad")).spawn().expect("launch edgepad.exe"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_edgepad"));
+    if let Some(dir) = std::env::var_os("EDGEPAD_DIAG") {
+        cmd.env("EDGEPAD_DIAG", dir);
+    }
+    Running(cmd.spawn().expect("launch edgepad.exe"))
 }
 
 /// Pump this thread's messages for `ms` so test windows stay painted.
@@ -286,6 +290,9 @@ pub unsafe extern "system" fn keyboard_hook(code: i32, wp: WPARAM, lp: LPARAM) -
         if code == HC_ACTION as i32 {
             let k = &*(lp as *const KBDLLHOOKSTRUCT);
             if k.flags & LLKHF_INJECTED != 0 {
+                if std::env::var_os("EDGEPAD_DIAG").is_some() {
+                    eprintln!("HOOK vk={:#x} up={} extra={:#x}", k.vkCode, k.flags & LLKHF_UP != 0, k.dwExtraInfo);
+                }
                 EVENTS.lock().unwrap().push((k.vkCode as u16, k.flags & LLKHF_UP != 0, k.dwExtraInfo));
                 return 1;
             }
@@ -442,6 +449,10 @@ impl Touch {
             let mut frame = moving(&active);
             frame.push(touch_info(id, p, POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT));
             inject(&frame).expect("InjectTouchInput (down)");
+            if std::env::var_os("EDGEPAD_DIAG").is_some() {
+                let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000;
+                eprintln!("{t} INJECT DOWN id={id} at=({},{})", p.x, p.y);
+            }
             active.push((id, p));
         }
         pump(100);
