@@ -74,12 +74,11 @@ right = other
     touch.up(1);
     assert_eq!(log.keys()[2..], [(VK_LSHIFT, false), (VK_LSHIFT, true)]);
 
-    for i in [2, 3] {
-        touch.down(1, key_centre(panel, i));
-        touch.hold(200);
-        touch.up(1);
-    }
-    assert_eq!(log.keys().len(), 4, "repeat and text keys send nothing yet (v0.3): {:?}", log.keys());
+    // The repeat key has tests of its own (tests/repeat.rs).
+    touch.down(1, key_centre(panel, 3));
+    touch.hold(200);
+    touch.up(1);
+    assert_eq!(log.keys().len(), 4, "text keys send nothing yet (v0.3): {:?}", log.keys());
 }
 
 // AC5
