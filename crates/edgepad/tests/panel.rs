@@ -68,7 +68,7 @@ fn clicking_the_panel_keeps_focus_on_the_previous_foreground_window() {
 
     let mut saved = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut saved) };
-    click((panel.left + panel.right) / 2, (panel.top + panel.bottom) / 2);
+    click(POINT { x: (panel.left + panel.right) / 2, y: (panel.top + panel.bottom) / 2 });
     pump(300);
     unsafe { SetCursorPos(saved.x, saved.y) };
 

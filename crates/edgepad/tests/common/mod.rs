@@ -224,16 +224,23 @@ pub fn cpu_time_100ns(app: &Running) -> u64 {
     }
 }
 
-pub fn click(x: i32, y: i32) {
+/// Move the mouse to `p` and apply `buttons` in one injected event, so a
+/// real mouse moving at the same time cannot put the click somewhere else.
+pub fn mouse_at(p: POINT, buttons: MOUSE_EVENT_FLAGS) {
     unsafe {
-        SetCursorPos(x, y);
-        let mut inputs: [INPUT; 2] = zeroed();
-        inputs[0].r#type = INPUT_MOUSE;
-        inputs[0].Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-        inputs[1].r#type = INPUT_MOUSE;
-        inputs[1].Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-        SendInput(2, inputs.as_ptr(), size_of::<INPUT>() as i32);
+        let (w, h) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+        let mut input: INPUT = zeroed();
+        input.r#type = INPUT_MOUSE;
+        input.Anonymous.mi.dx = (p.x * 65535 + (w - 1) / 2) / (w - 1);
+        input.Anonymous.mi.dy = (p.y * 65535 + (h - 1) / 2) / (h - 1);
+        input.Anonymous.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | buttons;
+        SendInput(1, &input, size_of::<INPUT>() as i32);
     }
+}
+
+pub fn click(p: POINT) {
+    mouse_at(p, MOUSEEVENTF_LEFTDOWN);
+    mouse_at(p, MOUSEEVENTF_LEFTUP);
 }
 
 /// Bring `hwnd` to the foreground even though this process is in the background.

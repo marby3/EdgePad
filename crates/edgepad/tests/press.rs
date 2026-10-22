@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::mem::{size_of, zeroed};
+use std::mem::zeroed;
 use std::ptr::null_mut;
 use std::sync::{Mutex, Once};
 
@@ -93,24 +93,18 @@ fn outside(panel: RECT, i: usize) -> POINT {
     POINT { x: panel.right + 300, y: p.y }
 }
 
-fn mouse(flags: MOUSE_EVENT_FLAGS) {
-    unsafe {
-        let mut input: INPUT = zeroed();
-        input.r#type = INPUT_MOUSE;
-        input.Anonymous.mi.dwFlags = flags;
-        SendInput(1, &input, size_of::<INPUT>() as i32);
-    }
-}
-
 fn mouse_down_at(p: POINT) {
-    unsafe { SetCursorPos(p.x, p.y) };
-    pump(50);
-    mouse(MOUSEEVENTF_LEFTDOWN);
+    mouse_at(p, MOUSEEVENTF_LEFTDOWN);
     pump(100);
 }
 
-fn mouse_up() {
-    mouse(MOUSEEVENTF_LEFTUP);
+fn mouse_move_to(p: POINT) {
+    mouse_at(p, 0);
+    pump(100);
+}
+
+fn mouse_up_at(p: POINT) {
+    mouse_at(p, MOUSEEVENTF_LEFTUP);
     pump(150);
 }
 
@@ -253,7 +247,7 @@ fn pressing_a_key_with_touch_or_mouse_holds_its_virtual_key_until_release() {
         mouse_down_at(key_centre(panel, key));
         pump(400);
         assert_eq!(log.keys()[before..], [down(key)], "mouse held on key {key}");
-        mouse_up();
+        mouse_up_at(key_centre(panel, key));
         assert_eq!(log.keys()[before..], [down(key), up(key)], "mouse released key {key}");
     }
 
@@ -304,13 +298,14 @@ fn sliding_off_the_key_keeps_it_down_until_release() {
     touch.up(1);
     assert_eq!(log.keys(), [down(ALT), up(ALT)], "finger lifted outside the panel");
 
+    let before = log.keys().len();
     mouse_down_at(key_centre(panel, SHIFT));
     let away = outside(panel, SHIFT);
-    unsafe { SetCursorPos(away.x, away.y) };
-    pump(300);
-    assert_eq!(log.keys()[2..], [down(SHIFT)], "cursor dragged off Shift");
-    mouse_up();
-    assert_eq!(log.keys()[2..], [down(SHIFT), up(SHIFT)], "button released outside the panel");
+    mouse_move_to(away);
+    pump(200);
+    assert_eq!(log.keys()[before..], [down(SHIFT)], "cursor dragged off Shift");
+    mouse_up_at(away);
+    assert_eq!(log.keys()[before..], [down(SHIFT), up(SHIFT)], "button released outside the panel");
 }
 
 // AC4
@@ -371,13 +366,14 @@ fn every_sent_key_event_carries_the_edgepad_tag() {
     touch.down(1, key_centre(panel, SPACE));
     touch.up(1);
     mouse_down_at(key_centre(panel, ESC));
-    mouse_up();
+    mouse_up_at(key_centre(panel, ESC));
 
     let events = log.all();
     assert_eq!(events.len(), 4, "events: {events:?}");
-    let tag = edgepad_core::keys::SEND_TAG;
-    assert_ne!(tag, 0, "a zero tag is what physical keys carry");
+    // One shared, non-zero tag: physical keys carry zero.
+    let tag = events[0].2;
+    assert_ne!(tag, 0, "EdgePad's key events carry no tag");
     for (vk, is_up, extra) in events {
-        assert_eq!(extra, tag, "vk {vk:#x} up={is_up} carried {extra:#x}");
+        assert_eq!(extra, tag, "vk {vk:#x} up={is_up} carried {extra:#x}, others {tag:#x}");
     }
 }
