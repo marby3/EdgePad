@@ -5,7 +5,7 @@
 
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
 use edgepad_core::config::Edge;
 use edgepad_core::keys::{Combo, Mods};
@@ -51,6 +51,8 @@ const EDGES: [(Edge, *const u16); 4] = [
 
 static TRAY: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
 static TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
+/// Whether HOTKEY_ID is registered now.
+static HOTKEY_ON: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "fault-injection")]
 static TEST_PANIC: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "fault-injection")]
@@ -150,7 +152,12 @@ pub unsafe fn set_hotkey(hotkey: Option<Combo>) {
     if hwnd.is_null() {
         return;
     }
-    unsafe { UnregisterHotKey(hwnd, HOTKEY_ID) };
+    if HOTKEY_ON.swap(false, Ordering::Relaxed) && unsafe { UnregisterHotKey(hwnd, HOTKEY_ID) } == 0 {
+        // Still registered: a new one under the same id would fail too.
+        HOTKEY_ON.store(true, Ordering::Relaxed);
+        notify("ホットキーを解除できませんでした");
+        return;
+    }
     let Some(combo) = hotkey else { return };
     // The parser admits a hotkey only with a key besides the modifiers.
     let Some(key) = combo.key else { return };
@@ -158,7 +165,9 @@ pub unsafe fn set_hotkey(hotkey: Option<Combo>) {
         [(Mods::CTRL, MOD_CONTROL), (Mods::SHIFT, MOD_SHIFT), (Mods::ALT, MOD_ALT), (Mods::WIN, MOD_WIN)];
     // Held down, it toggles once, not over and over.
     let mods = flags.iter().filter(|(m, _)| combo.mods.contains(*m)).fold(MOD_NOREPEAT, |all, (_, f)| all | f);
-    if unsafe { RegisterHotKey(hwnd, HOTKEY_ID, mods, send::vk(key) as u32) } == 0 {
+    if unsafe { RegisterHotKey(hwnd, HOTKEY_ID, mods, send::vk(key) as u32) } != 0 {
+        HOTKEY_ON.store(true, Ordering::Relaxed);
+    } else {
         notify(&format!("ホットキー {combo} を登録できませんでした。ほかのアプリが使っているかもしれません"));
     }
 }
@@ -281,7 +290,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_HOTKEY => {
-                panel::toggle_all();
+                if wp as i32 == HOTKEY_ID {
+                    panel::toggle_all();
+                }
                 0
             }
             SEND_FAILED => {

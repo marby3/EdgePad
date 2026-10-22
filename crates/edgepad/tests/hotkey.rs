@@ -9,7 +9,9 @@ mod common;
 
 use std::time::{Duration, Instant};
 
+use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use common::*;
 
 /// A settings file: `n` hold keys on the left and right, and `hotkey`.
@@ -61,13 +63,20 @@ fn the_hotkey_toggles_every_edge_and_releases_held_keys() {
     find_panel(&app);
     assert_eq!(shown(&app), 2);
 
+    // Another app in front: the hotkey works whatever has the focus.
+    let m = primary_monitor();
+    let area = RECT { left: m.left + 300, top: m.top + 100, right: m.left + 700, bottom: m.top + 400 };
+    let front = test_window("EdgePadTestForeground", 0, area);
+    force_foreground(front.0);
+    assert_eq!(unsafe { GetForegroundWindow() }, front.0, "precondition: test window in front");
+
     let log = KeyLog::start();
     let mut touch = Touch::new();
     touch.down(1, key_centre(left_panel(&app), 0));
     touch.hold(150);
     press(VK_F13);
     assert_eq!(shown(&app), 0, "every edge is hidden");
-    assert_eq!(log.keys()[..2], [(A, false), (A, true)], "the key held on the panel is released");
+    assert_eq!(log.keys().get(..2), Some(&[(A, false), (A, true)][..]), "the key held on the panel is released");
     touch.up(1);
 
     press(VK_F13);
