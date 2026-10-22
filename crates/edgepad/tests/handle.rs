@@ -133,12 +133,18 @@ fn swiping_inward_from_the_handle_shows_the_panel() {
     choose(&app, "左辺");
     let handle = touchable_handle(&app, "left");
 
+    // Dragged with the mouse: on CI, a touch moving inward from the screen
+    // edge never reaches the handle (no touch hardware there). A finger was
+    // checked on a real tablet.
     let start = centre(handle);
-    let mut touch = Touch::new();
-    touch.down(1, start);
-    touch.move_to(1, POINT { x: start.x + key_px() / 2, y: start.y });
-    touch.move_to(1, POINT { x: start.x + key_px(), y: start.y });
-    touch.up(1);
+    let mut saved = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&mut saved) };
+    mouse_move_to(start);
+    mouse_down_at(start);
+    mouse_move_to(POINT { x: start.x + key_px() / 2, y: start.y });
+    mouse_move_to(POINT { x: start.x + key_px(), y: start.y });
+    mouse_up_at(POINT { x: start.x + key_px(), y: start.y });
+    unsafe { SetCursorPos(saved.x, saved.y) };
     pump(200);
     assert_eq!(shown(&app), ["left"], "the swipe shows the panel");
     assert!(handle_on(&app, "left").is_none(), "the handle is gone");
@@ -170,7 +176,7 @@ fn tapping_or_clicking_the_handle_shows_the_panel() {
 
 // AC4
 #[test]
-fn swiping_toward_the_edge_hides_the_panel_releasing_hold_keys_and_dropping_shortcuts() {
+fn a_quick_flick_toward_the_edge_hides_the_panel_but_a_slow_drift_does_not() {
     let _desktop = desktop();
     // Two columns: keys 2 and 3 sit in the inner column, a key away from the
     // screen edge, so a swipe toward the edge stays on screen.
@@ -191,28 +197,39 @@ left = pad
     let log = KeyLog::start();
     let mut touch = Touch::new();
 
+    // A finger holding A drifts a whole key toward the edge, slowly, as a
+    // hand does while the pen draws: nothing changes.
     let start = cell(panel, key, 1, 0);
     touch.down(1, start);
+    touch.hold(400);
     touch.move_to(1, POINT { x: start.x - key / 2, y: start.y });
     touch.move_to(1, POINT { x: start.x - key, y: start.y });
     pump(200);
-    assert!(shown(&app).is_empty(), "the swipe hides the panel");
+    assert_eq!(shown(&app), ["left"], "a slow drift leaves the panel shown");
+    assert_eq!(log.keys(), [(A, false)], "and A held");
+    touch.up(1);
+    assert_eq!(log.keys(), [(A, false), (A, true)]);
+
+    // A quick flick of a key toward the edge hides it.
+    touch.down(1, start);
+    touch.move_to(1, POINT { x: start.x - key, y: start.y });
+    pump(200);
+    assert!(shown(&app).is_empty(), "the flick hides the panel");
     assert!(handle_on(&app, "left").is_some(), "and leaves a handle");
-    assert_eq!(log.keys(), [(A, false), (A, true)], "the hold key is pressed, then released as it hides");
+    assert_eq!(log.keys()[2..], [(A, false), (A, true)], "the hold key is pressed, then released as it hides");
     touch.up(1);
     pump(200);
-    assert_eq!(log.keys().len(), 2, "lifting afterwards sends nothing");
+    assert_eq!(log.keys().len(), 4, "lifting afterwards sends nothing");
 
     choose(&app, "左辺");
     let panel = left_panel(&app);
     let start = cell(panel, key, 1, 1);
     touch.down(1, start);
-    touch.move_to(1, POINT { x: start.x - key / 2, y: start.y });
     touch.move_to(1, POINT { x: start.x - key, y: start.y });
     touch.up(1);
     pump(200);
     assert!(shown(&app).is_empty(), "hidden again");
-    assert_eq!(log.keys().len(), 2, "the shortcut sends nothing");
+    assert_eq!(log.keys().len(), 4, "the shortcut sends nothing");
 }
 
 // AC5
