@@ -95,15 +95,15 @@ fn settings(mine: &str) -> String {
 fn the_panels_follow_the_profile_of_the_app_in_front() {
     let _desktop = desktop();
     let mine = my_window();
-    force_foreground(mine.0);
+    click_to_front(mine.0);
     let app = launch_with(Some(&settings("left = three\n")), None);
     wait_for_left_keys(&app, 3, "started with this app in front");
 
     let (_other, other) = other_app_window();
-    force_foreground(other);
+    click_to_front(other);
     wait_for_left_keys(&app, 2, "another app in front: the default profile");
 
-    force_foreground(mine.0);
+    click_to_front(mine.0);
     wait_for_left_keys(&app, 3, "this app in front again");
 }
 
@@ -112,16 +112,16 @@ fn the_panels_follow_the_profile_of_the_app_in_front() {
 fn a_profile_naming_no_edges_shows_no_panel() {
     let _desktop = desktop();
     let (_other, other) = other_app_window();
-    force_foreground(other);
+    click_to_front(other);
     let app = launch_with(Some(&settings("")), None);
     wait_for_left_keys(&app, 2, "the default profile");
 
     let mine = my_window();
-    force_foreground(mine.0);
+    click_to_front(mine.0);
     wait_for_left_keys(&app, 0, "this app's profile shows nothing");
     assert_eq!(panels_now(&app).len(), 0, "no panel on any edge");
 
-    force_foreground(other);
+    click_to_front(other);
     wait_for_left_keys(&app, 2, "back to the default profile");
 }
 
@@ -132,7 +132,7 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
     // This process is not named by any profile: both apps get the default.
     let text = settings("").replace(&format!("process = {}", me()), "process = nothing-here.exe");
     let (_other, other) = other_app_window();
-    force_foreground(other);
+    click_to_front(other);
     let app = launch_with(Some(&text), None);
     let panel = left_panel(&app);
     let log = KeyLog::start();
@@ -141,7 +141,7 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
     touch.down(1, key_centre(panel, 1));
     touch.hold(300);
     let mine = my_window();
-    force_foreground(mine.0);
+    click_to_front(mine.0);
     pump(300);
     assert_eq!(log.keys(), [(b'A' as u16, false)], "same profile: A stays down");
     touch.up(1);
@@ -150,7 +150,7 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
     // Now with this process named: switching lets go.
     drop(app);
     let app = launch_with(Some(&settings("left = three\n")), None);
-    force_foreground(other);
+    click_to_front(other);
     wait_for_left_keys(&app, 2, "the default profile");
     let panel = left_panel(&app);
     let before = log.keys().len();
@@ -160,7 +160,7 @@ fn switching_profiles_lets_go_of_held_and_latched_keys_but_staying_in_one_does_n
     touch.hold(300);
     assert_eq!(log.keys()[before..], [(VK_LCONTROL, false), (b'A' as u16, false)], "Ctrl latched, A held");
 
-    force_foreground(mine.0);
+    click_to_front(mine.0);
     wait_for_left_keys(&app, 3, "this app's profile");
     let mut released = log.keys()[before + 2..].to_vec();
     released.sort();
