@@ -15,31 +15,100 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 /// whatever state the UI thread was left in.
 static HELD: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
-/// Press (`down`) or release a virtual key. The scan code goes along for
-/// applications that read it instead of the virtual key.
+/// Most events one SendInput carries: four modifiers down and up, and a key.
+const MAX_EVENTS: usize = 10;
+
+/// Press (`down`) or release a virtual key.
+pub unsafe fn key(vk: u16, down: bool) {
+    unsafe { send(&[(vk, down)]) };
+}
+
+/// Send a shortcut: press `mods` in order, tap `key`, release `mods` in
+/// reverse, all in one SendInput so nothing can come in between. A modifier
+/// that is already down, held on the panel or on the physical keyboard, is
+/// left alone: pressing it again changes nothing, and releasing it would cut
+/// it from under the finger holding it.
+pub unsafe fn shortcut(mods: &[u16], key: Option<u16>) {
+    // Four modifiers at most (Ctrl, Shift, Alt, Win), so 4 + 2 + 4 events.
+    assert!(mods.len() <= 4, "more modifiers than there are: {}", mods.len());
+    let mut up = [0u16; 4];
+    let mut events = [(0u16, false); MAX_EVENTS];
+    let mut n = 0;
+    for &m in mods {
+        if !unsafe { is_down(m) } {
+            up[n] = m;
+            events[n] = (m, true);
+            n += 1;
+        }
+    }
+    let downs = n;
+    if let Some(k) = key {
+        events[n] = (k, true);
+        events[n + 1] = (k, false);
+        n += 2;
+    }
+    for &m in up[..downs].iter().rev() {
+        events[n] = (m, false);
+        n += 1;
+    }
+    unsafe { send(&events[..n]) };
+}
+
+/// Whether modifier `vk` is down already, either side of the keyboard.
+unsafe fn is_down(vk: u16) -> bool {
+    let either = match vk {
+        VK_LCONTROL => VK_CONTROL,
+        VK_LSHIFT => VK_SHIFT,
+        VK_LMENU => VK_MENU,
+        other => other,
+    };
+    let down = |v: u16| unsafe { GetAsyncKeyState(v as i32) } as u16 & 0x8000 != 0;
+    held(vk) || down(either) || (vk == VK_LWIN && down(VK_RWIN))
+}
+
+fn held(vk: u16) -> bool {
+    HELD[(vk as usize >> 6) & 3].load(Ordering::Relaxed) & 1u64 << (vk & 63) != 0
+}
+
+/// Keys whose scan code Windows prefixes with E0: without the extended flag
+/// they arrive as their number-pad twins.
+fn is_extended(vk: u16) -> bool {
+    matches!(
+        vk,
+        VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_INSERT | VK_DELETE | VK_HOME | VK_END | VK_PRIOR | VK_NEXT
+            | VK_LWIN | VK_RWIN
+    )
+}
+
+/// Inject `events` (virtual key, is down) in one SendInput. The scan code
+/// goes along for applications that read it instead of the virtual key.
 ///
 /// Only an event that was actually injected changes what is recorded as held:
 /// a key-down that failed must not be "released" later over a key the user
 /// holds on the keyboard, and a key-up that failed stays recorded for retry.
-pub unsafe fn key(vk: u16, down: bool) {
-    debug_assert!(vk < 256, "not a virtual key: {vk}");
-    let sent = unsafe {
-        let mut input: INPUT = zeroed();
+///
+/// Builds the input on the stack: `release_all` runs from the panic hook,
+/// where allocating is best avoided. A shortcut is at most 10 events.
+unsafe fn send(events: &[(u16, bool)]) {
+    let events = &events[..events.len().min(MAX_EVENTS)];
+    let mut inputs: [INPUT; MAX_EVENTS] = unsafe { zeroed() };
+    for (input, &(vk, down)) in inputs.iter_mut().zip(events) {
+        debug_assert!(vk < 256, "not a virtual key: {vk}");
         input.r#type = INPUT_KEYBOARD;
         input.Anonymous.ki.wVk = vk;
-        input.Anonymous.ki.wScan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16;
-        input.Anonymous.ki.dwFlags = if down { 0 } else { KEYEVENTF_KEYUP };
+        input.Anonymous.ki.wScan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
+        let extended = if is_extended(vk) { KEYEVENTF_EXTENDEDKEY } else { 0 };
+        input.Anonymous.ki.dwFlags = extended | if down { 0 } else { KEYEVENTF_KEYUP };
         input.Anonymous.ki.dwExtraInfo = SEND_TAG;
-        SendInput(1, &input, size_of::<INPUT>() as i32) == 1
-    };
-    if !sent {
-        return;
     }
-    let (word, bit) = (&HELD[(vk as usize >> 6) & 3], 1u64 << (vk & 63));
-    if down {
-        word.fetch_or(bit, Ordering::Relaxed);
-    } else {
-        word.fetch_and(!bit, Ordering::Relaxed);
+    let sent = unsafe { SendInput(events.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) } as usize;
+    for &(vk, down) in &events[..sent.min(events.len())] {
+        let (word, bit) = (&HELD[(vk as usize >> 6) & 3], 1u64 << (vk & 63));
+        if down {
+            word.fetch_or(bit, Ordering::Relaxed);
+        } else {
+            word.fetch_and(!bit, Ordering::Relaxed);
+        }
     }
 }
 

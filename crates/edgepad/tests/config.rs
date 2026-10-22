@@ -48,7 +48,7 @@ fn the_left_panel_holds_the_default_profiles_left_keys_and_only_modifier_and_hol
 [set.pad]
 key = A     | hold     | A
 key = Shift | modifier | Shift
-key = 取消  | shortcut | Ctrl+Z
+key = 縮小  | repeat   | [
 key = 挨拶  | text     | hello
 [set.other]
 key = B | hold | B
@@ -79,7 +79,7 @@ right = other
         touch.hold(200);
         touch.up(1);
     }
-    assert_eq!(log.keys().len(), 4, "shortcut and text keys send nothing yet: {:?}", log.keys());
+    assert_eq!(log.keys().len(), 4, "repeat and text keys send nothing yet (v0.3): {:?}", log.keys());
 }
 
 // AC5
