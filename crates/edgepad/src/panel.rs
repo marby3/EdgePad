@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
+use std::time::{Duration, Instant};
 
 use edgepad_core::config::{Action, Edge, Handle, Monitor};
 use edgepad_core::gesture::{self, Swipe};
@@ -91,19 +92,30 @@ struct Panel {
     handle_hwnd: HWND,
 }
 
-/// Where a pointer went down, in screen pixels.
+/// Where and when a pointer went down, in screen pixels.
 #[derive(Clone, Copy)]
 struct Start {
     hwnd: HWND,
     id: u32,
     x: i32,
     y: i32,
+    at: Instant,
 }
 
+/// A flick that hides a panel is over within this time. A finger that moves
+/// more slowly is a hand drifting while the pen draws (spec 6.1): the keys it
+/// holds stay held.
+const FLICK_TIME: Duration = Duration::from_millis(300);
+
 impl Panel {
-    /// How far a pointer goes before it is a swipe: half a key.
+    /// How far a pointer on the handle goes before it is a swipe: half a key.
     fn swipe_distance(&self) -> i32 {
         (self.key / 2).max(1)
+    }
+
+    /// How far a flick on the panel goes before it hides it: a whole key.
+    fn flick_distance(&self) -> i32 {
+        self.key.max(1)
     }
 }
 
@@ -515,14 +527,14 @@ unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
     }
 }
 
-/// A pointer moved on a panel: one that has gone far enough toward the
-/// screen edge hides the panel, letting go of the key it pressed.
+/// A pointer moved on a panel: a quick flick toward the screen edge hides the
+/// panel, letting go of the key it pressed.
 unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
     let mut hide = None;
     with_panel(hwnd, |panel| {
-        if let Some(s) = panel.starts.iter().find(|s| s.id == id) {
-            if gesture::swipe(panel.edge, x - s.x, y - s.y, panel.swipe_distance()) == Some(Swipe::Outward) {
+        if let Some(s) = panel.starts.iter().find(|s| s.id == id && s.at.elapsed() <= FLICK_TIME) {
+            if gesture::swipe(panel.edge, x - s.x, y - s.y, panel.flick_distance()) == Some(Swipe::Outward) {
                 hide = Some(panel.edge);
             }
         }
@@ -543,7 +555,7 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     let (x, y) = pointer_at(lp);
                     HANDLE_DRAGS.with_borrow_mut(|drags| {
                         drags.retain(|d| d.id != id);
-                        drags.push(Start { hwnd, id, x, y });
+                        drags.push(Start { hwnd, id, x, y, at: Instant::now() });
                     });
                     if kind == PT_MOUSE {
                         // The handle is thin: keep the mouse once it leaves.
@@ -647,7 +659,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
         let (sx, sy) = pointer_at(lp);
         with_panel(hwnd, |panel| {
             panel.starts.retain(|s| s.id != id);
-            panel.starts.push(Start { hwnd, id, x: sx, y: sy });
+            panel.starts.push(Start { hwnd, id, x: sx, y: sy, at: Instant::now() });
             if kind == PT_MOUSE {
                 // Keep receiving moves and the button-up after leaving the
                 // panel, key or not: a swipe to hide runs off it.
