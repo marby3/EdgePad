@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use edgepad_core::config::{Action, Edge, Handle, Monitor};
 use edgepad_core::gesture::{self, Swipe};
-use edgepad_core::keys::{Key, Mods};
+use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Rect};
 use edgepad_core::modifier::{LatchMode, Modifier};
 use edgepad_core::press::Presses;
@@ -59,6 +59,9 @@ enum Sends {
     Modifier { vk: u16, state: Modifier },
     /// The whole combination on release: modifiers, then the key.
     Shortcut { mods: Vec<u16>, key: Option<u16> },
+    /// The whole combination as pressed, then every `interval` ms once held
+    /// for REPEAT_DELAY.
+    Repeat { mods: Vec<u16>, key: Option<u16>, interval: u32 },
     /// Kinds that send nothing yet.
     Nothing,
 }
@@ -69,13 +72,33 @@ impl Sends {
             Action::Modifier(key) => Sends::Modifier { vk: send::vk(*key), state: Modifier::Up },
             Action::Hold(key) => Sends::Hold(send::vk(*key)),
             Action::Shortcut(combo) => {
-                let order = [(Mods::CTRL, Key::Ctrl), (Mods::SHIFT, Key::Shift), (Mods::ALT, Key::Alt), (Mods::WIN, Key::Win)];
-                let mods = order.iter().filter(|(m, _)| combo.mods.contains(*m)).map(|&(_, k)| send::vk(k)).collect();
-                Sends::Shortcut { mods, key: combo.key.map(send::vk) }
+                let (mods, key) = vks(combo);
+                Sends::Shortcut { mods, key }
+            }
+            &Action::Repeat { ref combo, interval_ms } => {
+                let (mods, key) = vks(combo);
+                Sends::Repeat { mods, key, interval: interval_ms }
             }
             _ => Sends::Nothing,
         }
     }
+}
+
+/// The virtual keys of `combo`: its modifiers in Ctrl, Shift, Alt, Win
+/// order, and its key.
+fn vks(combo: &Combo) -> (Vec<u16>, Option<u16>) {
+    let order = [(Mods::CTRL, Key::Ctrl), (Mods::SHIFT, Key::Shift), (Mods::ALT, Key::Alt), (Mods::WIN, Key::Win)];
+    let mods = order.iter().filter(|(m, _)| combo.mods.contains(*m)).map(|&(_, k)| send::vk(k)).collect();
+    (mods, combo.key.map(send::vk))
+}
+
+/// How long a repeat key is held before it starts repeating: a tap sends
+/// once.
+const REPEAT_DELAY: u32 = 300;
+
+/// The timer of the repeat key at `index` on a panel. Timer ids are nonzero.
+fn repeat_timer(index: usize) -> usize {
+    index + 1
 }
 
 struct Panel {
@@ -400,6 +423,10 @@ unsafe fn let_go(panel: &mut Panel) {
             let up = match &mut key.sends {
                 Sends::Hold(vk) => panel.presses.is_down(i).then_some(*vk),
                 Sends::Modifier { vk, state } => state.let_go().then_some(*vk),
+                Sends::Repeat { .. } => {
+                    KillTimer(panel.hwnd, repeat_timer(i));
+                    None
+                }
                 _ => None,
             };
             if let Some(vk) = up {
@@ -514,6 +541,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_POINTERUPDATE => {
                 pointer_update(hwnd, wp, lp);
+                0
+            }
+            WM_TIMER => {
+                repeat(hwnd, wp);
                 0
             }
             // The scale of the panel's monitor changed. The suggested
@@ -721,6 +752,11 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             let down = match &mut panel.keys[key].sends {
                 Sends::Hold(vk) => Some(*vk),
                 Sends::Modifier { vk, state } => state.press(Instant::now()).then_some(*vk),
+                Sends::Repeat { mods, key: k, .. } => {
+                    send::shortcut(mods, *k);
+                    SetTimer(hwnd, repeat_timer(key), REPEAT_DELAY, None);
+                    None
+                }
                 _ => None,
             };
             if let Some(vk) = down {
@@ -752,6 +788,11 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                         send::shortcut(mods, *key);
                         sent = true;
                     }
+                    // Its sends were combined with the latches until now.
+                    Sends::Repeat { .. } => {
+                        KillTimer(hwnd, repeat_timer(key));
+                        sent = true;
+                    }
                     Sends::Nothing => {}
                 }
                 draw(panel);
@@ -770,8 +811,26 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
     }
 }
 
-/// A shortcut went out: under one-shot latches, let go of every latched
-/// modifier on every panel.
+/// A repeat key's timer fired: send its combination again, every interval
+/// from now on. A timer whose key is no longer held stops.
+unsafe fn repeat(hwnd: HWND, timer: WPARAM) {
+    with_panel(hwnd, |panel| unsafe {
+        let index = timer.wrapping_sub(1);
+        match panel.keys.get(index).map(|k| &k.sends) {
+            Some(Sends::Repeat { mods, key, interval }) if panel.presses.is_down(index) => {
+                send::shortcut(mods, *key);
+                // Replaces the delay the timer started with.
+                SetTimer(hwnd, timer, *interval, None);
+            }
+            _ => {
+                KillTimer(hwnd, timer);
+            }
+        }
+    });
+}
+
+/// A shortcut, or a repeat key, went out: under one-shot latches, let go of
+/// every latched modifier on every panel.
 unsafe fn shortcut_sent(panels: &mut [Panel], mode: LatchMode) {
     for panel in panels {
         let mut changed = false;
