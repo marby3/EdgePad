@@ -36,6 +36,8 @@ const TRAY_CALLBACK: u32 = WM_APP + 1;
 const SEND_FAILED: u32 = WM_APP + 2;
 /// Posted by `post_foreground`, with the window in wParam.
 const FOREGROUND: u32 = WM_APP + 3;
+/// Posted by `post_out_of_reach`.
+const OUT_OF_REACH: u32 = WM_APP + 4;
 
 const CMD_EXIT: usize = 1001;
 const CMD_OPEN: usize = 1002;
@@ -64,6 +66,8 @@ static HOTKEY_ON: AtomicBool = AtomicBool::new(false);
 static TEST_PANIC: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "fault-injection")]
 static TEST_SEND_FAIL: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "fault-injection")]
+static TEST_ELEVATED: AtomicU32 = AtomicU32::new(0);
 
 /// Create the tray window and show the icon. Returns null on failure. A
 /// missing taskbar is not a failure: the icon appears once it is created.
@@ -81,6 +85,8 @@ pub unsafe fn create() -> HWND {
         TEST_PANIC.store(RegisterWindowMessageW(w!("EdgePadTestPanic")), Ordering::Relaxed);
         #[cfg(feature = "fault-injection")]
         TEST_SEND_FAIL.store(RegisterWindowMessageW(w!("EdgePadTestSendFail")), Ordering::Relaxed);
+        #[cfg(feature = "fault-injection")]
+        TEST_ELEVATED.store(RegisterWindowMessageW(w!("EdgePadTestElevated")), Ordering::Relaxed);
 
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW,
@@ -201,6 +207,15 @@ pub unsafe fn post_foreground(hwnd: HWND) {
     let tray = TRAY.load(Ordering::Relaxed);
     if !tray.is_null() {
         unsafe { PostMessageW(tray, FOREGROUND, hwnd as WPARAM, 0) };
+    }
+}
+
+/// Have the tray say that keys do not reach the app in front. Only posts:
+/// safe from the panic hook.
+pub unsafe fn post_out_of_reach() {
+    let hwnd = TRAY.load(Ordering::Relaxed);
+    if !hwnd.is_null() {
+        unsafe { PostMessageW(hwnd, OUT_OF_REACH, 0, 0) };
     }
 }
 
@@ -337,6 +352,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 profile::foreground_changed(wp as HWND);
                 0
             }
+            OUT_OF_REACH => {
+                let app = profile::front().unwrap_or_else(|| "前面のアプリ".into());
+                notify(&format!("{app} は管理者として動いているため、キーが届きません。EdgePad も管理者として起動してください"));
+                0
+            }
             SEND_FAILED => {
                 notify("キーを送れませんでした。管理者として動いているアプリへは、EdgePad も管理者として起動しないと送れません。");
                 0
@@ -373,6 +393,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             #[cfg(feature = "fault-injection")]
             m if m == TEST_PANIC.load(Ordering::Relaxed) => panic!("fault injection"),
+            #[cfg(feature = "fault-injection")]
+            m if m == TEST_ELEVATED.load(Ordering::Relaxed) => {
+                profile::TEST_ELEVATED.store(wp != 0, Ordering::Relaxed);
+                0
+            }
             #[cfg(feature = "fault-injection")]
             m if m == TEST_SEND_FAIL.load(Ordering::Relaxed) => {
                 send::FAIL.store(wp != 0, Ordering::Relaxed);

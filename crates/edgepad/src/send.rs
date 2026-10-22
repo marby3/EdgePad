@@ -19,6 +19,12 @@ static HELD: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// one notice per run of failures, not one per key.
 static FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 
+/// Whether the app in front runs out of EdgePad's reach (as administrator:
+/// Windows drops the keys sent to it, often without SendInput failing), and
+/// whether that has been told since it came to the front.
+static OUT_OF_REACH: AtomicBool = AtomicBool::new(false);
+static OUT_OF_REACH_REPORTED: AtomicBool = AtomicBool::new(false);
+
 /// Test builds only: make every send fail, as sending to an elevated app does.
 #[cfg(feature = "fault-injection")]
 pub static FAIL: AtomicBool = AtomicBool::new(false);
@@ -140,9 +146,23 @@ unsafe fn send(events: &[(u16, bool)]) {
     }
 }
 
+/// An app came to the front: say whether it is `out` of reach.
+pub fn set_out_of_reach(out: bool) {
+    OUT_OF_REACH.store(out, Ordering::Relaxed);
+    OUT_OF_REACH_REPORTED.store(false, Ordering::Relaxed);
+}
+
 /// Note whether a SendInput got everything through: one notice per run of
-/// failures.
+/// failures. With an app out of reach in front, one notice saying so
+/// instead, the first time a key goes to it.
 fn report(all_sent: bool) {
+    if OUT_OF_REACH.load(Ordering::Relaxed) {
+        // Posted, not shown here: this may run from the panic hook.
+        if !OUT_OF_REACH_REPORTED.swap(true, Ordering::Relaxed) {
+            unsafe { crate::tray::post_out_of_reach() };
+        }
+        return;
+    }
     if all_sent {
         FAILURE_REPORTED.store(false, Ordering::Relaxed);
     } else if !FAILURE_REPORTED.swap(true, Ordering::Relaxed) {

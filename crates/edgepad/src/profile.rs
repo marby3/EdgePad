@@ -14,10 +14,14 @@ use std::cell::{Cell, RefCell};
 use std::ptr::null_mut;
 
 use edgepad_core::config::Config;
-use windows_sys::Win32::Foundation::{CloseHandle, HWND};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+use windows_sys::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    TokenIntegrityLevel,
+};
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    QueryFullProcessImageNameW,
+    GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -27,7 +31,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::log::debug_log;
 use crate::settings::{self, Panels};
-use crate::{panel, tray};
+use crate::{panel, send, tray};
+
+/// Test builds only: treat every app coming to the front as out of reach.
+#[cfg(feature = "fault-injection")]
+pub static TEST_ELEVATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 thread_local! {
     // The settings in use; none while EdgePad runs on its fixed keys.
@@ -49,6 +57,7 @@ pub unsafe fn use_config(config: Option<Config>) -> Panels {
     let front = unsafe { GetForegroundWindow() };
     if !unsafe { is_own(front) } {
         LAST.set(unsafe { process_name(front) });
+        send::set_out_of_reach(unsafe { out_of_reach(front) });
     }
     LAST.with_borrow(|process| panels_for(process.as_deref()))
 }
@@ -73,6 +82,7 @@ fn panels_for(process: Option<&str>) -> Panels {
 /// `hwnd` came to the front: unless pinned, follow its app.
 pub unsafe fn foreground_changed(hwnd: HWND) {
     LAST.set(unsafe { process_name(hwnd) });
+    send::set_out_of_reach(unsafe { out_of_reach(hwnd) });
     if !PINNED.get() {
         unsafe { follow() };
     }
@@ -112,6 +122,58 @@ pub unsafe fn toggle_pin() {
     debug_log!("プロファイル {}: {}", ACTIVE.with_borrow(String::clone), if pin { "固定" } else { "固定を解除" });
     if !pin {
         unsafe { follow() };
+    }
+}
+
+/// The executable of the app last in front, if it could be read.
+pub fn front() -> Option<String> {
+    LAST.with_borrow(Clone::clone)
+}
+
+/// Whether the process owning `hwnd` runs at a higher integrity level than
+/// EdgePad, as an app run as administrator does: Windows then drops the
+/// keys EdgePad sends it (UIPI). A level that cannot be read counts as
+/// within reach, so no notice is given on a guess.
+unsafe fn out_of_reach(hwnd: HWND) -> bool {
+    #[cfg(feature = "fault-injection")]
+    if TEST_ELEVATED.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    if hwnd.is_null() {
+        return false;
+    }
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return false;
+    }
+    let theirs = unsafe { integrity(process) };
+    unsafe { CloseHandle(process) };
+    let ours = unsafe { integrity(GetCurrentProcess()) };
+    matches!((theirs, ours), (Some(theirs), Some(ours)) if theirs > ours)
+}
+
+/// The integrity level of `process`: the last part of its token's label SID
+/// (0x2000 medium, 0x3000 high, ...).
+unsafe fn integrity(process: HANDLE) -> Option<u32> {
+    unsafe {
+        let mut token: HANDLE = null_mut();
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+            return None;
+        }
+        // The label and its SID, which follows it; u64 for alignment.
+        let mut buffer = [0u64; 16];
+        let mut len = 0;
+        let size = size_of_val(&buffer) as u32;
+        let ok = GetTokenInformation(token, TokenIntegrityLevel, buffer.as_mut_ptr().cast(), size, &mut len) != 0;
+        CloseHandle(token);
+        if !ok {
+            return None;
+        }
+        let sid = (*(buffer.as_ptr() as *const TOKEN_MANDATORY_LABEL)).Label.Sid;
+        let count = *GetSidSubAuthorityCount(sid);
+        (count > 0).then(|| *GetSidSubAuthority(sid, count as u32 - 1))
     }
 }
 
