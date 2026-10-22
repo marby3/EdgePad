@@ -7,7 +7,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use edgepad_core::config::{self, Edge, KeyDef, Monitor};
+use edgepad_core::config::{self, Edge, Handle, KeyDef, Monitor};
 use edgepad_core::keys::Combo;
 use edgepad_core::layout;
 
@@ -80,6 +80,8 @@ pub struct EdgePanel {
     /// Columns on the left and right, rows on the top and bottom.
     pub lines: usize,
     pub keys: Vec<KeyDef>,
+    /// The strip left while the panel is hidden; none with `handle = none`.
+    pub handle: Option<Handle>,
 }
 
 /// What reading the settings file came to.
@@ -152,7 +154,13 @@ pub fn folders() -> Vec<PathBuf> {
 fn fallback() -> Panels {
     Panels {
         key_size: layout::KEY_SIZE as u32,
-        edges: vec![EdgePanel { edge: Edge::Left, monitor: Monitor::Primary, lines: 1, keys: config::fallback_keys() }],
+        edges: vec![EdgePanel {
+            edge: Edge::Left,
+            monitor: Monitor::Primary,
+            lines: 1,
+            keys: config::fallback_keys(),
+            handle: config::EdgeConfig::default().handle,
+        }],
         hotkey: None,
     }
 }
@@ -167,7 +175,7 @@ fn panels(bytes: &[u8]) -> Result<Panels, Vec<config::Error>> {
         .filter_map(|edge| {
             let set = config.set(default.edges[edge as usize].as_deref()?)?;
             let e = &config.edges[edge as usize];
-            Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone() })
+            Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone(), handle: e.handle })
         })
         .collect();
     Ok(Panels { key_size: config.general.key_size, edges, hotkey: config.general.hotkey })

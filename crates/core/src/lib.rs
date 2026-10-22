@@ -5,6 +5,7 @@
 //! (Windows today) drives it and performs the actual input and drawing.
 
 pub mod config;
+pub mod gesture;
 pub mod keys;
 pub mod layout;
 pub mod press;

@@ -115,7 +115,8 @@ pub struct EdgeConfig {
     pub monitor: Monitor,
     /// Columns on the left and right edges, rows on the top and bottom.
     pub lines: u8,
-    pub handle: Handle,
+    /// None: `handle = none`, shown and hidden from the tray or hotkey only.
+    pub handle: Option<Handle>,
 }
 
 impl Default for EdgeConfig {
@@ -124,7 +125,7 @@ impl Default for EdgeConfig {
             enabled: true,
             monitor: Monitor::Primary,
             lines: 1,
-            handle: Handle { width: 6, length: 40, position: 50 },
+            handle: Some(Handle { width: 6, length: 40, position: 50 }),
         }
     }
 }
@@ -407,17 +408,20 @@ impl Parser {
                 return Err(format!("この辺では「{name}」ではなく「{want}」を使う"));
             }
             "columns" | "rows" => e.lines = number(name, value, 1, 3)? as u8,
+            "handle" if value.eq_ignore_ascii_case("none") => e.handle = None,
             "handle" => {
                 let parts: Vec<&str> = value.split(',').map(str::trim).collect();
                 if !(2..=3).contains(&parts.len()) {
                     return Err(format!("handle は「幅, 長さ%[, 位置%]」で書く（「{value}」）"));
                 }
                 let percent = |p: &str, min| number(name, p.strip_suffix('%').unwrap_or(p).trim(), min, 100);
-                e.handle.width = number(name, parts[0].strip_suffix("px").unwrap_or(parts[0]).trim(), 4, 8)? as u8;
-                e.handle.length = percent(parts[1], 1)? as u8;
+                let mut handle = Handle { width: 6, length: 40, position: 50 };
+                handle.width = number(name, parts[0].strip_suffix("px").unwrap_or(parts[0]).trim(), 4, 8)? as u8;
+                handle.length = percent(parts[1], 1)? as u8;
                 if let Some(p) = parts.get(2) {
-                    e.handle.position = percent(p, 0)? as u8;
+                    handle.position = percent(p, 0)? as u8;
                 }
+                e.handle = Some(handle);
             }
             _ => return Err(format!("[edge.*] に知らない設定「{name}」がある")),
         }
