@@ -419,17 +419,19 @@ pub fn force_foreground(hwnd: HWND) {
     pump(200);
 }
 
-/// Bring `hwnd`, of this process or another, to the front by clicking its
-/// middle, as a person would. SetForegroundWindow is not reliably allowed
-/// from a process in the background (see `force_foreground`).
-pub fn click_to_front(hwnd: HWND) {
-    let r = window_rect(hwnd);
-    let mut saved = POINT { x: 0, y: 0 };
-    unsafe { GetCursorPos(&mut saved) };
-    click(POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 });
-    pump(300);
-    unsafe { SetCursorPos(saved.x, saved.y) };
-    assert_eq!(unsafe { GetForegroundWindow() }, hwnd, "clicked window did not come to the front");
+/// Wait up to 2 s for `hwnd` to be the foreground window.
+///
+/// On the CI machine a window comes to the front when it is created (by
+/// this process, or by a process this one just started), but neither
+/// SetForegroundWindow (`force_foreground`) nor a click brings back one that
+/// was in front before. Tests that switch the app in front therefore make a
+/// new window each time, and check with this that it really is in front.
+pub fn wait_in_front(hwnd: HWND) {
+    let end = Instant::now() + Duration::from_secs(2);
+    while unsafe { GetForegroundWindow() } != hwnd && Instant::now() < end {
+        pump(50);
+    }
+    assert_eq!(unsafe { GetForegroundWindow() }, hwnd, "the new window did not come to the front");
 }
 
 // ---- Key output and pointer input ----
