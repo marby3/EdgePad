@@ -1,0 +1,10 @@
+[package]
+name = "edgepad"
+description = "Edge keypad for Windows: macro keys on the screen edges for touch and mouse"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+edgepad-core = { path = "../core" }
+windows-sys = { version = "0.61", features = ["Win32_Foundation"] }
