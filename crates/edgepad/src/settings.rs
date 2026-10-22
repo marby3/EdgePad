@@ -8,6 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use edgepad_core::config::{self, Edge, KeyDef, Monitor};
+use edgepad_core::keys::Combo;
 use edgepad_core::layout;
 
 const FILE: &str = "edgepad.ini";
@@ -69,6 +70,8 @@ pub struct Panels {
     pub key_size: u32,
     /// One per edge that shows a panel.
     pub edges: Vec<EdgePanel>,
+    /// Shows and hides every edge, if set.
+    pub hotkey: Option<Combo>,
 }
 
 pub struct EdgePanel {
@@ -150,6 +153,7 @@ fn fallback() -> Panels {
     Panels {
         key_size: layout::KEY_SIZE as u32,
         edges: vec![EdgePanel { edge: Edge::Left, monitor: Monitor::Primary, lines: 1, keys: config::fallback_keys() }],
+        hotkey: None,
     }
 }
 
@@ -166,5 +170,5 @@ fn panels(bytes: &[u8]) -> Result<Panels, Vec<config::Error>> {
             Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone() })
         })
         .collect();
-    Ok(Panels { key_size: config.general.key_size, edges })
+    Ok(Panels { key_size: config.general.key_size, edges, hotkey: config.general.hotkey })
 }
