@@ -12,21 +12,30 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput,
 };
 
-/// Bit set of the virtual keys (0..256) EdgePad currently holds down. Atomic
-/// so the panic hook can read it whatever state the UI thread was left in.
+/// Bit set of the virtual keys EdgePad currently holds down (virtual keys are
+/// 1..=254, so four words cover them). Atomic so the panic hook can read it
+/// whatever state the UI thread was left in.
 static HELD: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 /// Press (`down`) or release a virtual key. The scan code goes along for
 /// applications that read it instead of the virtual key.
+///
+/// Only an event that was actually injected changes what is recorded as held:
+/// a key-down that failed must not be "released" later over a key the user
+/// holds on the keyboard, and a key-up that failed stays recorded for retry.
 pub unsafe fn key(vk: u16, down: bool) {
-    unsafe {
+    debug_assert!(vk < 256, "not a virtual key: {vk}");
+    let sent = unsafe {
         let mut input: INPUT = zeroed();
         input.r#type = INPUT_KEYBOARD;
         input.Anonymous.ki.wVk = vk;
         input.Anonymous.ki.wScan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16;
         input.Anonymous.ki.dwFlags = if down { 0 } else { KEYEVENTF_KEYUP };
         input.Anonymous.ki.dwExtraInfo = SEND_TAG;
-        SendInput(1, &input, size_of::<INPUT>() as i32);
+        SendInput(1, &input, size_of::<INPUT>() as i32) == 1
+    };
+    if !sent {
+        return;
     }
     let (word, bit) = (&HELD[(vk as usize >> 6) & 3], 1u64 << (vk & 63));
     if down {
