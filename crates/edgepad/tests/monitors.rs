@@ -47,10 +47,15 @@ fn key_on(monitor: HMONITOR) -> i32 {
     (KEY_LOGICAL_PX * dpi_of(monitor) + 48) / 96
 }
 
-/// The panel whose rectangle lies on monitor `m`, against its `left` edge
-/// (else its right edge).
+/// The panel lying on monitor `m` (its centre inside it), against its `left`
+/// edge (else its right edge). Stacked monitors share a left edge, so the
+/// centre tells their panels apart.
 fn panel_against(all: &[RECT], m: RECT, left: bool) -> RECT {
-    let found = all.iter().find(|r| if left { r.left == m.left } else { r.right == m.right });
+    let on = |r: &RECT| {
+        let (x, y) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+        x >= m.left && x < m.right && y >= m.top && y < m.bottom
+    };
+    let found = all.iter().find(|r| on(r) && if left { r.left == m.left } else { r.right == m.right });
     *found.unwrap_or_else(|| panic!("no panel against that edge of {:?}", (m.left, m.top, m.right, m.bottom)))
 }
 
@@ -86,13 +91,16 @@ fn each_panel_sits_on_its_chosen_monitor_sized_by_that_monitors_dpi() {
     assert_eq!(right.right - right.left, key_on(primary), "an unknown number falls back to primary");
     drop(app);
 
-    // cursor: the monitor under the mouse when the panel is placed.
-    let mut at = POINT { x: 0, y: 0 };
-    unsafe { GetCursorPos(&mut at) };
-    let under = unsafe { MonitorFromPoint(at, MONITOR_DEFAULTTOPRIMARY) };
-    let under_rect = monitors.iter().find(|(h, _)| *h == under).unwrap().1;
+    // cursor: the monitor under the mouse when the panel is placed. The
+    // cursor is put on the last monitor (the primary one when there is only
+    // one) so nothing else decides where it is.
+    let (under, under_rect) = *monitors.last().unwrap();
+    let mut saved = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&mut saved) };
+    unsafe { SetCursorPos((under_rect.left + under_rect.right) / 2, (under_rect.top + under_rect.bottom) / 2) };
     let app = launch_with(Some(&settings("cursor", "primary")), None);
     let all = panels(&app);
+    unsafe { SetCursorPos(saved.x, saved.y) };
     let left = panel_against(&all, under_rect, true);
     assert_eq!(left.right - left.left, key_on(under), "on the monitor under the cursor");
 }

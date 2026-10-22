@@ -139,9 +139,11 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
             return;
         }
         let mut cursor = POINT { x: 0, y: 0 };
-        GetCursorPos(&mut cursor);
+        if panel.monitor == Monitor::Cursor {
+            GetCursorPos(&mut cursor);
+        }
         let rects: Vec<Rect> = monitors.iter().map(|&(_, r)| r).collect();
-        let (handle, monitor) = monitors[layout::pick_monitor(&rects, primary, (cursor.x, cursor.y), panel.monitor)];
+        let (handle, screen) = monitors[layout::pick_monitor(&rects, primary, (cursor.x, cursor.y), panel.monitor)];
         let dpi = dpi.unwrap_or_else(|| {
             let (mut x, mut y) = (0, 0);
             match GetDpiForMonitor(handle, MDT_EFFECTIVE_DPI, &mut x, &mut y) {
@@ -151,7 +153,7 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
         });
         panel.key = layout::scale(panel.key_size as i32, dpi);
         let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
-        let (rect, rects) = layout::edge_panel(monitor, panel.edge, panel.key, panel.lines, &widths);
+        let (rect, rects) = layout::edge_panel(screen, panel.edge, panel.key, panel.lines, &widths);
         panel.rect = rect;
         let mut rects = rects.into_iter();
         for key in &mut panel.keys {
@@ -213,19 +215,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 if dpi == 0 {
                     return 0;
                 }
-                with_panel(hwnd, |panel| {
-                    lay_out(panel, Some(dpi));
-                    draw(panel);
-                });
+                relay_out(hwnd, msg, wp, Some(dpi));
                 0
             }
             // Monitors were added, removed, moved or resized: every panel
             // picks its monitor again, at that monitor's DPI.
             WM_DISPLAYCHANGE => {
-                with_panel(hwnd, |panel| {
-                    lay_out(panel, None);
-                    draw(panel);
-                });
+                relay_out(hwnd, msg, wp, None);
                 0
             }
             WM_DESTROY => {
@@ -241,18 +237,32 @@ fn pointer_id(wp: WPARAM) -> u32 {
     (wp & 0xFFFF) as u32
 }
 
-/// Run `f` on the panel of window `hwnd`, if it is one of ours.
-///
-/// Skipped while the panels are already in use further up the stack: moving
-/// a panel onto a monitor of another DPI makes Windows send WM_DPICHANGED
-/// from inside the draw that moved it, and that layout is already done.
-fn with_panel(hwnd: HWND, f: impl FnOnce(&mut Panel)) {
+/// Run `f` on the panel of window `hwnd`, if it is one of ours. Returns false
+/// when the panels are already in use further up the stack, and `f` did not
+/// run: moving a panel onto a monitor of another DPI makes Windows send
+/// WM_DPICHANGED from inside the draw that moved it.
+fn with_panel(hwnd: HWND, f: impl FnOnce(&mut Panel)) -> bool {
     PANELS.with(|panels| {
-        let Ok(mut panels) = panels.try_borrow_mut() else { return };
+        let Ok(mut panels) = panels.try_borrow_mut() else { return false };
         if let Some(panel) = panels.iter_mut().find(|p| p.hwnd == hwnd) {
             f(panel);
         }
+        true
+    })
+}
+
+/// Lay the panel of `hwnd` out again and redraw it. When that cannot happen
+/// now (see `with_panel`), `msg` is queued again to be handled once the
+/// current work is done, so no change of monitors or scale is lost.
+unsafe fn relay_out(hwnd: HWND, msg: u32, wp: WPARAM, dpi: Option<u32>) {
+    let done = with_panel(hwnd, |panel| unsafe {
+        lay_out(panel, dpi);
+        draw(panel);
     });
+    if !done {
+        // lParam is not read by either message's handler.
+        unsafe { PostMessageW(hwnd, msg, wp, 0) };
+    }
 }
 
 /// Press or release `vk` for one key. Only the first press and the last
