@@ -79,7 +79,7 @@ fn a_pinned_profile_stays_whatever_comes_to_the_front_until_unpinned() {
     let _desktop = desktop();
     let m = primary_monitor();
     let mine = test_window("EdgePadTestPinMine", 0, RECT { left: m.left + 400, top: m.top + 350, right: m.left + 700, bottom: m.top + 550 });
-    force_foreground(mine.0);
+    click_to_front(mine.0);
     let app = launch_with(Some(&settings(3)), None);
     wait_for_left_keys(&app, 3, "this app's profile");
 
@@ -89,7 +89,7 @@ fn a_pinned_profile_stays_whatever_comes_to_the_front_until_unpinned() {
     assert!(menu_item(&app, "プロファイル").checked, "pinned");
 
     let (_other, other) = other_app_window();
-    force_foreground(other);
+    click_to_front(other);
     pump(500);
     assert_eq!(left_keys(&app), 3, "pinned: another app in front changes nothing");
 
@@ -104,12 +104,12 @@ fn a_pin_holds_through_a_reload_while_the_profile_is_still_there() {
     let _desktop = desktop();
     let m = primary_monitor();
     let mine = test_window("EdgePadTestPinMine", 0, RECT { left: m.left + 400, top: m.top + 350, right: m.left + 700, bottom: m.top + 550 });
-    force_foreground(mine.0);
+    click_to_front(mine.0);
     let app = launch_with(Some(&settings(3)), None);
     wait_for_left_keys(&app, 3, "this app's profile");
     choose(&app, "プロファイル");
     let (_other, other) = other_app_window();
-    force_foreground(other);
+    click_to_front(other);
 
     std::fs::write(exe_dir(&app).join("edgepad.ini"), settings(4)).unwrap();
     wait_for_left_keys(&app, 4, "reloaded, still on the pinned profile");
