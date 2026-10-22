@@ -777,6 +777,10 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             let Some(key) = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y))) else {
                 return;
             };
+            // A modifier pressed while another key is held is part of a
+            // chord, as much as one held while another is pressed.
+            let chord = panels.iter().any(|p| (0..p.keys.len()).any(|k| p.presses.is_down(k)));
+            let panel = &mut panels[i];
             let Some(key) = panel.presses.down(id, key) else { return };
             // The key just pressed is up or latched, which this leaves alone.
             for k in panels.iter_mut().flat_map(|p| &mut p.keys) {
@@ -788,7 +792,13 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             // Send first, draw after: the key reaches the app sooner.
             let down = match &mut panel.keys[key].sends {
                 Sends::Hold(vk) => Some(*vk),
-                Sends::Modifier { vk, state } => state.press(Instant::now()).then_some(*vk),
+                Sends::Modifier { vk, state } => {
+                    let down = state.press(Instant::now());
+                    if chord {
+                        state.other_key();
+                    }
+                    down.then_some(*vk)
+                }
                 Sends::Repeat { mods, key: k, .. } => {
                     send::shortcut(mods, *k);
                     SetTimer(hwnd, repeat_timer(key), REPEAT_DELAY, None);
