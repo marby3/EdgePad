@@ -22,9 +22,13 @@ fn notices(app: &Running) -> Vec<String> {
     test_events(app).into_iter().filter(|e| e.starts_with("notice: ")).collect()
 }
 
+/// A new window of this process, once it is in front: the way the test
+/// brings an app to the front (see `wait_in_front`).
 fn window(class: &str, top: i32) -> TestWindow {
     let m = primary_monitor();
-    test_window(class, 0, RECT { left: m.left + 400, top: m.top + top, right: m.left + 700, bottom: m.top + top + 150 })
+    let window = test_window(class, 0, RECT { left: m.left + 400, top: m.top + top, right: m.left + 700, bottom: m.top + top + 150 });
+    wait_in_front(window.0);
+    window
 }
 
 // AC1
@@ -35,7 +39,6 @@ fn pressing_a_key_with_an_app_out_of_reach_in_front_notifies_once_per_time_it_co
     let panel = left_panel(&app);
     let tray = find_window(&app, TRAY_CLASS, false);
     let elevated = unsafe { RegisterWindowMessageW(w!("EdgePadTestElevated")) };
-    let (first, second) = (window("EdgePadTestFirst", 100), window("EdgePadTestSecond", 300));
     let log = KeyLog::start();
     let mut touch = Touch::new();
     let tap = |touch: &mut Touch| {
@@ -46,7 +49,7 @@ fn pressing_a_key_with_an_app_out_of_reach_in_front_notifies_once_per_time_it_co
 
     unsafe { PostMessageW(tray, elevated, 1, 0) };
     pump(100);
-    click_to_front(first.0);
+    let _first = window("EdgePadTestFirst", 100);
     pump(200);
     assert_eq!(notices(&app), Vec::<String>::new(), "nothing until a key is pressed");
     tap(&mut touch);
@@ -58,14 +61,14 @@ fn pressing_a_key_with_an_app_out_of_reach_in_front_notifies_once_per_time_it_co
     tap(&mut touch);
     assert_eq!(notices(&app).len(), 1, "once while the app stays in front");
 
-    click_to_front(second.0);
+    let _second = window("EdgePadTestSecond", 300);
     pump(200);
     tap(&mut touch);
     assert_eq!(notices(&app).len(), 2, "again for the next app out of reach");
 
     unsafe { PostMessageW(tray, elevated, 0, 0) };
     pump(100);
-    click_to_front(first.0);
+    let _third = window("EdgePadTestThird", 500);
     pump(200);
     tap(&mut touch);
     assert_eq!(notices(&app).len(), 2, "an app within reach: no notice");
