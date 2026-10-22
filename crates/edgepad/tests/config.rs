@@ -19,9 +19,9 @@ fn keys_on_the_left(n: usize) -> String {
     text + "[profile.default]\nleft = left\n"
 }
 
-/// How many keys tall the panel of `app` is.
+/// How many keys tall the left panel of `app` is.
 fn panel_keys(app: &Running) -> i32 {
-    let (_, r) = panel_rect(app);
+    let r = left_panel(app);
     assert_eq!((r.bottom - r.top) % key_px(), 0, "panel height is not a whole number of keys");
     (r.bottom - r.top) / key_px()
 }
@@ -58,7 +58,7 @@ right = other
 ";
     let app = launch_with(Some(text), None);
     assert_eq!(panel_keys(&app), 4, "one key per line of the left set, in one column");
-    let (_, panel) = panel_rect(&app);
+    let panel = left_panel(&app);
     let log = KeyLog::start();
     let mut touch = Touch::new();
 
@@ -94,7 +94,7 @@ fn without_a_usable_settings_file_the_fixed_five_keys_come_up() {
     let broken = "[set.left]\nkey = A | hold | NoSuchKey\n[profile.default]\nleft = left\n";
     let app = launch_with(Some(broken), None);
     assert_eq!(panel_keys(&app), KEY_COUNT, "a settings file with an error");
-    let (_, panel) = panel_rect(&app);
+    let panel = left_panel(&app);
     let log = KeyLog::start();
     let mut touch = Touch::new();
     touch.down(1, key_centre(panel, ESC));

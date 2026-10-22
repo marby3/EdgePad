@@ -30,9 +30,14 @@ fn main() -> ExitCode {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
         // Mouse arrives as WM_POINTER* too, so one code path serves both.
         EnableMouseInPointer(1);
-        // A left edge set to none shows no panel; the tray still runs.
-        let keys = settings::left_keys();
-        if (!keys.is_empty() && panel::create_left(&keys).is_null()) || tray::create().is_null() {
+        // An edge set to none shows no panel; the tray runs regardless.
+        let panels = settings::load();
+        for (edge, lines, keys) in &panels.edges {
+            if !panel::create(*edge, *lines, panels.key_size, keys) {
+                return ExitCode::FAILURE;
+            }
+        }
+        if tray::create().is_null() {
             return ExitCode::FAILURE;
         }
         // Everything is message driven: no timers, no polling.

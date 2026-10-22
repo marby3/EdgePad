@@ -621,6 +621,12 @@ pub fn panels(app: &Running) -> Vec<RECT> {
     }
 }
 
+/// The panel against the left edge of the primary monitor.
+pub fn left_panel(app: &Running) -> RECT {
+    let m = primary_monitor();
+    *panels(app).iter().find(|r| r.left == m.left).expect("no panel on the left edge")
+}
+
 /// `logical` pixels at the system DPI, rounded as EdgePad rounds them.
 pub fn px(logical: i32) -> i32 {
     let dpi = unsafe { GetDpiForSystem() } as i32;

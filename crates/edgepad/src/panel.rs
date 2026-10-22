@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
-use edgepad_core::config::{Action, KeyDef};
+use edgepad_core::config::{Action, Edge, KeyDef};
 use edgepad_core::layout::{self, Rect};
 use edgepad_core::press::Presses;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -29,12 +29,16 @@ const KEY_TEXT: u32 = 0x00F0_F0F0;
 /// One key as the panel needs it.
 struct PanelKey {
     label: Vec<u16>,
+    /// Where it sits inside the panel.
+    rect: Rect,
     /// What pressing it holds down; none for kinds that send nothing yet.
     vk: Option<u16>,
 }
 
 struct Panel {
+    hwnd: HWND,
     rect: Rect,
+    /// Side of a key in pixels.
     key: i32,
     keys: Vec<PanelKey>,
     presses: Presses,
@@ -43,13 +47,19 @@ struct Panel {
 }
 
 thread_local! {
-    // The UI thread owns the only panel; the window procedure reaches it here.
-    static PANEL: RefCell<Option<Panel>> = const { RefCell::new(None) };
+    // The UI thread owns the panels; the window procedure reaches them here.
+    static PANELS: RefCell<Vec<Panel>> = const { RefCell::new(Vec::new()) };
+    // How many keys, over all panels, hold each virtual key down. The same
+    // key may sit on several edges; it goes down with the first and up with
+    // the last.
+    static HOLDS: RefCell<[u8; 256]> = const { RefCell::new([0; 256]) };
 }
 
-/// Create and show a column of `keys` on the left edge of the primary
-/// monitor. Returns null if the window could not be created.
-pub unsafe fn create_left(keys: &[KeyDef]) -> HWND {
+/// Create and show a panel of `keys` on `edge` of the primary monitor,
+/// `lines` keys thick with keys `key_size` logical pixels square. Keys that
+/// do not fit are left out; with none left, no panel is made. Returns false
+/// if the window could not be created.
+pub unsafe fn create(edge: Edge, lines: usize, key_size: u32, keys: &[KeyDef]) -> bool {
     unsafe {
         let instance = GetModuleHandleW(null());
         let mut wc: WNDCLASSW = zeroed();
@@ -57,10 +67,15 @@ pub unsafe fn create_left(keys: &[KeyDef]) -> HWND {
         wc.hInstance = instance;
         wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
         wc.lpszClassName = w!("EdgePadPanel");
+        // Fails harmlessly for every panel after the first.
         RegisterClassW(&wc);
 
-        let key = layout::scale(layout::KEY_SIZE, GetDpiForSystem());
-        let r = layout::left_column(primary_monitor(), key, keys.len() as i32);
+        let key = layout::scale(key_size as i32, GetDpiForSystem());
+        let widths: Vec<usize> = keys.iter().map(|k| k.width as usize).collect();
+        let (r, rects) = layout::edge_panel(primary_monitor(), edge, key, lines, &widths);
+        if rects.is_empty() {
+            return true;
+        }
         let hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             wc.lpszClassName,
@@ -76,12 +91,14 @@ pub unsafe fn create_left(keys: &[KeyDef]) -> HWND {
             null(),
         );
         if hwnd.is_null() {
-            return hwnd;
+            return false;
         }
         let keys: Vec<PanelKey> = keys
             .iter()
-            .map(|k| PanelKey {
+            .zip(rects)
+            .map(|(k, rect)| PanelKey {
                 label: k.label.encode_utf16().collect(),
+                rect,
                 vk: match k.action {
                     Action::Modifier(key) | Action::Hold(key) => Some(send::vk(key)),
                     _ => None,
@@ -89,14 +106,14 @@ pub unsafe fn create_left(keys: &[KeyDef]) -> HWND {
             })
             .collect();
         let presses = Presses::new(keys.len());
-        let panel = Panel { rect: r, key, keys, presses, captured: None };
-        if !draw(hwnd, &panel) {
+        let panel = Panel { hwnd, rect: r, key, keys, presses, captured: None };
+        if !draw(&panel) {
             DestroyWindow(hwnd);
-            return null_mut();
+            return false;
         }
-        PANEL.with_borrow_mut(|p| *p = Some(panel));
+        PANELS.with_borrow_mut(|p| p.push(panel));
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        hwnd
+        true
     }
 }
 
@@ -128,6 +145,33 @@ fn pointer_id(wp: WPARAM) -> u32 {
     (wp & 0xFFFF) as u32
 }
 
+/// Run `f` on the panel of window `hwnd`, if it is one of ours.
+fn with_panel(hwnd: HWND, f: impl FnOnce(&mut Panel)) {
+    PANELS.with_borrow_mut(|panels| {
+        if let Some(panel) = panels.iter_mut().find(|p| p.hwnd == hwnd) {
+            f(panel);
+        }
+    });
+}
+
+/// Press or release `vk` for one key. Only the first press and the last
+/// release over all panels reach SendInput.
+unsafe fn hold(vk: u16, down: bool) {
+    let send = HOLDS.with_borrow_mut(|holds| {
+        let n = &mut holds[vk as usize & 0xFF];
+        if down {
+            *n += 1;
+            *n == 1
+        } else {
+            *n = n.saturating_sub(1);
+            *n == 0
+        }
+    });
+    if send {
+        unsafe { send::key(vk, down) };
+    }
+}
+
 /// A pointer went down: press the key under it, unless it is a pen. The key
 /// stays held by this pointer until it lifts, wherever it moves.
 unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
@@ -138,9 +182,9 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             return;
         }
         let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
-        PANEL.with_borrow_mut(|panel| {
-            let Some(panel) = panel else { return };
-            let Some(key) = layout::key_at(panel.rect, panel.key, x, y) else { return };
+        with_panel(hwnd, |panel| {
+            let (x, y) = (x - panel.rect.x, y - panel.rect.y);
+            let Some(key) = panel.keys.iter().position(|k| k.rect.contains(x, y)) else { return };
             if kind == PT_MOUSE {
                 // Keep receiving the button-up even after leaving the panel.
                 SetCapture(hwnd);
@@ -149,9 +193,9 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             if let Some(key) = panel.presses.down(id, key) {
                 // Send first, draw after: the key reaches the app sooner.
                 if let Some(vk) = panel.keys[key].vk {
-                    send::key(vk, true);
+                    hold(vk, true);
                 }
-                draw(hwnd, panel);
+                draw(panel);
             }
         });
     }
@@ -161,13 +205,12 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
 unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
     unsafe {
         let id = pointer_id(wp);
-        PANEL.with_borrow_mut(|panel| {
-            let Some(panel) = panel else { return };
+        with_panel(hwnd, |panel| {
             if let Some(key) = panel.presses.up(id) {
                 if let Some(vk) = panel.keys[key].vk {
-                    send::key(vk, false);
+                    hold(vk, false);
                 }
-                draw(hwnd, panel);
+                draw(panel);
             }
             // Only the mouse that took the capture gives it back; a finger
             // lifting meanwhile must not cut the mouse off from its button-up.
@@ -193,8 +236,8 @@ unsafe fn primary_monitor() -> Rect {
 /// Paint the keys into a 32-bit DIB and hand it to the window with
 /// UpdateLayeredWindow. The DIB is freed right after; the window keeps its
 /// own copy, so nothing is held between redraws. Returns false on failure.
-unsafe fn draw(hwnd: HWND, panel: &Panel) -> bool {
-    let (r, key) = (panel.rect, panel.key);
+unsafe fn draw(panel: &Panel) -> bool {
+    let (hwnd, r, key) = (panel.hwnd, panel.rect, panel.key);
     unsafe {
         let screen = GetDC(null_mut());
         let mem = CreateCompatibleDC(screen);
@@ -245,8 +288,8 @@ unsafe fn draw(hwnd: HWND, panel: &Panel) -> bool {
         let gap = (key / 16).max(2);
         let corner = key / 6;
         for (i, k) in panel.keys.iter().enumerate() {
-            let top = key * i as i32;
-            let mut cell = RECT { left: gap, top: top + gap, right: key - gap, bottom: top + key - gap };
+            let at = k.rect;
+            let mut cell = RECT { left: at.x + gap, top: at.y + gap, right: at.x + at.w - gap, bottom: at.y + at.h - gap };
             SelectObject(mem, if panel.presses.is_down(i) { held } else { face });
             RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
             DrawTextW(mem, k.label.as_ptr(), k.label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);

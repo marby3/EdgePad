@@ -103,7 +103,8 @@ impl Edge {
         EDGES.iter().find(|(n, _)| name.eq_ignore_ascii_case(n)).map(|&(_, e)| e)
     }
 
-    fn is_side(self) -> bool {
+    /// Left or right: panels there are vertical.
+    pub fn is_side(self) -> bool {
         matches!(self, Edge::Left | Edge::Right)
     }
 }
