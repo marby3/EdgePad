@@ -46,6 +46,7 @@ fn main() -> ExitCode {
         if let Some(notice) = notice {
             tray::notify(&notice);
         }
+        tray::set_hotkey(panels.hotkey);
         watch::run(seen, toggle);
     }
     ExitCode::SUCCESS

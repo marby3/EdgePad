@@ -43,6 +43,7 @@ pub unsafe fn reload(force: bool) {
         // content, saved again, is tried again.
         settings::Outcome::Loaded(panels, bytes) => {
             let built = unsafe { panel::rebuild(&panels) };
+            unsafe { tray::set_hotkey(panels.hotkey) };
             SEEN.set(if built { Some(bytes) } else { seen });
         }
         settings::Outcome::Failed(notice, bytes) => {

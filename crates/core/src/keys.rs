@@ -144,3 +144,44 @@ impl Combo {
         Ok(combo)
     }
 }
+
+impl std::fmt::Display for Key {
+    /// The name as the settings file writes it.
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let name = match self {
+            Key::Char(c) => return write!(f, "{}", *c as char),
+            Key::F(n) => return write!(f, "F{n}"),
+            Key::Ctrl => "Ctrl",
+            Key::Shift => "Shift",
+            Key::Alt => "Alt",
+            Key::Win => "Win",
+            Key::Space => "Space",
+            Key::Enter => "Enter",
+            Key::Esc => "Esc",
+            Key::Tab => "Tab",
+            Key::Backspace => "Backspace",
+            Key::Delete => "Delete",
+            Key::Insert => "Insert",
+            Key::Home => "Home",
+            Key::End => "End",
+            Key::PgUp => "PgUp",
+            Key::PgDn => "PgDn",
+            Key::Left => "Left",
+            Key::Right => "Right",
+            Key::Up => "Up",
+            Key::Down => "Down",
+        };
+        f.write_str(name)
+    }
+}
+
+impl std::fmt::Display for Combo {
+    /// `Ctrl+Shift+S`: modifiers in Ctrl, Shift, Alt, Win order, then the key.
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mods = [(Mods::CTRL, "Ctrl"), (Mods::SHIFT, "Shift"), (Mods::ALT, "Alt"), (Mods::WIN, "Win")];
+        let mut parts: Vec<String> =
+            mods.iter().filter(|(m, _)| self.mods.contains(*m)).map(|(_, n)| n.to_string()).collect();
+        parts.extend(self.key.map(|k| k.to_string()));
+        f.write_str(&parts.join("+"))
+    }
+}

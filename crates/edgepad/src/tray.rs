@@ -8,8 +8,12 @@ use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use edgepad_core::config::Edge;
+use edgepad_core::keys::{Combo, Mods};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey,
+};
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     Shell_NotifyIconW,
@@ -33,6 +37,8 @@ const CMD_RELOAD: usize = 1003;
 const CMD_PAUSE: usize = 1004;
 const CMD_RELEASE: usize = 1005;
 const CMD_AUTOSTART: usize = 1006;
+/// The one hotkey registered with the tray window.
+const HOTKEY_ID: i32 = 1;
 /// One per edge, CMD_EDGE + Edge as usize.
 const CMD_EDGE: usize = 1010;
 
@@ -135,6 +141,26 @@ pub fn notify(text: &str) {
     fill(&mut data.szInfoTitle, "EdgePad");
     fill(&mut data.szInfo, text);
     unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+}
+
+/// Make `hotkey` the one that toggles every edge, replacing any before it;
+/// `None` leaves none. A hotkey another app holds is reported.
+pub unsafe fn set_hotkey(hotkey: Option<Combo>) {
+    let hwnd = TRAY.load(Ordering::Relaxed);
+    if hwnd.is_null() {
+        return;
+    }
+    unsafe { UnregisterHotKey(hwnd, HOTKEY_ID) };
+    let Some(combo) = hotkey else { return };
+    // The parser admits a hotkey only with a key besides the modifiers.
+    let Some(key) = combo.key else { return };
+    let flags: [(Mods, HOT_KEY_MODIFIERS); 4] =
+        [(Mods::CTRL, MOD_CONTROL), (Mods::SHIFT, MOD_SHIFT), (Mods::ALT, MOD_ALT), (Mods::WIN, MOD_WIN)];
+    // Held down, it toggles once, not over and over.
+    let mods = flags.iter().filter(|(m, _)| combo.mods.contains(*m)).fold(MOD_NOREPEAT, |all, (_, f)| all | f);
+    if unsafe { RegisterHotKey(hwnd, HOTKEY_ID, mods, send::vk(key) as u32) } == 0 {
+        notify(&format!("ホットキー {combo} を登録できませんでした。ほかのアプリが使っているかもしれません"));
+    }
 }
 
 /// Have the tray report a failed send. Only posts: safe from the panic hook.
@@ -252,6 +278,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_COMMAND => {
                 command(hwnd, wp & 0xFFFF);
+                0
+            }
+            WM_HOTKEY => {
+                panel::toggle_all();
                 0
             }
             SEND_FAILED => {
