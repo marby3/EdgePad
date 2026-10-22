@@ -1,8 +1,9 @@
 """Measure the release exe against the lightness targets (spec, chapter 8).
 
-Launches a copy of target/release/edgepad.exe from a scratch folder with its
-own %APPDATA%, so an EdgePad already running is neither met as the running
-instance nor toggled. Times how long the panel takes to appear, waits idle,
+Launches target/release/edgepad.exe with a scratch folder as its %APPDATA%,
+so an EdgePad already running is neither met as the running instance nor
+toggled. The exe runs where it is: a fresh copy would be virus-scanned on
+its first start and inflate the startup time. Times how long the panel takes to appear, waits idle,
 then reads memory and CPU time and stops the process.
 The startup time runs from just before the launch call, so it includes
 process creation and errs on the slow side. KB and MB mean KiB and MiB.
@@ -128,16 +129,17 @@ def environment():
 def measure(idle, settings=None):
     if not EXE.is_file():
         sys.exit(f"{EXE} not found: run cargo build --release first")
-    with tempfile.TemporaryDirectory(prefix="edgepad-measure-") as scratch:
-        scratch = pathlib.Path(scratch)
-        (scratch / "bin").mkdir()
-        (scratch / "appdata").mkdir()
-        exe = scratch / "bin" / "edgepad.exe"
-        shutil.copy2(EXE, exe)
+    # A settings file beside the exe would win over the one given here.
+    beside = EXE.with_name("edgepad.ini")
+    if beside.exists():
+        sys.exit(f"{beside} would be read instead: move it away to measure")
+    with tempfile.TemporaryDirectory(prefix="edgepad-measure-") as appdata:
         if settings:
-            shutil.copy2(settings, scratch / "bin" / "edgepad.ini")
-        env = os.environ | {"APPDATA": str(scratch / "appdata")}
-        return run(exe, env, idle)
+            folder = pathlib.Path(appdata) / "EdgePad"
+            folder.mkdir()
+            shutil.copy2(settings, folder / "edgepad.ini")
+        env = os.environ | {"APPDATA": appdata}
+        return run(EXE, env, idle)
 
 
 def run(exe, env, idle):
@@ -196,7 +198,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--idle", type=int, default=60, help="seconds to wait idle (default 60)")
     parser.add_argument("--json", action="store_true", help="print JSON instead of a table")
-    parser.add_argument("--settings", type=pathlib.Path, help="settings file to put beside the exe")
+    parser.add_argument("--settings", type=pathlib.Path, help="settings file to measure with")
     args = parser.parse_args()
     if args.settings and not args.settings.is_file():
         parser.error(f"--settings {args.settings}: no such file")
