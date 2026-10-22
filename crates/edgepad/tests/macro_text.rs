@@ -93,6 +93,7 @@ fn a_text_key_types_its_text_as_unicode_characters_on_release() {
     assert_eq!(log.keys(), [], "nothing while it is held");
     touch.up(1);
     let units: Vec<u32> = "Hi お疲れ😀".encode_utf16().map(u32::from).collect();
+    log.wait_for(units.len() * 2);
     let expect: Vec<(u16, u32, bool)> = units.iter().flat_map(|&c| [(VK_PACKET, c, false), (VK_PACKET, c, false)]).collect();
     assert_eq!(log.scans(), expect, "each UTF-16 unit as a Unicode key press");
     let ups: Vec<bool> = log.keys().iter().map(|&(_, up)| up).collect();
