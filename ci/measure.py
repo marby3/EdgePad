@@ -14,7 +14,6 @@ import argparse
 import ctypes
 import json
 import pathlib
-import platform
 import subprocess
 import sys
 import time
@@ -97,12 +96,15 @@ def environment():
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") as key:
         display = winreg.QueryValueEx(key, "DisplayVersion")[0]
         build = winreg.QueryValueEx(key, "CurrentBuildNumber")[0]
-    # Physical pixels, as EdgePad (DPI aware) sees them.
-    user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-2))
+    # Physical pixels at the system DPI, as EdgePad v0.1 (system DPI aware)
+    # sees them. Without the awareness the figures would be virtualised.
+    if not user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-2)):
+        raise ctypes.WinError(ctypes.get_last_error())
     width, height = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
     dpi = user32.GetDpiForSystem()
     return {
-        "windows": f"{platform.system()} {platform.release()} {display} (build {build})",
+        # The kernel still says 10 on Windows 11; build 22000 is where 11 begins.
+        "windows": f"Windows {11 if int(build) >= 22000 else 10} {display} (build {build})",
         "cpu": cpu,
         "screen": f"{width}x{height}, {dpi} DPI ({dpi * 100 // 96}%)",
     }
@@ -165,6 +167,8 @@ def main():
     parser.add_argument("--idle", type=int, default=60, help="seconds to wait idle (default 60)")
     parser.add_argument("--json", action="store_true", help="print JSON instead of a table")
     args = parser.parse_args()
+    if args.idle < 1:
+        parser.error("--idle must be at least 1 second")
     result = measure(args.idle)
     if args.json:
         print(json.dumps(result | {"environment": environment()}))
