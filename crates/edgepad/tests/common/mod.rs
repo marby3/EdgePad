@@ -600,3 +600,35 @@ pub fn panel_rect(app: &Running) -> (HWND, RECT) {
     unsafe { GetWindowRect(hwnd, &mut r) };
     (hwnd, r)
 }
+
+/// Every visible panel of `app`, once the first has appeared. EdgePad makes
+/// all its panels before it first goes idle, so none is still to come.
+pub fn panels(app: &Running) -> Vec<RECT> {
+    find_panel(app);
+    let name = wide(PANEL_CLASS);
+    let mut found = Vec::new();
+    let mut hwnd = null_mut();
+    loop {
+        hwnd = unsafe { FindWindowExW(null_mut(), hwnd, name.as_ptr(), null()) };
+        if hwnd.is_null() {
+            return found;
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid == app.0.id() && unsafe { IsWindowVisible(hwnd) } != 0 {
+            found.push(window_rect(hwnd));
+        }
+    }
+}
+
+/// `logical` pixels at the system DPI, rounded as EdgePad rounds them.
+pub fn px(logical: i32) -> i32 {
+    let dpi = unsafe { GetDpiForSystem() } as i32;
+    (logical * dpi + 48) / 96
+}
+
+/// Centre of the cell in column `col`, row `row` of a grid of `key`-sized
+/// cells starting at the panel's top-left corner.
+pub fn cell(panel: RECT, key: i32, col: i32, row: i32) -> POINT {
+    POINT { x: panel.left + col * key + key / 2, y: panel.top + row * key + key / 2 }
+}
