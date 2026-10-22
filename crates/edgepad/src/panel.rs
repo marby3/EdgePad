@@ -18,7 +18,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::send;
-use crate::settings::EdgePanel;
+use crate::settings::{EdgePanel, Panels};
 
 /// Opacity of the shown panel: 90%.
 const OPACITY: u8 = 230;
@@ -150,6 +150,27 @@ pub unsafe fn create(p: &EdgePanel, key_size: u32) -> bool {
     }
 }
 
+/// Replace every panel with those of `panels`. Keys held on the old panels
+/// are released first, so none is left down with no panel to lift it.
+/// Returns false if a window could not be created.
+pub unsafe fn rebuild(panels: &Panels) -> bool {
+    unsafe {
+        // Taken out first: messages sent while a window is destroyed (capture
+        // lost, for one) then find no panel and change nothing.
+        for panel in PANELS.take() {
+            DestroyWindow(panel.hwnd);
+        }
+        let held = HOLDS.replace([0; 256]);
+        for (vk, &n) in held.iter().enumerate() {
+            if n > 0 {
+                send::key(vk as u16, false);
+            }
+        }
+        // Every edge is tried, even after one fails.
+        panels.edges.iter().fold(true, |ok, p| create(p, panels.key_size) && ok)
+    }
+}
+
 /// Place the panel and its keys: pick its monitor afresh and size the keys
 /// for `dpi`, or for that monitor's DPI when none is given. What is held
 /// stays held.
@@ -243,10 +264,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // picks its monitor again, at that monitor's DPI.
             WM_DISPLAYCHANGE => {
                 relay_out(hwnd, msg, wp, None);
-                0
-            }
-            WM_DESTROY => {
-                PostQuitMessage(0);
                 0
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
