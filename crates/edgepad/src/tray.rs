@@ -11,6 +11,9 @@ use edgepad_core::config::Edge;
 use edgepad_core::keys::{Combo, Mods};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::RemoteDesktop::{
+    NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey,
 };
@@ -92,6 +95,11 @@ pub unsafe fn create() -> HWND {
         if !hwnd.is_null() {
             TRAY.store(hwnd, Ordering::Relaxed);
             add_icon(hwnd);
+            // Lock and user switch arrive as WM_WTSSESSION_CHANGE; sleep
+            // (WM_POWERBROADCAST) reaches every top-level window unasked.
+            if WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) == 0 {
+                notify("画面ロックの知らせを受け取れません。ロックの前に、押しているキーを離してください");
+            }
         }
         hwnd
     }
@@ -249,6 +257,7 @@ unsafe fn open_settings(hwnd: HWND) {
 unsafe fn exit(hwnd: HWND) {
     unsafe {
         send::release_all();
+        WTSUnRegisterSessionNotification(hwnd);
         Shell_NotifyIconW(NIM_DELETE, &icon_data(hwnd));
         PostQuitMessage(0);
     }
@@ -298,6 +307,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             SEND_FAILED => {
                 notify("キーを送れませんでした。管理者として動いているアプリへは、EdgePad も管理者として起動しないと送れません。");
                 0
+            }
+            // Locked, switched away from or going to sleep: EdgePad will not
+            // hear of a finger lifting from here on, so let go of every key now.
+            WM_WTSSESSION_CHANGE => {
+                if matches!(wp as u32, WTS_SESSION_LOCK | WTS_CONSOLE_DISCONNECT | WTS_REMOTE_DISCONNECT) {
+                    panel::release_all();
+                }
+                0
+            }
+            WM_POWERBROADCAST if wp as u32 == PBT_APMSUSPEND => {
+                panel::release_all();
+                1
             }
             WM_QUERYENDSESSION => 1,
             WM_ENDSESSION => {
