@@ -154,11 +154,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_POINTERUPDATE => 0,
-            // The scale changed or the panel moved to another monitor. The
-            // suggested rectangle in lParam is ignored: a panel keeps to its
-            // edge, so its place is worked out again from scratch.
+            // The scale of the panel's monitor changed. The suggested
+            // rectangle in lParam is ignored: a panel keeps to its edge, so
+            // its place is worked out again from scratch. (Panels live on the
+            // primary monitor until monitor choice arrives.)
             WM_DPICHANGED => {
                 let dpi = (wp >> 16 & 0xFFFF) as u32;
+                // Windows never sends 0, but any process can send this
+                // message, and a zero key size would divide by zero.
+                if dpi == 0 {
+                    return 0;
+                }
                 with_panel(hwnd, |panel| {
                     lay_out(panel, dpi);
                     draw(panel);

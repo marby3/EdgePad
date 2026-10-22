@@ -15,9 +15,10 @@ use windows_sys::Win32::UI::HiDpi::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_DPICHANGED};
 use common::*;
 
-/// Key side at `dpi`, rounded as EdgePad rounds it.
+/// Key side at `dpi`: 56 x DPI / 96. Exact for every Windows scale step
+/// (multiples of 24 DPI), so no rounding comes into it.
 fn key_at(dpi: i32) -> i32 {
-    (KEY_LOGICAL_PX * dpi + 48) / 96
+    KEY_LOGICAL_PX * dpi / 96
 }
 
 /// Tell `panel` its DPI is now `dpi`, as Windows does when the scale changes.
