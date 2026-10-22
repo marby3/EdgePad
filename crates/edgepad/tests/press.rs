@@ -154,3 +154,20 @@ fn every_sent_key_event_carries_the_edgepad_tag() {
         assert_eq!(extra, tag, "vk {vk:#x} up={is_up} carried {extra:#x}, others {tag:#x}");
     }
 }
+
+// #12: a finger held through a long wait in the test must stay down; the
+// test helper, not the test, keeps the injected contact alive.
+#[test]
+fn a_finger_held_through_a_long_wait_keeps_its_key_down() {
+    let _desktop = desktop();
+    let app = launch();
+    let (_, panel) = panel_rect(&app);
+    let log = KeyLog::start();
+
+    let mut touch = Touch::new();
+    touch.down(1, key_centre(panel, CTRL));
+    pump(1500);
+    assert_eq!(log.keys(), [down(CTRL)], "Ctrl released while the finger was still down");
+    touch.up(1);
+    assert_eq!(log.keys(), [down(CTRL), up(CTRL)]);
+}
