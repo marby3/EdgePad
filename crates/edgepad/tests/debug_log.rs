@@ -123,7 +123,7 @@ fn with_debug_settings_panels_hotkey_keys_and_releases_are_logged() {
     choose(&app, "左辺");
     assert!(logged(&app, "パネル 左辺: 非表示"), "the panel hidden: {:?}", log_lines(&app));
 
-    std::fs::write(exe_dir(&app).join("edgepad.ini"), "[set.pad]\nkey = A | nosuchkind | A\n").unwrap();
+    std::fs::write(exe_dir(&app).join("edgepad.ini"), "[set.pad]\nkey = A | nosuchkind | A\n[profile.default]\nleft = pad\n").unwrap();
     assert!(logged(&app, "2 行目"), "the reload error with its line: {:?}", log_lines(&app));
 }
 

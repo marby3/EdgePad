@@ -4,6 +4,7 @@
 
 mod autostart;
 mod instance;
+mod log;
 mod panel;
 mod send;
 mod settings;
@@ -33,7 +34,17 @@ fn main() -> ExitCode {
         // An edge set to none shows no panel; the tray runs regardless.
         // A second launch toggles the running EdgePad's panels and leaves.
         let Some(toggle) = instance::claim() else { return ExitCode::SUCCESS };
+        // After the claim: a second launch must not wipe the running one's log.
+        log::start(std::env::args().skip(1).any(|a| a == "--debug"));
+        let path = settings::path();
+        let shown = path.as_ref().map_or("なし".into(), |p| p.display().to_string());
+        log::debug_log!("起動 EdgePad {} 設定: {shown}", env!("CARGO_PKG_VERSION"));
         let (panels, seen, notice) = settings::load();
+        match (&notice, path) {
+            (Some(notice), _) => log::debug_log!("設定を読めない（固定のキーで動く）: {notice}"),
+            (None, Some(_)) => log::debug_log!("設定を読み込んだ: パネル {} 枚", panels.edges.len()),
+            (None, None) => log::debug_log!("設定ファイルなし: 固定のキーで動く"),
+        }
         for p in &panels.edges {
             if !panel::create(p, panels.key_size) {
                 return ExitCode::FAILURE;

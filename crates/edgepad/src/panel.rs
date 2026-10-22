@@ -22,6 +22,7 @@ use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
+use crate::log::debug_log;
 use crate::send;
 use crate::settings::{EdgePanel, Panels};
 
@@ -132,6 +133,16 @@ thread_local! {
     static PAUSED: Cell<bool> = const { Cell::new(false) };
     // Each pointer down on a handle, with that handle's window.
     static HANDLE_DRAGS: RefCell<Vec<Start>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The edge as the tray and the log name it.
+fn edge_name(edge: Edge) -> &'static str {
+    match edge {
+        Edge::Left => "左辺",
+        Edge::Right => "右辺",
+        Edge::Top => "上辺",
+        Edge::Bottom => "下辺",
+    }
 }
 
 /// Whether the panel on `edge` should be on screen.
@@ -354,6 +365,7 @@ unsafe fn apply_visibility() {
         for panel in panels {
             let show = visible(panel.edge);
             if show != (IsWindowVisible(panel.hwnd) != 0) {
+                debug_log!("パネル {}: {}", edge_name(panel.edge), if show { "表示" } else { "非表示" });
                 if show {
                     ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
                 } else {

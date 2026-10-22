@@ -22,6 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     QS_ALLINPUT, WM_QUIT,
 };
 
+use crate::log::debug_log;
 use crate::{panel, settings, tray};
 
 /// An editor may write a file several times for one save: read it once the
@@ -31,6 +32,10 @@ const SETTLE: Duration = Duration::from_millis(200);
 thread_local! {
     // The settings file's content as last read, usable or not.
     static SEEN: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    // The last notice of a file that could not be read at all. Reported once:
+    // each report writes the --debug log into a watched folder, which would
+    // wake this up again for the same failure.
+    static UNREADABLE: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Read the settings file and apply it if it changed since it was last read,
@@ -42,12 +47,19 @@ pub unsafe fn reload(force: bool) {
         // Recorded only once every panel is up: after a failure the same
         // content, saved again, is tried again.
         settings::Outcome::Loaded(panels, bytes) => {
+            UNREADABLE.set(None);
+            debug_log!("再読込: パネル {} 枚", panels.edges.len());
             let built = unsafe { panel::rebuild(&panels) };
             unsafe { tray::set_hotkey(panels.hotkey) };
             SEEN.set(if built { Some(bytes) } else { seen });
         }
         settings::Outcome::Failed(notice, bytes) => {
-            tray::notify(&notice);
+            let again = bytes.is_none() && UNREADABLE.with_borrow(|last| last.as_deref() == Some(notice.as_str()));
+            if !again {
+                debug_log!("再読込できない（そのまま動く）: {notice}");
+                tray::notify(&notice);
+            }
+            UNREADABLE.set(if bytes.is_none() { Some(notice) } else { None });
             SEEN.set(bytes.or(seen));
         }
         settings::Outcome::Unchanged | settings::Outcome::Missing => SEEN.set(seen),
