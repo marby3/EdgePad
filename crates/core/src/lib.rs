@@ -4,6 +4,7 @@
 //! logic. It has no dependencies and calls no OS API; each platform layer
 //! (Windows today) drives it and performs the actual input and drawing.
 
+pub mod config;
 pub mod keys;
 pub mod layout;
 pub mod press;

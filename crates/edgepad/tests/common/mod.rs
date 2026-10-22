@@ -6,9 +6,10 @@
 
 use std::mem::{size_of, zeroed};
 use std::os::windows::io::AsRawHandle;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Once};
 use std::time::{Duration, Instant};
 
@@ -51,22 +52,64 @@ pub fn desktop() -> MutexGuard<'static, ()> {
     DESKTOP.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-pub struct Running(pub Child);
+/// A running edgepad.exe, and the scratch folder it was given, if any.
+/// Dropping it ends the process and removes the folder.
+pub struct Running(pub Child, pub Option<PathBuf>);
 
 impl Drop for Running {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if let Some(dir) = &self.1 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
-pub fn launch() -> Running {
-    let app = Running(Command::new(env!("CARGO_BIN_EXE_edgepad")).spawn().expect("launch edgepad.exe"));
-    // Wait until EdgePad's UI thread first sits idle in its message loop.
-    // EdgePad creates the panel and the tray before entering that loop.
+/// A fresh, empty folder for one launch.
+fn scratch_dir() -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("edgepad-test-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch folder");
+    dir
+}
+
+/// Start `exe` with %APPDATA% pointing at `appdata`, and wait until its UI
+/// thread first sits idle in its message loop. EdgePad creates the panel and
+/// the tray before entering that loop.
+fn start(exe: &Path, appdata: &Path, dir: Option<PathBuf>) -> Running {
+    let child = Command::new(exe).env("APPDATA", appdata).spawn().expect("launch edgepad.exe");
+    let app = Running(child, dir);
     let idle = unsafe { WaitForInputIdle(app.0.as_raw_handle(), 10_000) };
     assert_eq!(idle, 0, "edgepad.exe did not become input-idle (timeout or exit)");
     app
+}
+
+/// Launch the exe with no settings file. It runs from a scratch copy, so a
+/// settings file beside the built exe or in this machine's %APPDATA% cannot
+/// leak in.
+pub fn launch() -> Running {
+    launch_with(None, None)
+}
+
+/// Launch a copy of the exe from a scratch folder, with `beside_exe` written
+/// as edgepad.ini next to it and `in_appdata` as %APPDATA%\EdgePad\edgepad.ini.
+pub fn launch_with(beside_exe: Option<&str>, in_appdata: Option<&str>) -> Running {
+    let dir = scratch_dir();
+    let (bin, appdata) = (dir.join("bin"), dir.join("appdata"));
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(appdata.join("EdgePad")).unwrap();
+    let exe = bin.join("edgepad.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_edgepad"), &exe).expect("copy edgepad.exe");
+    if let Some(text) = beside_exe {
+        std::fs::write(bin.join("edgepad.ini"), text).unwrap();
+    }
+    if let Some(text) = in_appdata {
+        std::fs::write(appdata.join("EdgePad").join("edgepad.ini"), text).unwrap();
+    }
+    start(&exe, &appdata, Some(dir))
 }
 
 /// Pump this thread's messages for `ms` so test windows stay painted.

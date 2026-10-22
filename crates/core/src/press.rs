@@ -9,21 +9,20 @@
 pub const MAX_POINTERS: usize = 10;
 
 #[derive(Debug)]
-pub struct Presses<const KEYS: usize> {
+pub struct Presses {
     pointers: [Option<(u32, usize)>; MAX_POINTERS],
-    holders: [u8; KEYS],
+    holders: Vec<u8>,
 }
 
-impl<const KEYS: usize> Default for Presses<KEYS> {
-    fn default() -> Self {
-        Presses { pointers: [None; MAX_POINTERS], holders: [0; KEYS] }
+impl Presses {
+    /// Nothing held yet, over a panel of `keys` keys.
+    pub fn new(keys: usize) -> Self {
+        Presses { pointers: [None; MAX_POINTERS], holders: vec![0; keys] }
     }
-}
 
-impl<const KEYS: usize> Presses<KEYS> {
     /// `pointer` went down on `key`. Returns the key to press, if it was up.
     pub fn down(&mut self, pointer: u32, key: usize) -> Option<usize> {
-        if key >= KEYS || self.pointers.iter().flatten().any(|&(p, _)| p == pointer) {
+        if key >= self.holders.len() || self.pointers.iter().flatten().any(|&(p, _)| p == pointer) {
             return None;
         }
         let slot = self.pointers.iter_mut().find(|s| s.is_none())?;
