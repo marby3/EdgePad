@@ -112,3 +112,18 @@ pub fn pick_monitor(monitors: &[Rect], primary: usize, cursor: (i32, i32), choic
         Monitor::Cursor => monitors.iter().position(|m| m.contains(cursor.0, cursor.1)).unwrap_or(primary),
     }
 }
+
+/// The handle on `edge` of `monitor`: `width` pixels thick against the screen
+/// edge, `length` percent of the edge long, its centre `position` percent
+/// along the edge, moved inward where it would stick out.
+pub fn handle(monitor: Rect, edge: Edge, width: i32, length: u8, position: u8) -> Rect {
+    let edge_length = if edge.is_side() { monitor.h } else { monitor.w };
+    let long = (edge_length * length as i32 / 100).max(1);
+    let start = (edge_length * position as i32 / 100 - long / 2).clamp(0, (edge_length - long).max(0));
+    match edge {
+        Edge::Left => Rect { x: monitor.x, y: monitor.y + start, w: width, h: long },
+        Edge::Right => Rect { x: monitor.x + monitor.w - width, y: monitor.y + start, w: width, h: long },
+        Edge::Top => Rect { x: monitor.x + start, y: monitor.y, w: long, h: width },
+        Edge::Bottom => Rect { x: monitor.x + start, y: monitor.y + monitor.h - width, w: long, h: width },
+    }
+}

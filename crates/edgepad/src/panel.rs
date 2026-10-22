@@ -1,10 +1,12 @@
-//! The edge panel window: a layered, topmost, never-activated popup.
+//! The edge panel window: a layered, topmost, never-activated popup, and the
+//! handle left on its edge while it is hidden.
 
 use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
-use edgepad_core::config::{Action, Edge, Monitor};
+use edgepad_core::config::{Action, Edge, Handle, Monitor};
+use edgepad_core::gesture::{self, Swipe};
 use edgepad_core::keys::{Key, Mods};
 use edgepad_core::layout::{self, Rect};
 use edgepad_core::press::Presses;
@@ -12,7 +14,7 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, W
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
@@ -27,6 +29,9 @@ const KEY_FACE: u32 = 0x003A_3A3A;
 /// Face of a held key: accent blue, RGB(0, 120, 215).
 const KEY_HELD: u32 = 0x00D7_7800;
 const KEY_TEXT: u32 = 0x00F0_F0F0;
+/// The handle: light grey, 30% opaque.
+const HANDLE_COLOR: u32 = 0x00C8_C8C8;
+const HANDLE_OPACITY: u8 = 77;
 
 /// One key as the panel needs it.
 struct PanelKey {
@@ -76,6 +81,18 @@ struct Panel {
     presses: Presses,
     /// The mouse pointer that holds the window's capture, if any.
     captured: Option<u32>,
+    /// Where each pointer down on the panel started, in screen pixels.
+    starts: Vec<(u32, i32, i32)>,
+    handle: Option<Handle>,
+    /// The handle's window; null with `handle = none`.
+    handle_hwnd: HWND,
+}
+
+impl Panel {
+    /// How far a pointer goes before it is a swipe: half a key.
+    fn swipe_distance(&self) -> i32 {
+        (self.key / 2).max(1)
+    }
 }
 
 thread_local! {
@@ -89,11 +106,55 @@ thread_local! {
     // across rebuilds, never written to disk.
     static HIDDEN: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
+    // The pointer down on a handle: its window, id and start, in screen pixels.
+    static HANDLE_DRAG: Cell<Option<(HWND, u32, i32, i32)>> = const { Cell::new(None) };
 }
 
 /// Whether the panel on `edge` should be on screen.
 fn visible(edge: Edge) -> bool {
     !PAUSED.get() && !HIDDEN.get()[edge as usize]
+}
+
+/// Whether the handle on `edge` should be on screen: while its panel is
+/// hidden, but not while paused.
+fn handle_visible(edge: Edge) -> bool {
+    !PAUSED.get() && HIDDEN.get()[edge as usize]
+}
+
+/// The handle's window: plain colour, see-through by its layered alpha.
+unsafe fn create_handle() -> HWND {
+    unsafe {
+        let instance = GetModuleHandleW(null());
+        let mut wc: WNDCLASSW = zeroed();
+        wc.lpfnWndProc = Some(handle_proc);
+        wc.hInstance = instance;
+        wc.hCursor = LoadCursorW(null_mut(), IDC_HAND);
+        wc.hbrBackground = CreateSolidBrush(HANDLE_COLOR);
+        wc.lpszClassName = w!("EdgePadHandle");
+        // Fails harmlessly for every handle after the first (and that
+        // brush is then never used; one brush, once).
+        if RegisterClassW(&wc) == 0 {
+            DeleteObject(wc.hbrBackground);
+        }
+        let hwnd = CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            w!("EdgePadHandle"),
+            w!("EdgePad"),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            null_mut(),
+            null_mut(),
+            instance,
+            null(),
+        );
+        if !hwnd.is_null() {
+            SetLayeredWindowAttributes(hwnd, 0, HANDLE_OPACITY, LWA_ALPHA);
+        }
+        hwnd
+    }
 }
 
 /// Create and show the panel `p`, keys `key_size` logical pixels square at
@@ -142,21 +203,39 @@ pub unsafe fn create(p: &EdgePanel, key_size: u32) -> bool {
         let presses = Presses::new(keys.len());
         let rect = Rect { x: 0, y: 0, w: 0, h: 0 };
         let (edge, monitor, lines) = (p.edge, p.monitor, p.lines);
-        let mut panel =
-            Panel { hwnd, edge, monitor, lines, key_size, rect, key: 0, keys, presses, captured: None };
+        let handle_hwnd = if p.handle.is_some() { create_handle() } else { null_mut() };
+        let mut panel = Panel {
+            hwnd,
+            edge,
+            monitor,
+            lines,
+            key_size,
+            rect,
+            key: 0,
+            keys,
+            presses,
+            captured: None,
+            starts: Vec::new(),
+            handle: p.handle,
+            handle_hwnd,
+        };
         lay_out(&mut panel, None);
-        if panel.keys.iter().all(|k| k.rect.is_none()) {
+        let fits = panel.keys.iter().any(|k| k.rect.is_some());
+        if !fits || !draw(&panel) || (p.handle.is_some() && handle_hwnd.is_null()) {
             DestroyWindow(hwnd);
-            return true;
+            if !handle_hwnd.is_null() {
+                DestroyWindow(handle_hwnd);
+            }
+            // Nothing fitting is no failure: there is just no panel.
+            return !fits;
         }
-        if !draw(&panel) {
-            DestroyWindow(hwnd);
-            return false;
-        }
-        let show = visible(panel.edge);
+        let (show, show_handle) = (visible(edge), handle_visible(edge));
         PANELS.with_borrow_mut(|p| p.push(panel));
         if show {
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        if show_handle && !handle_hwnd.is_null() {
+            ShowWindow(handle_hwnd, SW_SHOWNOACTIVATE);
         }
         true
     }
@@ -171,6 +250,9 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
         // lost, for one) then find no panel and change nothing.
         for panel in PANELS.take() {
             DestroyWindow(panel.hwnd);
+            if !panel.handle_hwnd.is_null() {
+                DestroyWindow(panel.handle_hwnd);
+            }
         }
         let held = HOLDS.replace([0; 256]);
         for (vk, &n) in held.iter().enumerate() {
@@ -208,6 +290,14 @@ pub unsafe fn toggle_edge(edge: Edge) {
     unsafe { apply_visibility() };
 }
 
+/// Hide the panel on `edge` (true) or show it (false).
+unsafe fn set_hidden(edge: Edge, hide: bool) {
+    let mut hidden = HIDDEN.get();
+    hidden[edge as usize] = hide;
+    HIDDEN.set(hidden);
+    unsafe { apply_visibility() };
+}
+
 /// Pause (hide every panel) or resume, back to the edges shown before.
 pub unsafe fn toggle_pause() {
     PAUSED.set(!PAUSED.get());
@@ -225,20 +315,23 @@ pub unsafe fn toggle_all() {
     unsafe { apply_visibility() };
 }
 
-/// Show or hide each panel as `visible` says. A panel going away lets go of
-/// the keys held on it first.
+/// Show or hide each panel and handle as `visible` and `handle_visible`
+/// say. A panel going away lets go of the keys held on it first.
 unsafe fn apply_visibility() {
     PANELS.with_borrow_mut(|panels| unsafe {
         for panel in panels {
             let show = visible(panel.edge);
-            if show == (IsWindowVisible(panel.hwnd) != 0) {
-                continue;
+            if show != (IsWindowVisible(panel.hwnd) != 0) {
+                if show {
+                    ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
+                } else {
+                    let_go(panel);
+                    ShowWindow(panel.hwnd, SW_HIDE);
+                }
             }
-            if show {
-                ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
-            } else {
-                let_go(panel);
-                ShowWindow(panel.hwnd, SW_HIDE);
+            if !panel.handle_hwnd.is_null() {
+                let cmd = if handle_visible(panel.edge) { SW_SHOWNOACTIVATE } else { SW_HIDE };
+                ShowWindow(panel.handle_hwnd, cmd);
             }
         }
     });
@@ -254,6 +347,7 @@ unsafe fn let_go(panel: &mut Panel) {
             }
         }
         panel.presses = Presses::new(panel.keys.len());
+        panel.starts.clear();
         if panel.captured.take().is_some() {
             ReleaseCapture();
         }
@@ -305,6 +399,10 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
         for key in &mut panel.keys {
             key.rect = rects.next();
         }
+        if let (Some(h), false) = (panel.handle, panel.handle_hwnd.is_null()) {
+            let r = layout::handle(screen, panel.edge, layout::scale(h.width as i32, dpi), h.length, h.position);
+            SetWindowPos(panel.handle_hwnd, HWND_TOPMOST, r.x, r.y, r.w, r.h, SWP_NOACTIVATE);
+        }
     }
 }
 
@@ -350,7 +448,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 pointer_up(hwnd, wp);
                 0
             }
-            WM_POINTERUPDATE => 0,
+            WM_POINTERUPDATE => {
+                pointer_update(hwnd, wp, lp);
+                0
+            }
             // The scale of the panel's monitor changed. The suggested
             // rectangle in lParam is ignored: a panel keeps to its edge, so
             // its place is worked out again from scratch.
@@ -377,6 +478,94 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 
 fn pointer_id(wp: WPARAM) -> u32 {
     (wp & 0xFFFF) as u32
+}
+
+/// The screen position a pointer message carries.
+fn pointer_at(lp: LPARAM) -> (i32, i32) {
+    ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32)
+}
+
+/// Touch or mouse, not pen (pens press nothing), as the pointer's kind.
+unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
+    let mut kind = 0;
+    match unsafe { GetPointerType(id, &mut kind) } {
+        0 => None,
+        _ if kind == PT_PEN => None,
+        _ => Some(kind),
+    }
+}
+
+/// A pointer moved on a panel: one that has gone far enough toward the
+/// screen edge hides the panel, letting go of the key it pressed.
+unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
+    let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
+    let mut hide = None;
+    with_panel(hwnd, |panel| {
+        if let Some(&(_, x0, y0)) = panel.starts.iter().find(|s| s.0 == id) {
+            if gesture::swipe(panel.edge, x - x0, y - y0, panel.swipe_distance()) == Some(Swipe::Outward) {
+                hide = Some(panel.edge);
+            }
+        }
+    });
+    // Outside the borrow: hiding goes over every panel.
+    if let Some(edge) = hide {
+        unsafe { set_hidden(edge, true) };
+    }
+}
+
+unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+            WM_POINTERDOWN => {
+                let id = pointer_id(wp);
+                if let Some(kind) = finger_or_mouse(id) {
+                    let (x, y) = pointer_at(lp);
+                    HANDLE_DRAG.set(Some((hwnd, id, x, y)));
+                    if kind == PT_MOUSE {
+                        // The handle is thin: keep the mouse once it leaves.
+                        SetCapture(hwnd);
+                    }
+                }
+                0
+            }
+            WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERCAPTURECHANGED => {
+                handle_pointer(hwnd, msg, pointer_id(wp), pointer_at(lp));
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+/// A pointer that went down on handle `hwnd` moved, lifted or was lost. A
+/// swipe inward, or a tap, shows the panel.
+unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
+    let Some((on, down_id, x0, y0)) = HANDLE_DRAG.get() else { return };
+    if on != hwnd || down_id != id {
+        return;
+    }
+    let Some((edge, distance)) = PANELS.with(|panels| {
+        let panels = panels.try_borrow().ok()?;
+        panels.iter().find(|p| p.handle_hwnd == hwnd).map(|p| (p.edge, p.swipe_distance()))
+    }) else {
+        return;
+    };
+    let show = match msg {
+        WM_POINTERUPDATE => gesture::swipe(edge, x - x0, y - y0, distance) == Some(Swipe::Inward),
+        WM_POINTERUP => gesture::is_tap(x - x0, y - y0, distance),
+        // Capture lost: the gesture ends with nothing.
+        _ => false,
+    };
+    if msg != WM_POINTERUPDATE || show {
+        HANDLE_DRAG.set(None);
+        if unsafe { GetCapture() } == hwnd {
+            unsafe { ReleaseCapture() };
+        }
+    }
+    if show {
+        unsafe { set_hidden(edge, false) };
+    }
 }
 
 /// Run `f` on the panel of window `hwnd`, if it is one of ours. Returns false
@@ -430,13 +619,12 @@ unsafe fn hold(vk: u16, down: bool) {
 unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     unsafe {
         let id = pointer_id(wp);
-        let mut kind = 0;
-        if GetPointerType(id, &mut kind) == 0 || kind == PT_PEN {
-            return;
-        }
-        let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
+        let Some(kind) = finger_or_mouse(id) else { return };
+        let (sx, sy) = pointer_at(lp);
         with_panel(hwnd, |panel| {
-            let (x, y) = (x - panel.rect.x, y - panel.rect.y);
+            panel.starts.retain(|s| s.0 != id);
+            panel.starts.push((id, sx, sy));
+            let (x, y) = (sx - panel.rect.x, sy - panel.rect.y);
             let Some(key) = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y))) else {
                 return;
             };
@@ -461,6 +649,7 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
     unsafe {
         let id = pointer_id(wp);
         with_panel(hwnd, |panel| {
+            panel.starts.retain(|s| s.0 != id);
             if let Some(key) = panel.presses.up(id) {
                 match &panel.keys[key].sends {
                     Sends::Hold(vk) => hold(*vk, false),
