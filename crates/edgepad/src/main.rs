@@ -3,6 +3,7 @@
 #![windows_subsystem = "windows"]
 
 mod panel;
+mod send;
 
 use std::mem::zeroed;
 use std::process::ExitCode;
@@ -11,12 +12,15 @@ use std::ptr::null_mut;
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, SetProcessDpiAwarenessContext,
 };
+use windows_sys::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG};
 
 fn main() -> ExitCode {
     unsafe {
         // Per-monitor awareness arrives with multi-monitor support (v0.2).
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+        // Mouse arrives as WM_POINTER* too, so one code path serves both.
+        EnableMouseInPointer(1);
         if panel::create_left().is_null() {
             return ExitCode::FAILURE;
         }

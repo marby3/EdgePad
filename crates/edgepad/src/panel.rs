@@ -1,22 +1,48 @@
 //! The edge panel window: a layered, topmost, never-activated popup.
 
+use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
 use edgepad_core::keys::M0_LABELS;
 use edgepad_core::layout::{self, Rect};
+use edgepad_core::press::Presses;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetCapture, ReleaseCapture, SetCapture, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_SPACE,
+};
+use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
+
+use crate::send;
 
 /// Opacity of the shown panel: 90%.
 const OPACITY: u8 = 230;
 const PANEL_BG: u32 = 0x0020_2020;
 const KEY_FACE: u32 = 0x003A_3A3A;
+/// Face of a held key: accent blue, RGB(0, 120, 215).
+const KEY_HELD: u32 = 0x00D7_7800;
 const KEY_TEXT: u32 = 0x00F0_F0F0;
+
+/// Virtual keys of `M0_LABELS`, in the same order.
+const M0_VKS: [u16; 5] = [VK_ESCAPE, VK_LCONTROL, VK_LSHIFT, VK_LMENU, VK_SPACE];
+
+const KEYS: usize = M0_LABELS.len();
+
+struct Panel {
+    rect: Rect,
+    key: i32,
+    presses: Presses<KEYS>,
+}
+
+thread_local! {
+    // The UI thread owns the only panel; the window procedure reaches it here.
+    static PANEL: RefCell<Option<Panel>> = const { RefCell::new(None) };
+}
 
 /// Create and show the fixed M0 key column on the left edge of the primary
 /// monitor. Returns null if the window could not be created.
@@ -49,10 +75,12 @@ pub unsafe fn create_left() -> HWND {
         if hwnd.is_null() {
             return hwnd;
         }
-        if !draw(hwnd, r, key) {
+        let panel = Panel { rect: r, key, presses: Presses::default() };
+        if !draw(hwnd, &panel) {
             DestroyWindow(hwnd);
             return null_mut();
         }
+        PANEL.with_borrow_mut(|p| *p = Some(panel));
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         hwnd
     }
@@ -62,11 +90,69 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     unsafe {
         match msg {
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+            // Pointer messages are handled here and never passed on, so touch
+            // is not promoted to mouse input.
+            WM_POINTERDOWN => {
+                pointer_down(hwnd, wp, lp);
+                0
+            }
+            WM_POINTERUP | WM_POINTERCAPTURECHANGED => {
+                pointer_up(hwnd, wp);
+                0
+            }
+            WM_POINTERUPDATE => 0,
             WM_DESTROY => {
                 PostQuitMessage(0);
                 0
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
+fn pointer_id(wp: WPARAM) -> u32 {
+    (wp & 0xFFFF) as u32
+}
+
+/// A pointer went down: press the key under it, unless it is a pen. The key
+/// stays held by this pointer until it lifts, wherever it moves.
+unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
+    unsafe {
+        let id = pointer_id(wp);
+        let mut kind = 0;
+        if GetPointerType(id, &mut kind) == 0 || kind == PT_PEN {
+            return;
+        }
+        let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
+        PANEL.with_borrow_mut(|panel| {
+            let Some(panel) = panel else { return };
+            let Some(key) = layout::key_at(panel.rect, panel.key, x, y) else { return };
+            if kind == PT_MOUSE {
+                // Keep receiving the button-up even after leaving the panel.
+                SetCapture(hwnd);
+            }
+            if let Some(key) = panel.presses.down(id, key) {
+                // Send first, draw after: the key reaches the app sooner.
+                send::key(M0_VKS[key], true);
+                draw(hwnd, panel);
+            }
+        });
+    }
+}
+
+/// A pointer lifted or was cancelled: release its key if nobody else holds it.
+unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
+    unsafe {
+        let id = pointer_id(wp);
+        PANEL.with_borrow_mut(|panel| {
+            let Some(panel) = panel else { return };
+            if let Some(key) = panel.presses.up(id) {
+                send::key(M0_VKS[key], false);
+                draw(hwnd, panel);
+            }
+        });
+        if GetCapture() == hwnd {
+            ReleaseCapture();
         }
     }
 }
@@ -85,7 +171,8 @@ unsafe fn primary_monitor() -> Rect {
 /// Paint the keys into a 32-bit DIB and hand it to the window with
 /// UpdateLayeredWindow. The DIB is freed right after; the window keeps its
 /// own copy, so nothing is held between redraws. Returns false on failure.
-unsafe fn draw(hwnd: HWND, r: Rect, key: i32) -> bool {
+unsafe fn draw(hwnd: HWND, panel: &Panel) -> bool {
+    let (r, key) = (panel.rect, panel.key);
     unsafe {
         let screen = GetDC(null_mut());
         let mem = CreateCompatibleDC(screen);
@@ -110,6 +197,7 @@ unsafe fn draw(hwnd: HWND, r: Rect, key: i32) -> bool {
         DeleteObject(background);
 
         let face = CreateSolidBrush(KEY_FACE);
+        let held = CreateSolidBrush(KEY_HELD);
         let font = CreateFontW(
             -(key * 2 / 7),
             0,
@@ -137,6 +225,7 @@ unsafe fn draw(hwnd: HWND, r: Rect, key: i32) -> bool {
         for (i, label) in M0_LABELS.iter().enumerate() {
             let top = key * i as i32;
             let mut cell = RECT { left: gap, top: top + gap, right: key - gap, bottom: top + key - gap };
+            SelectObject(mem, if panel.presses.is_down(i) { held } else { face });
             RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
             let text: Vec<u16> = label.encode_utf16().collect();
             DrawTextW(mem, text.as_ptr(), text.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -147,6 +236,7 @@ unsafe fn draw(hwnd: HWND, r: Rect, key: i32) -> bool {
         SelectObject(mem, old_brush);
         DeleteObject(font);
         DeleteObject(face);
+        DeleteObject(held);
 
         // GDI leaves alpha at 0; make every pixel opaque and let the constant
         // alpha below give the panel its 90%.
