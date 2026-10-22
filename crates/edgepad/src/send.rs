@@ -5,7 +5,7 @@
 //! logoff, panic) and never touches keys held on the physical keyboard.
 
 use std::mem::{size_of, zeroed};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use edgepad_core::keys::{Key, SEND_TAG};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
@@ -14,6 +14,21 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 /// 1..=254, so four words cover them). Atomic so the panic hook can read it
 /// whatever state the UI thread was left in.
 static HELD: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+/// Whether a failed send has been reported and no send has succeeded since:
+/// one notice per run of failures, not one per key.
+static FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Test builds only: make every send fail, as sending to an elevated app does.
+#[cfg(feature = "fault-injection")]
+pub static FAIL: AtomicBool = AtomicBool::new(false);
+
+fn failing() -> bool {
+    #[cfg(feature = "fault-injection")]
+    return FAIL.load(Ordering::Relaxed);
+    #[cfg(not(feature = "fault-injection"))]
+    false
+}
 
 /// Most events one SendInput carries: four modifiers down and up, and a key.
 const MAX_EVENTS: usize = 10;
@@ -101,7 +116,19 @@ unsafe fn send(events: &[(u16, bool)]) {
         input.Anonymous.ki.dwFlags = extended | if down { 0 } else { KEYEVENTF_KEYUP };
         input.Anonymous.ki.dwExtraInfo = SEND_TAG;
     }
-    let sent = unsafe { SendInput(events.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) } as usize;
+    let sent = match failing() {
+        true => 0,
+        false => (unsafe { SendInput(events.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) }) as usize,
+    };
+    if sent < events.len() {
+        // UIPI blocks input to an app running elevated. Posted, not shown
+        // here: this may run from the panic hook.
+        if !FAILURE_REPORTED.swap(true, Ordering::Relaxed) {
+            unsafe { crate::tray::post_send_failed() };
+        }
+    } else if !events.is_empty() {
+        FAILURE_REPORTED.store(false, Ordering::Relaxed);
+    }
     for &(vk, down) in &events[..sent.min(events.len())] {
         let (word, bit) = (&HELD[(vk as usize >> 6) & 3], 1u64 << (vk & 63));
         if down {

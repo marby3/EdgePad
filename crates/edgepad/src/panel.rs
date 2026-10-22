@@ -1,6 +1,6 @@
 //! The edge panel window: a layered, topmost, never-activated popup.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
@@ -85,6 +85,15 @@ thread_local! {
     // key may sit on several edges; it goes down with the first and up with
     // the last.
     static HOLDS: RefCell<[u8; 256]> = const { RefCell::new([0; 256]) };
+    // The edges hidden from the tray, and whether EdgePad is paused. Kept
+    // across rebuilds, never written to disk.
+    static HIDDEN: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
+    static PAUSED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the panel on `edge` should be on screen.
+fn visible(edge: Edge) -> bool {
+    !PAUSED.get() && !HIDDEN.get()[edge as usize]
 }
 
 /// Create and show the panel `p`, keys `key_size` logical pixels square at
@@ -144,8 +153,11 @@ pub unsafe fn create(p: &EdgePanel, key_size: u32) -> bool {
             DestroyWindow(hwnd);
             return false;
         }
+        let show = visible(panel.edge);
         PANELS.with_borrow_mut(|p| p.push(panel));
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        if show {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
         true
     }
 }
@@ -168,6 +180,98 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
         }
         // Every edge is tried, even after one fails.
         panels.edges.iter().fold(true, |ok, p| create(p, panels.key_size) && ok)
+    }
+}
+
+/// For each edge (Edge as index): `None` without a panel, else whether it is
+/// not hidden from the tray.
+pub fn edges() -> [Option<bool>; 4] {
+    let mut edges = [None; 4];
+    let hidden = HIDDEN.get();
+    PANELS.with_borrow(|panels| {
+        for p in panels {
+            edges[p.edge as usize] = Some(!hidden[p.edge as usize]);
+        }
+    });
+    edges
+}
+
+pub fn is_paused() -> bool {
+    PAUSED.get()
+}
+
+/// Hide the panel on `edge`, or show it again.
+pub unsafe fn toggle_edge(edge: Edge) {
+    let mut hidden = HIDDEN.get();
+    hidden[edge as usize] ^= true;
+    HIDDEN.set(hidden);
+    unsafe { apply_visibility() };
+}
+
+/// Pause (hide every panel) or resume, back to the edges shown before.
+pub unsafe fn toggle_pause() {
+    PAUSED.set(!PAUSED.get());
+    unsafe { apply_visibility() };
+}
+
+/// A second launch: hide every edge if any is shown, else show them all.
+/// Paused, nothing changes.
+pub unsafe fn toggle_all() {
+    if PAUSED.get() {
+        return;
+    }
+    let any = PANELS.with_borrow(|panels| panels.iter().any(|p| visible(p.edge)));
+    HIDDEN.set([any; 4]);
+    unsafe { apply_visibility() };
+}
+
+/// Show or hide each panel as `visible` says. A panel going away lets go of
+/// the keys held on it first.
+unsafe fn apply_visibility() {
+    PANELS.with_borrow_mut(|panels| unsafe {
+        for panel in panels {
+            let show = visible(panel.edge);
+            if show == (IsWindowVisible(panel.hwnd) != 0) {
+                continue;
+            }
+            if show {
+                ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
+            } else {
+                let_go(panel);
+                ShowWindow(panel.hwnd, SW_HIDE);
+            }
+        }
+    });
+}
+
+/// Release the keys held on `panel` and forget its pointers. A shortcut
+/// still under a finger is dropped, not sent.
+unsafe fn let_go(panel: &mut Panel) {
+    unsafe {
+        for (i, key) in panel.keys.iter().enumerate() {
+            if let (true, Sends::Hold(vk)) = (panel.presses.is_down(i), &key.sends) {
+                hold(*vk, false);
+            }
+        }
+        panel.presses = Presses::new(panel.keys.len());
+        if panel.captured.take().is_some() {
+            ReleaseCapture();
+        }
+        draw(panel);
+    }
+}
+
+/// Let go of every key EdgePad holds, from any panel (the tray's 全キー解放).
+pub unsafe fn release_all() {
+    unsafe {
+        PANELS.with_borrow_mut(|panels| {
+            for panel in panels {
+                let_go(panel);
+            }
+        });
+        // Anything still recorded (a key-up that failed) goes too.
+        HOLDS.replace([0; 256]);
+        send::release_all();
     }
 }
 
