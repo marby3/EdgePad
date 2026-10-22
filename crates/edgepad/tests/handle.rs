@@ -38,6 +38,19 @@ fn handle_on(app: &Running, edge: &str) -> Option<RECT> {
     })
 }
 
+/// Wait up to a second for the handle on `edge`: a second launch is handled
+/// by the running EdgePad in its own time.
+fn wait_handle(app: &Running, edge: &str) -> Option<RECT> {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let found = handle_on(app, edge);
+        if found.is_some() || std::time::Instant::now() >= end {
+            return found;
+        }
+        pump(20);
+    }
+}
+
 /// Which sides have a visible panel, as "left" / "right".
 fn shown(app: &Running) -> Vec<&'static str> {
     let m = primary_monitor();
@@ -74,7 +87,7 @@ right = pad
 
     choose(&app, "左辺");
     let m = primary_monitor();
-    let (h, w) = (m.bottom - m.top, m.right - m.left);
+    let h = m.bottom - m.top;
     let left = handle_on(&app, "left").expect("a handle on the hidden left edge");
     assert_eq!(left.right - left.left, px(6), "default width 6");
     assert!(((left.bottom - left.top) - h * 40 / 100).abs() <= 1, "default length 40%");
@@ -85,12 +98,11 @@ right = pad
     assert!((76..=77).contains(&alpha), "30% opaque, alpha {alpha}");
 
     assert_eq!(launch_again(&app).code(), Some(0), "a second launch hides the right edge too");
-    let right = handle_on(&app, "right").expect("a handle on the hidden right edge");
+    let right = wait_handle(&app, "right").expect("a handle on the hidden right edge");
     assert_eq!(right.right - right.left, px(8), "width 8");
     assert!(((right.bottom - right.top) - h * 20 / 100).abs() <= 1, "length 20%");
     assert!(((right.top + right.bottom) / 2 - (m.top + h * 25 / 100)).abs() <= 1, "centred at 25%");
     assert_eq!(handles(&app).len(), 2, "no handle on edges without a panel");
-    let _ = w;
 
     choose(&app, "一時停止");
     assert!(handles(&app).is_empty(), "no handles while paused");
@@ -212,7 +224,7 @@ right = pad
     assert!(test_events(&app).iter().all(|e| !e.starts_with("notice: ")), "handle = none is accepted: {:?}", test_events(&app));
 
     assert_eq!(launch_again(&app).code(), Some(0));
+    assert!(wait_handle(&app, "right").is_some(), "the right edge still has one");
     assert!(shown(&app).is_empty(), "both edges hidden");
     assert!(handle_on(&app, "left").is_none(), "no handle on the left");
-    assert!(handle_on(&app, "right").is_some(), "the right edge still has one");
 }

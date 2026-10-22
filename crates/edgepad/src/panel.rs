@@ -10,7 +10,9 @@ use edgepad_core::gesture::{self, Swipe};
 use edgepad_core::keys::{Key, Mods};
 use edgepad_core::layout::{self, Rect};
 use edgepad_core::press::Presses;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows_sys::Win32::Foundation::{
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -29,7 +31,8 @@ const KEY_FACE: u32 = 0x003A_3A3A;
 /// Face of a held key: accent blue, RGB(0, 120, 215).
 const KEY_HELD: u32 = 0x00D7_7800;
 const KEY_TEXT: u32 = 0x00F0_F0F0;
-/// The handle: light grey, 30% opaque.
+/// The handle: light grey, 30% opaque. A placeholder until themes (v0.4)
+/// give it a colour of their own.
 const HANDLE_COLOR: u32 = 0x00C8_C8C8;
 const HANDLE_OPACITY: u8 = 77;
 
@@ -81,11 +84,20 @@ struct Panel {
     presses: Presses,
     /// The mouse pointer that holds the window's capture, if any.
     captured: Option<u32>,
-    /// Where each pointer down on the panel started, in screen pixels.
-    starts: Vec<(u32, i32, i32)>,
+    /// Where each pointer down on the panel started.
+    starts: Vec<Start>,
     handle: Option<Handle>,
     /// The handle's window; null with `handle = none`.
     handle_hwnd: HWND,
+}
+
+/// Where a pointer went down, in screen pixels.
+#[derive(Clone, Copy)]
+struct Start {
+    hwnd: HWND,
+    id: u32,
+    x: i32,
+    y: i32,
 }
 
 impl Panel {
@@ -106,8 +118,8 @@ thread_local! {
     // across rebuilds, never written to disk.
     static HIDDEN: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
-    // The pointer down on a handle: its window, id and start, in screen pixels.
-    static HANDLE_DRAG: Cell<Option<(HWND, u32, i32, i32)>> = const { Cell::new(None) };
+    // Each pointer down on a handle, with that handle's window.
+    static HANDLE_DRAGS: RefCell<Vec<Start>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Whether the panel on `edge` should be on screen.
@@ -131,10 +143,13 @@ unsafe fn create_handle() -> HWND {
         wc.hCursor = LoadCursorW(null_mut(), IDC_HAND);
         wc.hbrBackground = CreateSolidBrush(HANDLE_COLOR);
         wc.lpszClassName = w!("EdgePadHandle");
-        // Fails harmlessly for every handle after the first (and that
-        // brush is then never used; one brush, once).
+        // Every handle after the first finds the class already there; that
+        // brush is then never used. Any other failure leaves no handle.
         if RegisterClassW(&wc) == 0 {
             DeleteObject(wc.hbrBackground);
+            if GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+                return null_mut();
+            }
         }
         let hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
@@ -221,7 +236,12 @@ pub unsafe fn create(p: &EdgePanel, key_size: u32) -> bool {
         };
         lay_out(&mut panel, None);
         let fits = panel.keys.iter().any(|k| k.rect.is_some());
-        if !fits || !draw(&panel) || (p.handle.is_some() && handle_hwnd.is_null()) {
+        // A handle that could not be made leaves the edge without one; the
+        // panel itself still goes up.
+        if handle_hwnd.is_null() {
+            panel.handle = None;
+        }
+        if !fits || !draw(&panel) {
             DestroyWindow(hwnd);
             if !handle_hwnd.is_null() {
                 DestroyWindow(handle_hwnd);
@@ -329,9 +349,9 @@ unsafe fn apply_visibility() {
                     ShowWindow(panel.hwnd, SW_HIDE);
                 }
             }
-            if !panel.handle_hwnd.is_null() {
-                let cmd = if handle_visible(panel.edge) { SW_SHOWNOACTIVATE } else { SW_HIDE };
-                ShowWindow(panel.handle_hwnd, cmd);
+            let handle = handle_visible(panel.edge);
+            if !panel.handle_hwnd.is_null() && handle != (IsWindowVisible(panel.handle_hwnd) != 0) {
+                ShowWindow(panel.handle_hwnd, if handle { SW_SHOWNOACTIVATE } else { SW_HIDE });
             }
         }
     });
@@ -501,8 +521,8 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
     let mut hide = None;
     with_panel(hwnd, |panel| {
-        if let Some(&(_, x0, y0)) = panel.starts.iter().find(|s| s.0 == id) {
-            if gesture::swipe(panel.edge, x - x0, y - y0, panel.swipe_distance()) == Some(Swipe::Outward) {
+        if let Some(s) = panel.starts.iter().find(|s| s.id == id) {
+            if gesture::swipe(panel.edge, x - s.x, y - s.y, panel.swipe_distance()) == Some(Swipe::Outward) {
                 hide = Some(panel.edge);
             }
         }
@@ -521,7 +541,10 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let id = pointer_id(wp);
                 if let Some(kind) = finger_or_mouse(id) {
                     let (x, y) = pointer_at(lp);
-                    HANDLE_DRAG.set(Some((hwnd, id, x, y)));
+                    HANDLE_DRAGS.with_borrow_mut(|drags| {
+                        drags.retain(|d| d.id != id);
+                        drags.push(Start { hwnd, id, x, y });
+                    });
                     if kind == PT_MOUSE {
                         // The handle is thin: keep the mouse once it leaves.
                         SetCapture(hwnd);
@@ -541,10 +564,11 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 /// A pointer that went down on handle `hwnd` moved, lifted or was lost. A
 /// swipe inward, or a tap, shows the panel.
 unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
-    let Some((on, down_id, x0, y0)) = HANDLE_DRAG.get() else { return };
-    if on != hwnd || down_id != id {
+    let Some(Start { x: x0, y: y0, .. }) =
+        HANDLE_DRAGS.with_borrow(|drags| drags.iter().find(|d| d.hwnd == hwnd && d.id == id).copied())
+    else {
         return;
-    }
+    };
     let Some((edge, distance)) = PANELS.with(|panels| {
         let panels = panels.try_borrow().ok()?;
         panels.iter().find(|p| p.handle_hwnd == hwnd).map(|p| (p.edge, p.swipe_distance()))
@@ -558,7 +582,7 @@ unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
         _ => false,
     };
     if msg != WM_POINTERUPDATE || show {
-        HANDLE_DRAG.set(None);
+        HANDLE_DRAGS.with_borrow_mut(|drags| drags.retain(|d| d.id != id));
         if unsafe { GetCapture() } == hwnd {
             unsafe { ReleaseCapture() };
         }
@@ -622,17 +646,18 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
         let Some(kind) = finger_or_mouse(id) else { return };
         let (sx, sy) = pointer_at(lp);
         with_panel(hwnd, |panel| {
-            panel.starts.retain(|s| s.0 != id);
-            panel.starts.push((id, sx, sy));
+            panel.starts.retain(|s| s.id != id);
+            panel.starts.push(Start { hwnd, id, x: sx, y: sy });
+            if kind == PT_MOUSE {
+                // Keep receiving moves and the button-up after leaving the
+                // panel, key or not: a swipe to hide runs off it.
+                SetCapture(hwnd);
+                panel.captured = Some(id);
+            }
             let (x, y) = (sx - panel.rect.x, sy - panel.rect.y);
             let Some(key) = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y))) else {
                 return;
             };
-            if kind == PT_MOUSE {
-                // Keep receiving the button-up even after leaving the panel.
-                SetCapture(hwnd);
-                panel.captured = Some(id);
-            }
             if let Some(key) = panel.presses.down(id, key) {
                 // Send first, draw after: the key reaches the app sooner.
                 if let Sends::Hold(vk) = panel.keys[key].sends {
@@ -649,7 +674,7 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
     unsafe {
         let id = pointer_id(wp);
         with_panel(hwnd, |panel| {
-            panel.starts.retain(|s| s.0 != id);
+            panel.starts.retain(|s| s.id != id);
             if let Some(key) = panel.presses.up(id) {
                 match &panel.keys[key].sends {
                     Sends::Hold(vk) => hold(*vk, false),
