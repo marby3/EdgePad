@@ -169,5 +169,5 @@ fn a_finger_held_through_a_long_wait_keeps_its_key_down() {
     pump(1500);
     assert_eq!(log.keys(), [down(CTRL)], "Ctrl released while the finger was still down");
     touch.up(1);
-    assert_eq!(log.keys(), [down(CTRL), up(CTRL)]);
+    assert_eq!(log.keys(), [down(CTRL), up(CTRL)], "lifting the finger released Ctrl");
 }

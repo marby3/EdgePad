@@ -62,8 +62,8 @@ impl Drop for Running {
 
 pub fn launch() -> Running {
     let app = Running(Command::new(env!("CARGO_BIN_EXE_edgepad")).spawn().expect("launch edgepad.exe"));
-    // Wait until EdgePad's UI thread first sits idle waiting for input, i.e.
-    // its start-up (panel, then tray) is done and the message loop runs.
+    // Wait until EdgePad's UI thread first sits idle in its message loop.
+    // EdgePad creates the panel and the tray before entering that loop.
     let idle = unsafe { WaitForInputIdle(app.0.as_raw_handle(), 10_000) };
     assert_eq!(idle, 0, "edgepad.exe did not become input-idle (timeout or exit)");
     app
@@ -479,6 +479,7 @@ impl Touch {
         self.check();
         self.lift(id).expect("InjectTouchInput (up)");
         pump(150);
+        self.check();
     }
 
     fn lift(&self, id: u32) -> std::io::Result<()> {
