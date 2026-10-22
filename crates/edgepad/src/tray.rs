@@ -1,30 +1,54 @@
-//! The tray icon and its menu, owned by a hidden top-level window. A hidden
-//! window rather than a message-only one, because only top-level windows hear
-//! the TaskbarCreated broadcast sent when Explorer restarts.
+//! The tray icon, its menu and its notifications, owned by a hidden
+//! top-level window. A hidden window rather than a message-only one, because
+//! only top-level windows hear the TaskbarCreated broadcast sent when
+//! Explorer restarts.
 
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
+use edgepad_core::config::Edge;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
-use crate::send;
+use crate::{autostart, panel, send, settings, watch};
 
-// The class name, TRAY_ID, TRAY_CALLBACK and the test panic message are the
-// contract tests/tray.rs drives the tray through: change them together.
+// The class name, TRAY_ID, TRAY_CALLBACK, the menu texts and the test
+// messages are the contract the tests drive the tray through: change them
+// together.
 const TRAY_ID: u32 = 1;
 const TRAY_CALLBACK: u32 = WM_APP + 1;
-const CMD_EXIT: usize = 1001;
+/// Posted by `post_send_failed`.
+const SEND_FAILED: u32 = WM_APP + 2;
 
+const CMD_EXIT: usize = 1001;
+const CMD_OPEN: usize = 1002;
+const CMD_RELOAD: usize = 1003;
+const CMD_PAUSE: usize = 1004;
+const CMD_RELEASE: usize = 1005;
+const CMD_AUTOSTART: usize = 1006;
+/// One per edge, CMD_EDGE + Edge as usize.
+const CMD_EDGE: usize = 1010;
+
+const EDGES: [(Edge, *const u16); 4] = [
+    (Edge::Left, w!("左辺を表示(&L)")),
+    (Edge::Right, w!("右辺を表示(&R)")),
+    (Edge::Top, w!("上辺を表示(&T)")),
+    (Edge::Bottom, w!("下辺を表示(&B)")),
+];
+
+static TRAY: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
 static TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "fault-injection")]
 static TEST_PANIC: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "fault-injection")]
+static TEST_SEND_FAIL: AtomicU32 = AtomicU32::new(0);
 
 /// Create the tray window and show the icon. Returns null on failure. A
 /// missing taskbar is not a failure: the icon appears once it is created.
@@ -40,6 +64,8 @@ pub unsafe fn create() -> HWND {
         TASKBAR_CREATED_MSG.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
         #[cfg(feature = "fault-injection")]
         TEST_PANIC.store(RegisterWindowMessageW(w!("EdgePadTestPanic")), Ordering::Relaxed);
+        #[cfg(feature = "fault-injection")]
+        TEST_SEND_FAIL.store(RegisterWindowMessageW(w!("EdgePadTestSendFail")), Ordering::Relaxed);
 
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW,
@@ -56,6 +82,7 @@ pub unsafe fn create() -> HWND {
             null(),
         );
         if !hwnd.is_null() {
+            TRAY.store(hwnd, Ordering::Relaxed);
             add_icon(hwnd);
         }
         hwnd
@@ -70,6 +97,19 @@ fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
     data
 }
 
+/// Copy `text` into a fixed UTF-16 field, cut to fit with its terminator,
+/// never between the halves of a surrogate pair.
+fn fill(dst: &mut [u16], text: &str) {
+    let mut room = dst.len() - 1;
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.len() > room && (0xD800..0xDC00).contains(&units[room - 1]) {
+        room -= 1;
+    }
+    for (d, s) in dst[..room].iter_mut().zip(units) {
+        *d = s;
+    }
+}
+
 unsafe fn add_icon(hwnd: HWND) {
     unsafe {
         let mut data = icon_data(hwnd);
@@ -77,16 +117,69 @@ unsafe fn add_icon(hwnd: HWND) {
         data.uCallbackMessage = TRAY_CALLBACK;
         // Placeholder artwork until the real icon ships (v1.0).
         data.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
-        for (dst, src) in data.szTip.iter_mut().zip("EdgePad".encode_utf16()) {
-            *dst = src;
-        }
+        fill(&mut data.szTip, "EdgePad");
         Shell_NotifyIconW(NIM_ADD, &data);
     }
+}
+
+/// Tell the user something went wrong, in a tray balloon.
+pub fn notify(text: &str) {
+    test_event(&format!("notice: {text}"));
+    let hwnd = TRAY.load(Ordering::Relaxed);
+    if hwnd.is_null() {
+        return;
+    }
+    let mut data = icon_data(hwnd);
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = NIIF_WARNING;
+    fill(&mut data.szInfoTitle, "EdgePad");
+    fill(&mut data.szInfo, text);
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+}
+
+/// Have the tray report a failed send. Only posts: safe from the panic hook.
+pub unsafe fn post_send_failed() {
+    let hwnd = TRAY.load(Ordering::Relaxed);
+    if !hwnd.is_null() {
+        unsafe { PostMessageW(hwnd, SEND_FAILED, 0, 0) };
+    }
+}
+
+/// Test builds record what a person would see or get opened, one line each
+/// in %APPDATA%\edgepad-test-events.txt.
+fn test_event(line: &str) {
+    #[cfg(feature = "fault-injection")]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        use std::io::Write;
+        let path = std::path::Path::new(&appdata).join("edgepad-test-events.txt");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+    #[cfg(not(feature = "fault-injection"))]
+    let _ = line;
 }
 
 unsafe fn show_menu(hwnd: HWND) {
     unsafe {
         let menu = CreatePopupMenu();
+        let check = |on: bool| if on { MF_CHECKED } else { 0 };
+        let edges = panel::edges();
+        for (edge, text) in EDGES {
+            let flags = match edges[edge as usize] {
+                None => MF_GRAYED,
+                Some(shown) => check(shown),
+            };
+            AppendMenuW(menu, MF_STRING | flags, CMD_EDGE + edge as usize, text);
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        AppendMenuW(menu, MF_STRING, CMD_OPEN, w!("設定ファイルを開く(&O)"));
+        AppendMenuW(menu, MF_STRING, CMD_RELOAD, w!("設定を再読込(&E)"));
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        AppendMenuW(menu, MF_STRING | check(panel::is_paused()), CMD_PAUSE, w!("一時停止(&P)"));
+        AppendMenuW(menu, MF_STRING, CMD_RELEASE, w!("全キー解放(&K)"));
+        AppendMenuW(menu, MF_STRING | check(autostart::enabled()), CMD_AUTOSTART, w!("Windows 起動時に自動起動(&S)"));
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, CMD_EXIT, w!("終了(&X)"));
         let mut at = POINT { x: 0, y: 0 };
         GetCursorPos(&mut at);
@@ -98,12 +191,53 @@ unsafe fn show_menu(hwnd: HWND) {
     }
 }
 
+/// Open the settings file in its default app, making one first if needed.
+unsafe fn open_settings(hwnd: HWND) {
+    let Some(path) = settings::path_or_template() else {
+        notify("設定ファイルを作れませんでした");
+        return;
+    };
+    test_event(&format!("open: {}", path.display()));
+    // Test builds stop short of starting an editor.
+    #[cfg(not(feature = "fault-injection"))]
+    unsafe {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        let file: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        ShellExecuteW(hwnd, w!("open"), file.as_ptr(), null(), null(), SW_SHOWNORMAL);
+    }
+    #[cfg(feature = "fault-injection")]
+    let _ = hwnd;
+}
+
 /// Leave: let go of every held key first, then take the icon down and quit.
 unsafe fn exit(hwnd: HWND) {
     unsafe {
         send::release_all();
         Shell_NotifyIconW(NIM_DELETE, &icon_data(hwnd));
         PostQuitMessage(0);
+    }
+}
+
+unsafe fn command(hwnd: HWND, id: usize) {
+    unsafe {
+        match id {
+            CMD_EXIT => exit(hwnd),
+            CMD_OPEN => open_settings(hwnd),
+            CMD_RELOAD => watch::reload(true),
+            CMD_PAUSE => panel::toggle_pause(),
+            CMD_RELEASE => panel::release_all(),
+            CMD_AUTOSTART => {
+                if !autostart::toggle() {
+                    notify("自動起動の設定を変えられませんでした");
+                }
+            }
+            _ => {
+                if let Some(&(edge, _)) = EDGES.iter().find(|(e, _)| CMD_EDGE + *e as usize == id) {
+                    panel::toggle_edge(edge);
+                }
+            }
+        }
     }
 }
 
@@ -116,8 +250,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 0
             }
-            WM_COMMAND if wp & 0xFFFF == CMD_EXIT => {
-                exit(hwnd);
+            WM_COMMAND => {
+                command(hwnd, wp & 0xFFFF);
+                0
+            }
+            SEND_FAILED => {
+                notify("キーを送れませんでした。管理者として動いているアプリへは、EdgePad も管理者として起動しないと送れません。");
                 0
             }
             WM_QUERYENDSESSION => 1,
@@ -133,6 +271,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             #[cfg(feature = "fault-injection")]
             m if m == TEST_PANIC.load(Ordering::Relaxed) => panic!("fault injection"),
+            #[cfg(feature = "fault-injection")]
+            m if m == TEST_SEND_FAIL.load(Ordering::Relaxed) => {
+                send::FAIL.store(wp != 0, Ordering::Relaxed);
+                0
+            }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
     }

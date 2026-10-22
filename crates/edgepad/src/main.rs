@@ -2,6 +2,8 @@
 
 #![windows_subsystem = "windows"]
 
+mod autostart;
+mod instance;
 mod panel;
 mod send;
 mod settings;
@@ -29,7 +31,9 @@ fn main() -> ExitCode {
         // Mouse arrives as WM_POINTER* too, so one code path serves both.
         EnableMouseInPointer(1);
         // An edge set to none shows no panel; the tray runs regardless.
-        let (panels, applied) = settings::load();
+        // A second launch toggles the running EdgePad's panels and leaves.
+        let Some(toggle) = instance::claim() else { return ExitCode::SUCCESS };
+        let (panels, seen, notice) = settings::load();
         for p in &panels.edges {
             if !panel::create(p, panels.key_size) {
                 return ExitCode::FAILURE;
@@ -39,7 +43,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         // Everything is message driven: no timers, no polling.
-        watch::run(applied);
+        if let Some(notice) = notice {
+            tray::notify(&notice);
+        }
+        watch::run(seen, toggle);
     }
     ExitCode::SUCCESS
 }

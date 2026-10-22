@@ -119,6 +119,89 @@ pub fn exe_dir(app: &Running) -> PathBuf {
     app.1.as_ref().expect("launched from a scratch folder").join("bin")
 }
 
+/// The folder `app` was given as %APPDATA%.
+pub fn appdata_dir(app: &Running) -> PathBuf {
+    app.1.as_ref().expect("launched from a scratch folder").join("appdata")
+}
+
+/// Start the same exe as `app` again, with the same %APPDATA%, and wait for
+/// that second process to end.
+pub fn launch_again(app: &Running) -> std::process::ExitStatus {
+    let mut child = Command::new(exe_dir(app).join("edgepad.exe"))
+        .env("APPDATA", appdata_dir(app))
+        .spawn()
+        .expect("launch edgepad.exe again");
+    let end = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < end {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            pump(200);
+            return status;
+        }
+        pump(50);
+    }
+    let _ = child.kill();
+    panic!("the second edgepad.exe was still running after 5s");
+}
+
+/// What the test build of `app` recorded: one line per tray notification
+/// ("notice: ...") and per file it would have opened ("open: <path>").
+pub fn test_events(app: &Running) -> Vec<String> {
+    let text = std::fs::read_to_string(appdata_dir(app).join("edgepad-test-events.txt")).unwrap_or_default();
+    text.lines().map(String::from).collect()
+}
+
+/// One item of the tray menu: its text, command id, checked, greyed.
+#[derive(Debug, Clone)]
+pub struct MenuItem {
+    pub text: String,
+    pub id: u32,
+    pub checked: bool,
+    pub grayed: bool,
+}
+
+pub const TRAY_CLASS: &str = "EdgePadTray";
+pub const TRAY_CALLBACK: u32 = WM_APP + 1;
+
+/// Open the tray menu of `app`, read its items, and close it again.
+pub fn tray_menu(app: &Running) -> Vec<MenuItem> {
+    let tray = find_window(app, TRAY_CLASS, false);
+    unsafe { PostMessageW(tray, TRAY_CALLBACK, 0, WM_RBUTTONUP as isize) };
+    let menu_window = find_window(app, "#32768", true);
+    let menu = unsafe { SendMessageW(menu_window, MN_GETHMENU, 0, 0) } as HMENU;
+    let mut items = Vec::new();
+    for i in 0..unsafe { GetMenuItemCount(menu) } {
+        let state = unsafe { GetMenuState(menu, i as u32, MF_BYPOSITION) };
+        if state & MF_SEPARATOR != 0 {
+            continue;
+        }
+        let mut text = [0u16; 64];
+        let n = unsafe { GetMenuStringW(menu, i as u32, text.as_mut_ptr(), 64, MF_BYPOSITION) };
+        items.push(MenuItem {
+            text: String::from_utf16_lossy(&text[..n.max(0) as usize]),
+            id: unsafe { GetMenuItemID(menu, i) },
+            checked: state & MF_CHECKED != 0,
+            grayed: state & MF_GRAYED != 0,
+        });
+    }
+    unsafe { PostMessageW(menu_window, WM_KEYDOWN, VK_ESCAPE as usize, 0) };
+    pump(200);
+    items
+}
+
+/// The tray menu item of `app` whose text contains `text`.
+pub fn menu_item(app: &Running, text: &str) -> MenuItem {
+    let items = tray_menu(app);
+    items.iter().find(|i| i.text.contains(text)).cloned().unwrap_or_else(|| panic!("no {text} in the tray menu: {items:?}"))
+}
+
+/// Choose the tray menu item of `app` whose text contains `text`.
+pub fn choose(app: &Running, text: &str) {
+    let id = menu_item(app, text).id;
+    let tray = find_window(app, TRAY_CLASS, false);
+    unsafe { PostMessageW(tray, WM_COMMAND, id as usize, 0) };
+    pump(300);
+}
+
 /// Pump this thread's messages for `ms` so test windows stay painted.
 pub fn pump(ms: u64) {
     let end = Instant::now() + Duration::from_millis(ms);
