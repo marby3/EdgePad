@@ -492,6 +492,16 @@ impl KeyLog {
     pub fn scans(&self) -> Vec<(u16, u32, bool)> {
         SCANS.lock().unwrap().clone()
     }
+
+    /// Pump until `n` key events have been recorded, or 2 s have passed.
+    /// Windows hands this thread each event in turn and waits for it, so a
+    /// long burst from one SendInput takes a while to come through.
+    pub fn wait_for(&self, n: usize) {
+        let end = Instant::now() + Duration::from_secs(2);
+        while EVENTS.lock().unwrap().len() < n && Instant::now() < end {
+            pump(20);
+        }
+    }
 }
 
 impl Drop for KeyLog {
