@@ -17,6 +17,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: cargo test
-        run: cargo test --workspace --all-features
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --all-features --no-fail-fast 2>&1 | tee test-output.txt
+      # Each failing test's panic as an annotation, readable from the PR
+      # without opening the log. Ten per step at most; --no-fail-fast runs
+      # every test binary, so all of them can show.
+      - name: Report failed tests
+        if: failure()
+        shell: bash
+        run: |
+          awk '/panicked at|^error(\[|:)/ { msg = $0; while ((getline line) > 0 && line != "" && line !~ /^note:/) msg = msg "%0A" line; print "::error::" msg }' test-output.txt | head -10
       - name: Release build checks (size, static CRT, GUI subsystem)
         run: python -m unittest -v ci/test_build.py ci/test_measure.py
