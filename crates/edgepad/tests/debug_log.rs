@@ -6,6 +6,16 @@ mod common;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK};
+
+/// A process killed when dropped, so a failing assertion leaks nothing.
+struct Kill(std::process::Child);
+
+impl Drop for Kill {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 use common::*;
 
 const LOG: &str = "edgepad-debug.log";
@@ -16,7 +26,11 @@ fn log_lines(app: &Running) -> Vec<String> {
 
 /// Wait up to a second for a log line containing `text`.
 fn logged(app: &Running, text: &str) -> bool {
-    let end = Instant::now() + Duration::from_secs(1);
+    logged_within(app, text, 1000)
+}
+
+fn logged_within(app: &Running, text: &str, ms: u64) -> bool {
+    let end = Instant::now() + Duration::from_millis(ms);
     loop {
         if log_lines(app).iter().any(|l| l.contains(text)) {
             return true;
@@ -89,11 +103,15 @@ fn with_debug_a_fresh_timestamped_log_starts_with_version_and_settings_and_ends_
     // Started again, the log begins anew.
     let exe = exe_dir(&app).join("edgepad.exe");
     let appdata = appdata_dir(&app);
-    let mut again = std::process::Command::new(&exe).arg("--debug").env("APPDATA", &appdata).spawn().unwrap();
-    pump(1500);
+    let _again = Kill(std::process::Command::new(&exe).arg("--debug").env("APPDATA", &appdata).spawn().unwrap());
+    // The old log ends with 終了; the new run's log, once it has replaced
+    // it, does not.
+    let end = Instant::now() + Duration::from_secs(5);
+    let fresh = |l: &[String]| l.iter().any(|x| x.contains("起動")) && !l.iter().any(|x| x.ends_with("終了"));
+    while !fresh(&log_lines(&app)) && Instant::now() < end {
+        pump(50);
+    }
     let lines = log_lines(&app);
-    let _ = again.kill();
-    let _ = again.wait();
     assert_eq!(lines.iter().filter(|l| l.contains("起動")).count(), 1, "one start, the old log gone: {lines:?}");
     assert!(!lines.iter().any(|l| l.ends_with("終了")), "no exit line from the run before: {lines:?}");
 }
@@ -105,7 +123,7 @@ fn with_debug_settings_panels_hotkey_keys_and_releases_are_logged() {
     let app = launch_with_args(Some(SETTINGS), None, &["--debug"]);
     let panel = left_panel(&app);
     assert!(logged(&app, "パネル 1 枚"), "the settings read: {:?}", log_lines(&app));
-    assert!(logged(&app, "ホットキー Ctrl+Alt+F13"), "the hotkey registration: {:?}", log_lines(&app));
+    assert!(logged(&app, "ホットキー Ctrl+Alt+F13: 登録した"), "the hotkey registration: {:?}", log_lines(&app));
 
     let _keys = KeyLog::start();
     let mut touch = Touch::new();
@@ -133,6 +151,7 @@ fn writing_the_log_neither_reloads_the_settings_nor_keeps_the_cpu_busy() {
     let _desktop = desktop();
     let app = launch_with_args(Some(SETTINGS), None, &["--debug"]);
     let panel = left_panel(&app);
+    let window = find_panel(&app);
     let _keys = KeyLog::start();
     let mut touch = Touch::new();
     touch.down(1, key_centre(panel, 0));
@@ -142,6 +161,7 @@ fn writing_the_log_neither_reloads_the_settings_nor_keeps_the_cpu_busy() {
     pump(1000);
     let lines = log_lines(&app);
     assert!(!lines.iter().any(|l| l.contains("再読込")), "log writes caused a reload: {lines:?}");
+    assert_eq!(find_panel(&app), window, "the panel was not rebuilt");
 
     let before = cpu_time_100ns(&app);
     std::thread::sleep(Duration::from_secs(3));

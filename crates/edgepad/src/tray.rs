@@ -164,6 +164,7 @@ pub unsafe fn set_hotkey(hotkey: Option<Combo>) {
     if HOTKEY_ON.swap(false, Ordering::Relaxed) && unsafe { UnregisterHotKey(hwnd, HOTKEY_ID) } == 0 {
         // Still registered: a new one under the same id would fail too.
         HOTKEY_ON.store(true, Ordering::Relaxed);
+        debug_log!("ホットキー: 前のものを解除できない（新しいものは登録しない）");
         notify("ホットキーを解除できませんでした");
         return;
     }

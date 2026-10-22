@@ -35,7 +35,7 @@ fn main() -> ExitCode {
         // A second launch toggles the running EdgePad's panels and leaves.
         let Some(toggle) = instance::claim() else { return ExitCode::SUCCESS };
         // After the claim: a second launch must not wipe the running one's log.
-        log::start(std::env::args().skip(1).any(|a| a == "--debug"));
+        log::start(std::env::args_os().skip(1).any(|a| a == "--debug"));
         let path = settings::path();
         let shown = path.as_ref().map_or("なし".into(), |p| p.display().to_string());
         log::debug_log!("起動 EdgePad {} 設定: {shown}", env!("CARGO_PKG_VERSION"));
@@ -47,18 +47,21 @@ fn main() -> ExitCode {
         }
         for p in &panels.edges {
             if !panel::create(p, panels.key_size) {
+                log::debug_log!("終了（パネルを作れない）");
                 return ExitCode::FAILURE;
             }
         }
         if tray::create().is_null() {
+            log::debug_log!("終了（トレイを作れない）");
             return ExitCode::FAILURE;
         }
         // Everything is message driven: no timers, no polling.
-        if let Some(notice) = notice {
-            tray::notify(&notice);
+        if let Some(notice) = &notice {
+            tray::notify(notice);
         }
         tray::set_hotkey(panels.hotkey);
-        watch::run(seen, toggle);
+        let unreadable = if seen.is_none() { notice } else { None };
+        watch::run(seen, unreadable, toggle);
     }
     ExitCode::SUCCESS
 }
