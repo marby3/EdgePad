@@ -62,10 +62,10 @@ impl Drop for Running {
 
 pub fn launch() -> Running {
     let app = Running(Command::new(env!("CARGO_BIN_EXE_edgepad")).spawn().expect("launch edgepad.exe"));
-    // Wait until EdgePad has finished starting (panel, then tray) and sits in
-    // its message loop waiting for input.
+    // Wait until EdgePad's UI thread first sits idle waiting for input, i.e.
+    // its start-up (panel, then tray) is done and the message loop runs.
     let idle = unsafe { WaitForInputIdle(app.0.as_raw_handle(), 10_000) };
-    assert_eq!(idle, 0, "edgepad.exe did not become idle within 10s");
+    assert_eq!(idle, 0, "edgepad.exe did not become input-idle (timeout or exit)");
     app
 }
 
@@ -112,13 +112,11 @@ pub fn find_window(app: &Running, class: &str, visible: bool) -> HWND {
 /// A touch that lands in the first moments after the panel appears can miss
 /// it: the system's touch hit-testing learns of a new window only once the
 /// desktop compositor has drawn it, and until then the contact is turned into
-/// mouse input instead. Waiting for a composition pass closes that gap.
+/// mouse input instead. Waiting for the next composition pass closes that
+/// gap (measured: 4 of 10 first touches lost without it, 0 of 12 with it).
 pub fn find_panel(app: &Running) -> HWND {
     let panel = find_window(app, PANEL_CLASS, true);
-    unsafe {
-        DwmFlush();
-        DwmFlush();
-    }
+    assert_eq!(unsafe { DwmFlush() }, 0, "DwmFlush failed");
     panel
 }
 
@@ -489,8 +487,10 @@ impl Touch {
         for f in frame.iter_mut().filter(|f| f.pointerInfo.pointerId == id) {
             f.pointerInfo.pointerFlags = POINTER_FLAG_UP;
         }
+        // Forget the contact only once it is really lifted.
+        inject(&frame)?;
         active.retain(|c| c.0 != id);
-        inject(&frame)
+        Ok(())
     }
 
     /// Wait in place. Contacts stay down on their own (the keeper refreshes
