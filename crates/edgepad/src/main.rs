@@ -4,6 +4,7 @@
 
 mod panel;
 mod send;
+mod settings;
 mod tray;
 
 use std::mem::zeroed;
@@ -29,7 +30,9 @@ fn main() -> ExitCode {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
         // Mouse arrives as WM_POINTER* too, so one code path serves both.
         EnableMouseInPointer(1);
-        if panel::create_left().is_null() || tray::create().is_null() {
+        // A left edge set to none shows no panel; the tray still runs.
+        let keys = settings::left_keys();
+        if (!keys.is_empty() && panel::create_left(&keys).is_null()) || tray::create().is_null() {
             return ExitCode::FAILURE;
         }
         // Everything is message driven: no timers, no polling.

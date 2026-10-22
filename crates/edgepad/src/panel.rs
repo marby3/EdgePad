@@ -4,16 +4,14 @@ use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
-use edgepad_core::keys::M0_LABELS;
+use edgepad_core::config::{Action, KeyDef};
 use edgepad_core::layout::{self, Rect};
 use edgepad_core::press::Presses;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_SPACE,
-};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
@@ -28,15 +26,18 @@ const KEY_FACE: u32 = 0x003A_3A3A;
 const KEY_HELD: u32 = 0x00D7_7800;
 const KEY_TEXT: u32 = 0x00F0_F0F0;
 
-/// Virtual keys of `M0_LABELS`, in the same order.
-const M0_VKS: [u16; 5] = [VK_ESCAPE, VK_LCONTROL, VK_LSHIFT, VK_LMENU, VK_SPACE];
-
-const KEYS: usize = M0_LABELS.len();
+/// One key as the panel needs it.
+struct PanelKey {
+    label: Vec<u16>,
+    /// What pressing it holds down; none for kinds that send nothing yet.
+    vk: Option<u16>,
+}
 
 struct Panel {
     rect: Rect,
     key: i32,
-    presses: Presses<KEYS>,
+    keys: Vec<PanelKey>,
+    presses: Presses,
     /// The mouse pointer that holds the window's capture, if any.
     captured: Option<u32>,
 }
@@ -46,9 +47,9 @@ thread_local! {
     static PANEL: RefCell<Option<Panel>> = const { RefCell::new(None) };
 }
 
-/// Create and show the fixed M0 key column on the left edge of the primary
+/// Create and show a column of `keys` on the left edge of the primary
 /// monitor. Returns null if the window could not be created.
-pub unsafe fn create_left() -> HWND {
+pub unsafe fn create_left(keys: &[KeyDef]) -> HWND {
     unsafe {
         let instance = GetModuleHandleW(null());
         let mut wc: WNDCLASSW = zeroed();
@@ -59,7 +60,7 @@ pub unsafe fn create_left() -> HWND {
         RegisterClassW(&wc);
 
         let key = layout::scale(layout::KEY_SIZE, GetDpiForSystem());
-        let r = layout::left_column(primary_monitor(), key, M0_LABELS.len() as i32);
+        let r = layout::left_column(primary_monitor(), key, keys.len() as i32);
         let hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             wc.lpszClassName,
@@ -77,7 +78,18 @@ pub unsafe fn create_left() -> HWND {
         if hwnd.is_null() {
             return hwnd;
         }
-        let panel = Panel { rect: r, key, presses: Presses::default(), captured: None };
+        let keys: Vec<PanelKey> = keys
+            .iter()
+            .map(|k| PanelKey {
+                label: k.label.encode_utf16().collect(),
+                vk: match k.action {
+                    Action::Modifier(key) | Action::Hold(key) => Some(send::vk(key)),
+                    _ => None,
+                },
+            })
+            .collect();
+        let presses = Presses::new(keys.len());
+        let panel = Panel { rect: r, key, keys, presses, captured: None };
         if !draw(hwnd, &panel) {
             DestroyWindow(hwnd);
             return null_mut();
@@ -136,7 +148,9 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             }
             if let Some(key) = panel.presses.down(id, key) {
                 // Send first, draw after: the key reaches the app sooner.
-                send::key(M0_VKS[key], true);
+                if let Some(vk) = panel.keys[key].vk {
+                    send::key(vk, true);
+                }
                 draw(hwnd, panel);
             }
         });
@@ -150,7 +164,9 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM) {
         PANEL.with_borrow_mut(|panel| {
             let Some(panel) = panel else { return };
             if let Some(key) = panel.presses.up(id) {
-                send::key(M0_VKS[key], false);
+                if let Some(vk) = panel.keys[key].vk {
+                    send::key(vk, false);
+                }
                 draw(hwnd, panel);
             }
             // Only the mouse that took the capture gives it back; a finger
@@ -228,13 +244,12 @@ unsafe fn draw(hwnd: HWND, panel: &Panel) -> bool {
 
         let gap = (key / 16).max(2);
         let corner = key / 6;
-        for (i, label) in M0_LABELS.iter().enumerate() {
+        for (i, k) in panel.keys.iter().enumerate() {
             let top = key * i as i32;
             let mut cell = RECT { left: gap, top: top + gap, right: key - gap, bottom: top + key - gap };
             SelectObject(mem, if panel.presses.is_down(i) { held } else { face });
             RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
-            let text: Vec<u16> = label.encode_utf16().collect();
-            DrawTextW(mem, text.as_ptr(), text.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(mem, k.label.as_ptr(), k.label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
         SelectObject(mem, old_font);

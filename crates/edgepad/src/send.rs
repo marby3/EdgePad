@@ -7,10 +7,8 @@
 use std::mem::{size_of, zeroed};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use edgepad_core::keys::SEND_TAG;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput,
-};
+use edgepad_core::keys::{Key, SEND_TAG};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 
 /// Bit set of the virtual keys EdgePad currently holds down (virtual keys are
 /// 1..=254, so four words cover them). Atomic so the panic hook can read it
@@ -54,5 +52,45 @@ pub unsafe fn release_all() {
             bits &= bits - 1;
             unsafe { key(vk, false) };
         }
+    }
+}
+
+/// The virtual key of `key`. Modifiers are the left-hand ones.
+pub fn vk(key: Key) -> u16 {
+    match key {
+        Key::Ctrl => VK_LCONTROL,
+        Key::Shift => VK_LSHIFT,
+        Key::Alt => VK_LMENU,
+        Key::Win => VK_LWIN,
+        // Letters and digits are their own virtual keys.
+        Key::Char(c @ (b'A'..=b'Z' | b'0'..=b'9')) => c as u16,
+        Key::Char(b'[') => VK_OEM_4,
+        Key::Char(b']') => VK_OEM_6,
+        Key::Char(b'-') => VK_OEM_MINUS,
+        Key::Char(b'=') => VK_OEM_PLUS,
+        Key::Char(b';') => VK_OEM_1,
+        Key::Char(b'\'') => VK_OEM_7,
+        Key::Char(b',') => VK_OEM_COMMA,
+        Key::Char(b'.') => VK_OEM_PERIOD,
+        Key::Char(b'/') => VK_OEM_2,
+        Key::Char(b'\\') => VK_OEM_5,
+        Key::Char(b'`') => VK_OEM_3,
+        Key::Char(c) => unreachable!("the parser admits no key {c}"),
+        Key::F(n) => VK_F1 + n as u16 - 1,
+        Key::Space => VK_SPACE,
+        Key::Enter => VK_RETURN,
+        Key::Esc => VK_ESCAPE,
+        Key::Tab => VK_TAB,
+        Key::Backspace => VK_BACK,
+        Key::Delete => VK_DELETE,
+        Key::Insert => VK_INSERT,
+        Key::Home => VK_HOME,
+        Key::End => VK_END,
+        Key::PgUp => VK_PRIOR,
+        Key::PgDn => VK_NEXT,
+        Key::Left => VK_LEFT,
+        Key::Right => VK_RIGHT,
+        Key::Up => VK_UP,
+        Key::Down => VK_DOWN,
     }
 }
