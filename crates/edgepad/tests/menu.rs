@@ -241,10 +241,18 @@ fn the_autostart_item_creates_and_removes_a_startup_shortcut_to_this_exe() {
 
     choose(&app, "自動起動");
     let bytes = std::fs::read(&lnk).expect("EdgePad.lnk in the startup folder");
-    let exe = exe_dir(&app).join("edgepad.exe").display().to_string();
-    let utf16: Vec<u8> = exe.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
-    assert!(has(exe.as_bytes()) || has(&utf16), "the shortcut points at {exe}");
+    let exe = exe_dir(&app).join("edgepad.exe");
+    // The shell stores the long form of the path; the temp folder may come
+    // as a short 8.3 one (C:\Users\RUNNER~1\... on CI).
+    let long = std::fs::canonicalize(&exe).unwrap().display().to_string();
+    let long = long.trim_start_matches(r"\\?\").to_string();
+    let has = |path: &str| {
+        let utf16: Vec<u8> = path.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let found = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+        found(path.as_bytes()) || found(&utf16)
+    };
+    let exe = exe.display().to_string();
+    assert!(has(&exe) || has(&long), "the shortcut points at {long}");
     assert!(menu_item(&app, "自動起動").checked);
 
     choose(&app, "自動起動");
