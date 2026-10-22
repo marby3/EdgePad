@@ -46,7 +46,7 @@ fn pressing_a_key_with_an_app_out_of_reach_in_front_notifies_once_per_time_it_co
 
     unsafe { PostMessageW(tray, elevated, 1, 0) };
     pump(100);
-    force_foreground(first.0);
+    click_to_front(first.0);
     pump(200);
     assert_eq!(notices(&app), Vec::<String>::new(), "nothing until a key is pressed");
     tap(&mut touch);
@@ -58,14 +58,14 @@ fn pressing_a_key_with_an_app_out_of_reach_in_front_notifies_once_per_time_it_co
     tap(&mut touch);
     assert_eq!(notices(&app).len(), 1, "once while the app stays in front");
 
-    force_foreground(second.0);
+    click_to_front(second.0);
     pump(200);
     tap(&mut touch);
     assert_eq!(notices(&app).len(), 2, "again for the next app out of reach");
 
     unsafe { PostMessageW(tray, elevated, 0, 0) };
     pump(100);
-    force_foreground(first.0);
+    click_to_front(first.0);
     pump(200);
     tap(&mut touch);
     assert_eq!(notices(&app).len(), 2, "an app within reach: no notice");
