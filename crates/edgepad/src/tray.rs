@@ -25,7 +25,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::log::debug_log;
-use crate::{autostart, panel, send, settings, watch};
+use crate::{autostart, panel, profile, send, settings, watch};
 
 // The class name, TRAY_ID, TRAY_CALLBACK, the menu texts and the test
 // messages are the contract the tests drive the tray through: change them
@@ -34,6 +34,8 @@ const TRAY_ID: u32 = 1;
 const TRAY_CALLBACK: u32 = WM_APP + 1;
 /// Posted by `post_send_failed`.
 const SEND_FAILED: u32 = WM_APP + 2;
+/// Posted by `post_foreground`, with the window in wParam.
+const FOREGROUND: u32 = WM_APP + 3;
 
 const CMD_EXIT: usize = 1001;
 const CMD_OPEN: usize = 1002;
@@ -192,6 +194,15 @@ pub unsafe fn post_send_failed() {
     }
 }
 
+/// Have the tray follow `hwnd`, now in front, to its profile. Only posts:
+/// the WinEvent hook calls this whatever the UI thread is doing.
+pub unsafe fn post_foreground(hwnd: HWND) {
+    let tray = TRAY.load(Ordering::Relaxed);
+    if !tray.is_null() {
+        unsafe { PostMessageW(tray, FOREGROUND, hwnd as WPARAM, 0) };
+    }
+}
+
 /// Test builds record what a person would see or get opened, one line each
 /// in %APPDATA%\edgepad-test-events.txt.
 pub fn test_event(line: &str) {
@@ -311,6 +322,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 if wp as i32 == HOTKEY_ID {
                     panel::toggle_all();
                 }
+                0
+            }
+            FOREGROUND => {
+                profile::foreground_changed(wp as HWND);
                 0
             }
             SEND_FAILED => {

@@ -7,6 +7,7 @@ mod instance;
 mod launch;
 mod log;
 mod panel;
+mod profile;
 mod send;
 mod settings;
 mod tray;
@@ -40,7 +41,8 @@ fn main() -> ExitCode {
         let path = settings::path();
         let shown = path.as_ref().map_or("なし".into(), |p| p.display().to_string());
         log::debug_log!("起動 EdgePad {} 設定: {shown}", env!("CARGO_PKG_VERSION"));
-        let (panels, seen, notice) = settings::load();
+        let (config, seen, notice) = settings::load();
+        let panels = profile::use_config(config);
         match (&notice, path) {
             (Some(notice), _) => log::debug_log!("設定を読めない（固定のキーで動く）: {notice}"),
             (None, Some(_)) => log::debug_log!("設定を読み込んだ: パネル {} 枚", panels.edges.len()),
@@ -59,6 +61,10 @@ fn main() -> ExitCode {
         // Everything is message driven: no timers, no polling.
         if let Some(notice) = &notice {
             tray::notify(notice);
+        }
+        if !profile::watch() {
+            log::debug_log!("前面のアプリを追えない");
+            tray::notify("前面のアプリを追えません。プロファイルは自動で切り替わりません");
         }
         tray::set_hotkey(panels.hotkey);
         let unreadable = if seen.is_none() { notice } else { None };

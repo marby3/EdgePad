@@ -49,6 +49,18 @@ impl Config {
     pub fn default_profile(&self) -> &Profile {
         self.profile("default").expect("parse guarantees [profile.default]")
     }
+
+    /// The profile for the foreground app, whose executable is named
+    /// `process` (`CLIPStudioPaint.exe`; none when it cannot be told): the
+    /// first in the file whose process matches it, ignoring case, else the
+    /// default.
+    pub fn profile_for(&self, process: Option<&str>) -> &Profile {
+        let process = process.map(str::to_ascii_lowercase);
+        self.profiles
+            .iter()
+            .find(|p| p.process.is_some() && p.process == process)
+            .unwrap_or_else(|| self.default_profile())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::log::debug_log;
-use crate::{panel, settings, tray};
+use crate::{panel, profile, settings, tray};
 
 /// An editor may write a file several times for one save: read it once the
 /// folder has been quiet this long.
@@ -48,8 +48,9 @@ pub unsafe fn reload(force: bool) {
         // same content on every change in the folder would loop, as the
         // --debug log is written there. The tray's 設定を再読込 (force), or a
         // changed file, tries again.
-        settings::Outcome::Loaded(panels, bytes) => {
+        settings::Outcome::Loaded(config, bytes) => {
             UNREADABLE.set(None);
+            let panels = unsafe { profile::use_config(Some(config)) };
             let built = unsafe { panel::rebuild(&panels) };
             unsafe { tray::set_hotkey(panels.hotkey) };
             match built {
