@@ -66,6 +66,10 @@ fn clicking_the_panel_keeps_focus_on_the_previous_foreground_window() {
     force_foreground(foreground.0);
     assert_eq!(unsafe { GetForegroundWindow() }, foreground.0, "precondition: test window in front");
 
+    // The click presses the middle key, Shift, which a click latches: the
+    // hook keeps it from reaching the system, where it would stay down
+    // after EdgePad is ended.
+    let _log = KeyLog::start();
     let mut saved = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut saved) };
     click(POINT { x: (panel.left + panel.right) / 2, y: (panel.top + panel.bottom) / 2 });
