@@ -29,12 +29,29 @@ pub unsafe fn key(vk: u16, down: bool) {
 /// left alone: pressing it again changes nothing, and releasing it would cut
 /// it from under the finger holding it.
 pub unsafe fn shortcut(mods: &[u16], key: Option<u16>) {
-    let mods: Vec<u16> = mods.iter().copied().filter(|&m| !unsafe { is_down(m) }).collect();
-    let mut events: Vec<(u16, bool)> = mods.iter().map(|&m| (m, true)).collect();
-    events.extend(key.into_iter().flat_map(|k| [(k, true), (k, false)]));
-    events.extend(mods.iter().rev().map(|&m| (m, false)));
-    debug_assert!(events.len() <= MAX_EVENTS);
-    unsafe { send(&events) };
+    // Four modifiers at most (Ctrl, Shift, Alt, Win), so 4 + 2 + 4 events.
+    assert!(mods.len() <= 4, "more modifiers than there are: {}", mods.len());
+    let mut up = [0u16; 4];
+    let mut events = [(0u16, false); MAX_EVENTS];
+    let mut n = 0;
+    for &m in mods {
+        if !unsafe { is_down(m) } {
+            up[n] = m;
+            events[n] = (m, true);
+            n += 1;
+        }
+    }
+    let downs = n;
+    if let Some(k) = key {
+        events[n] = (k, true);
+        events[n + 1] = (k, false);
+        n += 2;
+    }
+    for &m in up[..downs].iter().rev() {
+        events[n] = (m, false);
+        n += 1;
+    }
+    unsafe { send(&events[..n]) };
 }
 
 /// Whether modifier `vk` is down already, either side of the keyboard.

@@ -19,6 +19,7 @@ fn at(panel: RECT, i: usize) -> POINT {
     key_centre(panel, i)
 }
 
+// KeyLog records (virtual key, is up): `d` is a key-down, `u` a key-up.
 const fn d(vk: u16) -> (u16, bool) {
     (vk, false)
 }
