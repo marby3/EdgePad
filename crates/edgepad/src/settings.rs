@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use edgepad_core::config::{self, Edge, Handle, KeyDef, KeySet, Monitor};
+use edgepad_core::config::{self, Config, Edge, Handle, KeyDef, KeySet, Monitor, Profile};
 use edgepad_core::keys::Combo;
 use edgepad_core::layout;
 use edgepad_core::modifier::LatchMode;
@@ -94,8 +94,8 @@ pub struct EdgePanel {
 
 /// What reading the settings file came to.
 pub enum Outcome {
-    /// The panels, and the bytes they came from.
-    Loaded(Panels, Vec<u8>),
+    /// The settings, and the bytes they came from.
+    Loaded(Config, Vec<u8>),
     /// The same bytes as those read last time.
     Unchanged,
     /// No settings file in either place.
@@ -105,14 +105,14 @@ pub enum Outcome {
     Failed(String, Option<Vec<u8>>),
 }
 
-/// The panels for the settings file as EdgePad starts, the bytes read, and
-/// what was wrong if the file could not be used. Falls back to the fixed
-/// keys on the left when there is no usable file.
-pub fn load() -> (Panels, Option<Vec<u8>>, Option<String>) {
+/// The settings file as EdgePad starts, the bytes read, and what was wrong
+/// if the file could not be used. Without a usable file there are no
+/// settings, and EdgePad runs on the fixed keys.
+pub fn load() -> (Option<Config>, Option<Vec<u8>>, Option<String>) {
     match reload(None, true) {
-        Outcome::Loaded(panels, bytes) => (panels, Some(bytes), None),
-        Outcome::Failed(notice, bytes) => (fallback(), bytes, Some(notice)),
-        Outcome::Unchanged | Outcome::Missing => (fallback(), None, None),
+        Outcome::Loaded(config, bytes) => (Some(config), Some(bytes), None),
+        Outcome::Failed(notice, bytes) => (None, bytes, Some(notice)),
+        Outcome::Unchanged | Outcome::Missing => (None, None, None),
     }
 }
 
@@ -131,8 +131,8 @@ pub fn reload(seen: Option<&[u8]>, force: bool) -> Outcome {
     if !force && seen == Some(&bytes[..]) {
         return Outcome::Unchanged;
     }
-    match panels(&bytes) {
-        Ok(panels) => Outcome::Loaded(panels, bytes),
+    match config::parse(&bytes) {
+        Ok(config) => Outcome::Loaded(config, bytes),
         Err(errors) => Outcome::Failed(notice(&errors), Some(bytes)),
     }
 }
@@ -159,7 +159,8 @@ pub fn folders() -> Vec<PathBuf> {
     beside.into_iter().chain(appdata).collect()
 }
 
-fn fallback() -> Panels {
+/// The fixed keys on the left, for when there is no usable settings file.
+pub fn fallback() -> Panels {
     let general = config::General::default();
     Panels {
         key_size: layout::KEY_SIZE as u32,
@@ -177,20 +178,18 @@ fn fallback() -> Panels {
     }
 }
 
-/// The panels of the default profile: one per enabled edge with a key set.
-fn panels(bytes: &[u8]) -> Result<Panels, Vec<config::Error>> {
-    let config = config::parse(bytes)?;
-    let default = config.default_profile();
+/// The panels of `profile`: one per enabled edge it gives a key set.
+pub fn panels(config: &Config, profile: &Profile) -> Panels {
     let edges = [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom]
         .into_iter()
         .filter(|&edge| config.edges[edge as usize].enabled)
         .filter_map(|edge| {
-            let set = config.set(default.edges[edge as usize].as_deref()?)?;
+            let set = config.set(profile.edges[edge as usize].as_deref()?)?;
             let e = &config.edges[edge as usize];
             Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone(), handle: e.handle })
         })
         .collect();
     let g = &config.general;
     let (key_size, hotkey, latch_ms, latch) = (g.key_size, g.hotkey, g.latch_ms, g.latch);
-    Ok(Panels { key_size, edges, hotkey, latch_ms, latch, sets: config.sets.into() })
+    Panels { key_size, edges, hotkey, latch_ms, latch, sets: config.sets.as_slice().into() }
 }

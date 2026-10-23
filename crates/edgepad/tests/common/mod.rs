@@ -419,6 +419,54 @@ pub fn force_foreground(hwnd: HWND) {
     pump(200);
 }
 
+/// Bring `hwnd`, of this process or another, to the front, and fail with
+/// what is in front instead if it cannot be done within 2 s.
+///
+/// Windows lets only the process that last had input set the foreground,
+/// and the CI machines differ in what that is: on some, a window of another
+/// process keeps the front whatever this process does. So this tries in
+/// turn: SetForegroundWindow (`force_foreground`); a tap of Alt, which makes
+/// this process the one with the last input, then SetForegroundWindow
+/// again; a click on the window.
+pub fn wait_in_front(hwnd: HWND) {
+    let in_front = |ms: u64| {
+        let end = Instant::now() + Duration::from_millis(ms);
+        while unsafe { GetForegroundWindow() } != hwnd && Instant::now() < end {
+            pump(50);
+        }
+        let front = unsafe { GetForegroundWindow() };
+        front == hwnd
+    };
+    if in_front(300) {
+        return;
+    }
+    force_foreground(hwnd);
+    if in_front(300) {
+        return;
+    }
+    keyboard(VK_MENU, true);
+    keyboard(VK_MENU, false);
+    unsafe { SetForegroundWindow(hwnd) };
+    if in_front(300) {
+        return;
+    }
+    let r = window_rect(hwnd);
+    let mut saved = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&mut saved) };
+    click(POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 });
+    let done = in_front(1000);
+    unsafe { SetCursorPos(saved.x, saved.y) };
+    if !done {
+        let front = unsafe { GetForegroundWindow() };
+        let mut class = [0u16; 128];
+        let n = unsafe { GetClassNameW(front, class.as_mut_ptr(), 128) };
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(front, &mut pid) };
+        let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+        panic!("the window did not come to the front: {front:?} of class {class:?}, process {pid}, is in front");
+    }
+}
+
 // ---- Key output and pointer input ----
 
 pub const VK: [u16; 5] = [VK_ESCAPE, VK_LCONTROL, VK_LSHIFT, VK_LMENU, VK_SPACE];
