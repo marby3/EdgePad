@@ -636,12 +636,12 @@ fn number(name: &str, value: &str, min: u32, max: u32) -> Result<u32, String> {
     }
 }
 
-/// 0 for off, or a number from `min` to `max`.
+/// 0 for off, or a number from `min` to `max`, written as `number` takes it.
 fn off_or_number(name: &str, value: &str, min: u32, max: u32) -> Result<u32, String> {
-    if value == "0" {
-        return Ok(0);
+    match number(name, value, 0, max) {
+        Ok(v) if v == 0 || v >= min => Ok(v),
+        _ => Err(format!("{name} は 0（オフ）か {min}〜{max} の整数（「{value}」）")),
     }
-    number(name, value, min, max).map_err(|_| format!("{name} は 0（オフ）か {min}〜{max} の整数（「{value}」）"))
 }
 
 fn boolean(name: &str, value: &str) -> Result<bool, String> {
