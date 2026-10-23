@@ -225,3 +225,25 @@ accent = {value}
         assert!(reason.contains("#RRGGBB") && reason.contains(value), "{value}: {reason:?}");
     }
 }
+
+// Issue #58 AC5: hover_ms is 0 or 100..=5000, auto_hide_ms 0 or
+// 1000..=3600000; anything else is an error with its line.
+#[test]
+fn hover_ms_and_auto_hide_ms_take_zero_or_their_range_and_anything_else_is_an_error() {
+    let defaults = General::default();
+    assert_eq!((defaults.hover_ms, defaults.auto_hide_ms), (0, 0), "both are off by default");
+    let good = "[general]\nhover_ms = 100\nauto_hide_ms = 3600000\n[profile.default]\n";
+    let g = parse(good.as_bytes()).expect("in range").general;
+    assert_eq!((g.hover_ms, g.auto_hide_ms), (100, 3_600_000));
+    let off = "[general]\nhover_ms = 0\nauto_hide_ms = 0\n[profile.default]\n";
+    let g = parse(off.as_bytes()).expect("0 is off").general;
+    assert_eq!((g.hover_ms, g.auto_hide_ms), (0, 0));
+
+    for (name, value) in [("hover_ms", "99"), ("hover_ms", "5001"), ("hover_ms", "soon"), ("auto_hide_ms", "999"), ("auto_hide_ms", "3600001"), ("auto_hide_ms", "-5")] {
+        let bad = format!("[general]\n{name} = {value}\n[profile.default]\n");
+        let errors = parse(bad.as_bytes()).expect_err("out of range");
+        assert_eq!(errors.iter().map(|e| e.line).collect::<Vec<_>>(), [2], "{name} = {value}: {errors:#?}");
+        let reason = &errors[0].reason;
+        assert!(reason.contains(name) && reason.contains(value), "{name} = {value}: {reason:?}");
+    }
+}

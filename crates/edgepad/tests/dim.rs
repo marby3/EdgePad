@@ -8,10 +8,7 @@
 
 mod common;
 
-use std::ptr::{null, null_mut};
-
-use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
-use windows_sys::Win32::Graphics::Dwm::DwmFlush;
+use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use common::*;
@@ -63,32 +60,6 @@ fn opacity(backdrop: &TestWindow, panel: RECT) -> i32 {
 /// Whether `actual` is `want` percent, give or take rounding on the way.
 fn near(actual: i32, want: i32) -> bool {
     (actual - want).abs() <= 4
-}
-
-/// The visible handle against the left edge of the primary monitor, once it
-/// can be touched (see `find_panel`).
-fn left_handle(app: &Running) -> RECT {
-    let m = primary_monitor();
-    let name = wide("EdgePadHandle");
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    loop {
-        let mut hwnd: HWND = null_mut();
-        loop {
-            hwnd = unsafe { FindWindowExW(null_mut(), hwnd, name.as_ptr(), null()) };
-            if hwnd.is_null() {
-                break;
-            }
-            let mut pid = 0;
-            unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-            let r = window_rect(hwnd);
-            if pid == app.0.id() && unsafe { IsWindowVisible(hwnd) } != 0 && r.left == m.left {
-                assert_eq!(unsafe { DwmFlush() }, 0, "DwmFlush failed");
-                return r;
-            }
-        }
-        assert!(std::time::Instant::now() < end, "no handle on the left edge");
-        pump(20);
-    }
 }
 
 fn centre(r: RECT) -> POINT {
