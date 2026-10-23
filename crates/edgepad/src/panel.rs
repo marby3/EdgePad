@@ -7,12 +7,13 @@ use std::ptr::{null, null_mut};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use edgepad_core::config::{Action, Edge, Handle, KeyDef, KeySet, Monitor, Page, Step};
+use edgepad_core::config::{Accent, Action, Edge, Handle, KeyDef, KeySet, Monitor, Page, Step, Theme};
 use edgepad_core::gesture::{self, Swipe};
 use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Rect};
 use edgepad_core::modifier::{LatchMode, Modifier};
 use edgepad_core::press::Presses;
+use edgepad_core::theme::Palette;
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
@@ -24,20 +25,12 @@ use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
+use crate::colors::{self, colorref};
 use crate::log::debug_log;
 use crate::{launch, send};
 use crate::settings::{EdgePanel, Panels};
 
-const PANEL_BG: u32 = 0x0020_2020;
-const KEY_FACE: u32 = 0x003A_3A3A;
-/// Face of a held key: accent blue, RGB(0, 120, 215).
-const KEY_HELD: u32 = 0x00D7_7800;
-/// Face of a latched modifier: deeper blue, RGB(0, 70, 140).
-const KEY_LATCHED: u32 = 0x008C_4600;
-const KEY_TEXT: u32 = 0x00F0_F0F0;
-/// The handle: light grey, 30% opaque. A placeholder until themes (v0.4)
-/// give it a colour of their own.
-const HANDLE_COLOR: u32 = 0x00C8_C8C8;
+/// The handle: the accent, 30% opaque.
 const HANDLE_OPACITY: u8 = 77;
 
 /// One key as the panel needs it.
@@ -217,6 +210,42 @@ impl Panel {
     }
 }
 
+/// The colours panels and handles are drawn in now.
+fn palette() -> Palette {
+    PALETTE.get().unwrap_or_else(|| {
+        let (theme, accent) = STYLE.get();
+        let p = colors::palette(theme, accent);
+        PALETTE.set(Some(p));
+        p
+    })
+}
+
+/// Windows' colour settings may have changed: if the colours come to
+/// something else now, redraw every panel and handle in them. Returns false
+/// when the panels are in use further up the stack and nothing changed: the
+/// caller tries again later.
+pub unsafe fn restyle() -> bool {
+    let (theme, accent) = STYLE.get();
+    let p = colors::palette(theme, accent);
+    if PALETTE.get() == Some(p) {
+        return true;
+    }
+    PANELS.with(|panels| {
+        let Ok(panels) = panels.try_borrow() else { return false };
+        PALETTE.set(Some(p));
+        debug_log!("配色の変更");
+        for panel in panels.iter() {
+            unsafe {
+                draw(panel);
+                if !panel.handle_hwnd.is_null() {
+                    InvalidateRect(panel.handle_hwnd, null(), 1);
+                }
+            }
+        }
+        true
+    })
+}
+
 /// `percent` opacity as a constant alpha.
 fn alpha(percent: u8) -> u8 {
     ((percent.min(100) as u32 * 255 + 50) / 100) as u8
@@ -236,6 +265,10 @@ thread_local! {
     // The edges shown dimmed by a short swipe from their handle (spec 4.5).
     // Hiding an edge ends it, so every other way of showing it is normal.
     static DIMMED: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
+    // The theme and accent of the settings, and the colours they come to.
+    // Every panel shares them; Windows changing its own makes them anew.
+    static STYLE: Cell<(Theme, Accent)> = const { Cell::new((Theme::Auto, Accent::Auto)) };
+    static PALETTE: Cell<Option<Palette>> = const { Cell::new(None) };
     // Each pointer down on a handle, with that handle's window.
     static HANDLE_DRAGS: RefCell<Vec<Start>> = const { RefCell::new(Vec::new()) };
 }
@@ -261,7 +294,8 @@ fn handle_visible(edge: Edge) -> bool {
     !PAUSED.get() && HIDDEN.get()[edge as usize]
 }
 
-/// The handle's window: plain colour, see-through by its layered alpha.
+/// The handle's window: plain accent colour (see `handle_proc`), see-through
+/// by its layered alpha.
 unsafe fn create_handle() -> HWND {
     unsafe {
         let instance = GetModuleHandleW(null());
@@ -269,15 +303,11 @@ unsafe fn create_handle() -> HWND {
         wc.lpfnWndProc = Some(handle_proc);
         wc.hInstance = instance;
         wc.hCursor = LoadCursorW(null_mut(), IDC_HAND);
-        wc.hbrBackground = CreateSolidBrush(HANDLE_COLOR);
         wc.lpszClassName = w!("EdgePadHandle");
-        // Every handle after the first finds the class already there; that
-        // brush is then never used. Any other failure leaves no handle.
-        if RegisterClassW(&wc) == 0 {
-            DeleteObject(wc.hbrBackground);
-            if GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
-                return null_mut();
-            }
+        // Every handle after the first finds the class already there. Any
+        // other failure leaves no handle.
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            return null_mut();
         }
         let hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
@@ -333,6 +363,8 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         if hwnd.is_null() {
             return false;
         }
+        STYLE.set((panels.theme, panels.accent));
+        PALETTE.set(Some(colors::palette(panels.theme, panels.accent)));
         let keys: Vec<PanelKey> = p.keys.iter().map(PanelKey::of).collect();
         let presses = Presses::new(keys.len());
         let rect = Rect { x: 0, y: 0, w: 0, h: 0 };
@@ -787,6 +819,15 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 handle_pointer(hwnd, msg, pointer_id(wp), pointer_at(lp));
                 0
             }
+            WM_ERASEBKGND => {
+                let mut r: RECT = zeroed();
+                GetClientRect(hwnd, &mut r);
+                // Held keys are the accent, as plain as it comes.
+                let brush = CreateSolidBrush(colorref(palette().held));
+                FillRect(wp as HDC, &r, brush);
+                DeleteObject(brush);
+                1
+            }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
     }
@@ -1107,13 +1148,14 @@ unsafe fn draw(panel: &Panel) -> bool {
         }
         let old_bitmap = SelectObject(mem, dib);
 
-        let background = CreateSolidBrush(PANEL_BG);
+        let colours = palette();
+        let background = CreateSolidBrush(colorref(colours.background));
         FillRect(mem, &RECT { left: 0, top: 0, right: r.w, bottom: r.h }, background);
         DeleteObject(background);
 
-        let face = CreateSolidBrush(KEY_FACE);
-        let held = CreateSolidBrush(KEY_HELD);
-        let latched_face = CreateSolidBrush(KEY_LATCHED);
+        let face = CreateSolidBrush(colorref(colours.face));
+        let held = CreateSolidBrush(colorref(colours.held));
+        let latched_face = CreateSolidBrush(colorref(colours.latched));
         let font = CreateFontW(
             -(key * 2 / 7),
             0,
@@ -1134,7 +1176,6 @@ unsafe fn draw(panel: &Panel) -> bool {
         let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
         let old_font = SelectObject(mem, font);
         SetBkMode(mem, TRANSPARENT as i32);
-        SetTextColor(mem, KEY_TEXT);
 
         let gap = (key / 16).max(2);
         let corner = key / 6;
@@ -1142,11 +1183,13 @@ unsafe fn draw(panel: &Panel) -> bool {
             let Some(at) = k.rect else { continue };
             let mut cell = RECT { left: at.x + gap, top: at.y + gap, right: at.x + at.w - gap, bottom: at.y + at.h - gap };
             let latched = matches!(k.sends, Sends::Modifier { state, .. } if state.is_latched());
-            SelectObject(mem, match () {
-                _ if panel.presses.is_down(i) => held,
-                _ if latched => latched_face,
-                _ => face,
-            });
+            let (brush, text) = match () {
+                _ if panel.presses.is_down(i) => (held, colours.held_text),
+                _ if latched => (latched_face, colours.latched_text),
+                _ => (face, colours.text),
+            };
+            SelectObject(mem, brush);
+            SetTextColor(mem, colorref(text));
             RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
             DrawTextW(mem, k.label.as_ptr(), k.label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }

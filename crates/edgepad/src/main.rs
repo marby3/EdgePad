@@ -3,6 +3,7 @@
 #![windows_subsystem = "windows"]
 
 mod autostart;
+mod colors;
 mod instance;
 mod launch;
 mod log;

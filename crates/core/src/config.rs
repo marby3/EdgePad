@@ -79,6 +79,8 @@ pub struct General {
     pub latch: LatchMode,
     pub pen_presses: bool,
     pub theme: Theme,
+    /// The colour of held and latched keys, and of the handle.
+    pub accent: Accent,
 }
 
 impl Default for General {
@@ -92,6 +94,7 @@ impl Default for General {
             latch: LatchMode::OneShot,
             pen_presses: false,
             theme: Theme::Auto,
+            accent: Accent::Auto,
         }
     }
 }
@@ -101,6 +104,25 @@ pub enum Theme {
     Light,
     Dark,
     Auto,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Accent {
+    /// Windows' accent colour.
+    Auto,
+    Rgb(u8, u8, u8),
+}
+
+impl Accent {
+    /// `auto` or `#RRGGBB`.
+    fn parse(value: &str) -> Option<Accent> {
+        if value.eq_ignore_ascii_case("auto") {
+            return Some(Accent::Auto);
+        }
+        let hex = value.strip_prefix('#').filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))?;
+        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        Some(Accent::Rgb(byte(0)?, byte(2)?, byte(4)?))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,6 +429,9 @@ impl Parser {
                     "auto" => Theme::Auto,
                     _ => return Err(format!("theme は light / dark / auto のどれか（「{value}」）")),
                 }
+            }
+            "accent" => {
+                g.accent = Accent::parse(value).ok_or_else(|| format!("accent は auto か #RRGGBB（「{value}」）"))?;
             }
             _ => return Err(format!("[general] に知らない設定「{name}」がある")),
         }
