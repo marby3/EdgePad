@@ -8,7 +8,9 @@ use std::mem::{size_of, zeroed};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use edgepad_core::keys::{Key, SEND_TAG};
+use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN};
 
 /// Bit set of the virtual keys EdgePad currently holds down (virtual keys are
 /// 1..=254, so four words cover them). Atomic so the panic hook can read it
@@ -143,6 +145,27 @@ unsafe fn send(events: &[(u16, bool)]) {
         } else {
             word.fetch_and(!bit, Ordering::Relaxed);
         }
+    }
+}
+
+/// Move the mouse by nothing: Windows then works out afresh which window it
+/// is over. Tagged as EdgePad's, like the keys.
+pub unsafe fn nudge_mouse() {
+    unsafe {
+        let mut at = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut at) == 0 {
+            return;
+        }
+        // Absolute moves run 0..=65535 over the whole virtual desktop.
+        let (left, top) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
+        let (w, h) = (GetSystemMetrics(SM_CXVIRTUALSCREEN).max(2), GetSystemMetrics(SM_CYVIRTUALSCREEN).max(2));
+        let mut input: INPUT = zeroed();
+        input.r#type = INPUT_MOUSE;
+        input.Anonymous.mi.dx = ((at.x - left) * 65535 + (w - 1) / 2) / (w - 1);
+        input.Anonymous.mi.dy = ((at.y - top) * 65535 + (h - 1) / 2) / (h - 1);
+        input.Anonymous.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        input.Anonymous.mi.dwExtraInfo = SEND_TAG;
+        SendInput(1, &input, size_of::<INPUT>() as i32);
     }
 }
 
