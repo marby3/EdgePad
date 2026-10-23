@@ -197,3 +197,32 @@ fn broken_bytes_and_oversized_files_are_errors_not_panics() {
         let _ = parse(odd.as_bytes());
     }
 }
+
+// Issue #56 AC4: `accent` is auto or #RRGGBB, anything else is an error.
+#[test]
+fn accent_takes_auto_or_rrggbb_and_anything_else_is_an_error_with_its_line() {
+    let good = "[general]
+accent = #1A2B3C
+[profile.default]
+";
+    let config = parse(good.as_bytes()).expect("#RRGGBB reads");
+    assert_eq!(config.general.accent, Accent::Rgb(0x1A, 0x2B, 0x3C));
+    let config = parse(b"[general]
+accent = AUTO
+[profile.default]
+").expect("auto reads");
+    assert_eq!(config.general.accent, Accent::Auto);
+    assert_eq!(General::default().accent, Accent::Auto, "auto is the default");
+
+    let bad = "[general]
+accent = red
+accent = #12345
+accent = #12345G
+[profile.default]
+";
+    let errors = parse(bad.as_bytes()).expect_err("none of these is a colour");
+    assert_eq!(errors.iter().map(|e| e.line).collect::<Vec<_>>(), [2, 3, 4], "{errors:#?}");
+    for (error, value) in errors.iter().zip(["red", "#12345", "#12345G"]) {
+        assert!(error.reason.contains("#RRGGBB") && error.reason.contains(value), "line {}: {:?}", error.line, error.reason);
+    }
+}
