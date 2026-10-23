@@ -1,5 +1,6 @@
 //! Acceptance tests for Issue #62: a quick flick toward the screen edge
-//! hides a one-column panel, which is only a key thick.
+//! hides a one-column panel, which is only a key thick. Checked on the left
+//! edge; the other edges measure their room to the edge the same way.
 
 mod common;
 
@@ -33,6 +34,7 @@ fn a_quick_flick_from_a_keys_centre_to_the_edge_hides_a_one_column_panel() {
     let a = key_centre(panel, 0);
     let mut touch = Touch::new();
     touch.down(1, a);
+    // Two pixels in: an injected contact on the very edge may not land.
     touch.move_to(1, POINT { x: panel.left + 2, y: a.y });
     pump(200);
     assert!(!shown(&app), "a finger flicked from the middle of the key to the edge hides the panel");
@@ -44,6 +46,7 @@ fn a_quick_flick_from_a_keys_centre_to_the_edge_hides_a_one_column_panel() {
     choose(&app, "左辺");
     let panel = left_panel(&app);
     let b = key_centre(panel, 1);
+    let before = log.keys().len();
     let mut saved = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut saved) };
     mouse_move_to(b);
@@ -53,7 +56,7 @@ fn a_quick_flick_from_a_keys_centre_to_the_edge_hides_a_one_column_panel() {
     unsafe { SetCursorPos(saved.x, saved.y) };
     pump(200);
     assert!(!shown(&app), "the mouse flicked from the middle of the key to the edge hides the panel");
-    assert_eq!(log.keys()[2..], [(B, false), (B, true)], "B is pressed, then let go");
+    assert_eq!(log.keys()[before..], [(B, false), (B, true)], "B is pressed, then let go");
 }
 
 // AC2

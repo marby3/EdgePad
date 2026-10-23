@@ -225,12 +225,25 @@ impl Panel {
         (self.key * 2).max(1)
     }
 
-    /// How far a flick on the panel goes before it hides it, or undims it: a
-    /// third of a key. A one-column panel is a key thick, so from the middle
-    /// of a key there is only half a key to the screen edge. The quickness
-    /// (FLICK_TIME), not the distance, tells a flick from a drifting hand.
+    /// How far a flick on the panel goes before it undims it: a whole key.
     fn flick_distance(&self) -> i32 {
-        (self.key / 3).max(1)
+        self.key.max(1)
+    }
+
+    /// How far a flick from `(x, y)` toward the screen edge goes before it
+    /// hides the panel: three quarters of a key, or two thirds of the way to
+    /// the edge where that is less. A one-column panel is only a key thick:
+    /// from the middle of a key there is half a key to go, and a finger stops
+    /// short of the very edge. A flick of a whole key, as before, clears it.
+    fn hide_distance(&self, (x, y): (i32, i32)) -> i32 {
+        let s = self.screen;
+        let room = match self.edge {
+            Edge::Left => x - s.x,
+            Edge::Right => s.x + s.w - x,
+            Edge::Top => y - s.y,
+            Edge::Bottom => s.y + s.h - y,
+        };
+        (self.key * 3 / 4).min(room * 2 / 3).max(1)
     }
 
     /// The constant alpha it is drawn with now.
@@ -891,7 +904,12 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let mut flick = None;
     with_panel(hwnd, |panel| {
         if let Some(s) = panel.starts.iter().find(|s| s.id == id && s.at.elapsed() <= FLICK_TIME) {
-            flick = gesture::swipe(panel.edge, x - s.x, y - s.y, panel.flick_distance()).map(|f| (panel.edge, f));
+            let (dx, dy) = (x - s.x, y - s.y);
+            let hide = panel.hide_distance((s.x, s.y));
+            flick = match gesture::swipe(panel.edge, dx, dy, hide) {
+                Some(Swipe::Outward) => Some((panel.edge, Swipe::Outward)),
+                _ => gesture::swipe(panel.edge, dx, dy, panel.flick_distance()).map(|f| (panel.edge, f)),
+            };
         }
     });
     // Outside the borrow: hiding and undimming go over every panel.
