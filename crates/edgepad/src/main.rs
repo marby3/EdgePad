@@ -4,6 +4,7 @@
 
 mod autostart;
 mod instance;
+mod launch;
 mod log;
 mod panel;
 mod send;

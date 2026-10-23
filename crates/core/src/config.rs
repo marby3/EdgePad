@@ -491,7 +491,16 @@ impl Parser {
                 Action::Macro(steps)
             }
             "text" => Action::Text(content.into()),
-            "run" => Action::Run(content.into()),
+            "run" => {
+                if let Some(rest) = content.strip_prefix('"') {
+                    match rest.split_once('"') {
+                        None => return Err("run の「\"」が閉じていない".into()),
+                        Some(("", _)) => return Err("run の「\"」の中が空".into()),
+                        Some(_) => {}
+                    }
+                }
+                Action::Run(content.into())
+            }
             "page" => Action::Page(match content.to_ascii_lowercase().as_str() {
                 "next" => Page::Next,
                 "prev" => Page::Prev,
@@ -555,6 +564,17 @@ impl Parser {
         self.errors.sort_by_key(|e| e.line);
         Err(self.errors)
     }
+}
+
+/// The program (or file, folder or URL) a run key starts, and the arguments
+/// it is given: up to the first space, or between quotes when it has spaces
+/// of its own. The parser has made sure any opening quote is closed.
+pub fn run_target(command: &str) -> (&str, &str) {
+    let (file, rest) = match command.strip_prefix('"').and_then(|r| r.split_once('"')) {
+        Some(quoted) => quoted,
+        None => command.split_once(char::is_whitespace).unwrap_or((command, "")),
+    };
+    (file, rest.trim_start())
 }
 
 fn valid_name(name: &str) -> bool {

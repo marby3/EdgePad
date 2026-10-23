@@ -79,6 +79,44 @@ pub fn edge_panel(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[u
     (panel, keys)
 }
 
+/// The keys on each page of a panel, as `edge_panel` would lay them out:
+/// indices into `widths`, in the order they go on the panel.
+///
+/// When every key fits, there is one page, in the order written. Otherwise
+/// the `sticky` keys (those that turn the pages) go at the end of every page,
+/// and the others fill the pages in order, each taking as many as fit beside
+/// them. Should not even one fit beside them, the keys that fit in the order
+/// written make the only page.
+pub fn pages(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[usize], sticky: &[bool]) -> Vec<Vec<usize>> {
+    let fits = |keys: &[usize]| {
+        let w: Vec<usize> = keys.iter().map(|&i| widths[i]).collect();
+        edge_panel(monitor, edge, key, lines, &w).1.len() == w.len()
+    };
+    let all: Vec<usize> = (0..widths.len()).collect();
+    if fits(&all) {
+        return vec![all];
+    }
+    let (pinned, flow): (Vec<usize>, Vec<usize>) = all.iter().partition(|&&i| sticky.get(i) == Some(&true));
+    let mut pages = Vec::new();
+    let mut at = 0;
+    while at < flow.len() {
+        let mut n = 0;
+        while at + n < flow.len() && fits(&[&flow[at..at + n + 1], &pinned[..]].concat()) {
+            n += 1;
+        }
+        if n == 0 {
+            break;
+        }
+        pages.push([&flow[at..at + n], &pinned[..]].concat());
+        at += n;
+    }
+    if pages.is_empty() {
+        let fitting = edge_panel(monitor, edge, key, lines, widths).1.len();
+        pages.push(all[..fitting].to_vec());
+    }
+    pages
+}
+
 /// (line, position along it, length) of each key, in cells, until the first
 /// key that does not fit into `lines` lines of `length` cells.
 fn place(widths: &[usize], lines: usize, length: usize) -> Vec<(usize, usize, usize)> {
