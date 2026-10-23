@@ -148,13 +148,15 @@ unsafe fn send(events: &[(u16, bool)]) {
     }
 }
 
-/// Move the mouse by nothing: Windows then works out afresh which window it
-/// is over. Tagged as EdgePad's, like the keys.
-pub unsafe fn nudge_mouse() {
+/// Move the mouse to where it is, so Windows works out afresh which window
+/// it is over: a relative move of nothing is dropped, an absolute one is not.
+/// Rounding to the 0..=65535 scale may shift it by a pixel. Tagged as
+/// EdgePad's, like the keys. Returns false if it could not be sent.
+pub unsafe fn recheck_mouse() -> bool {
     unsafe {
         let mut at = POINT { x: 0, y: 0 };
         if GetCursorPos(&mut at) == 0 {
-            return;
+            return false;
         }
         // Absolute moves run 0..=65535 over the whole virtual desktop.
         let (left, top) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
@@ -165,7 +167,7 @@ pub unsafe fn nudge_mouse() {
         input.Anonymous.mi.dy = ((at.y - top) * 65535 + (h - 1) / 2) / (h - 1);
         input.Anonymous.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
         input.Anonymous.mi.dwExtraInfo = SEND_TAG;
-        SendInput(1, &input, size_of::<INPUT>() as i32);
+        SendInput(1, &input, size_of::<INPUT>() as i32) == 1
     }
 }
 
