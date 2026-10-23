@@ -78,11 +78,23 @@ impl LeftToggle {
     }
 }
 
-/// Press and release Ctrl+Alt+F17 as a physical keyboard would, quickly.
+/// Press and release Ctrl+Alt+F17 as a physical keyboard would, in one
+/// SendInput: `keyboard` waits after each key, which would outlast a slide.
 fn hotkey() {
-    for (vk, down) in [(VK_LCONTROL, true), (VK_LMENU, true), (VK_F17, true), (VK_F17, false), (VK_LMENU, false), (VK_LCONTROL, false)] {
-        keyboard(vk, down);
-    }
+    let keys = [(VK_LCONTROL, true), (VK_LMENU, true), (VK_F17, true), (VK_F17, false), (VK_LMENU, false), (VK_LCONTROL, false)];
+    let inputs: Vec<INPUT> = keys
+        .iter()
+        .map(|&(vk, down)| {
+            let mut input: INPUT = unsafe { std::mem::zeroed() };
+            input.r#type = INPUT_KEYBOARD;
+            input.Anonymous.ki.wVk = vk;
+            input.Anonymous.ki.dwFlags = if down { 0 } else { KEYEVENTF_KEYUP };
+            input.Anonymous.ki.dwExtraInfo = KEYBOARD_TAG;
+            input
+        })
+        .collect();
+    let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+    assert_eq!(sent as usize, inputs.len(), "SendInput");
 }
 
 fn centre(r: RECT) -> POINT {
