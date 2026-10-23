@@ -97,14 +97,21 @@ fn a_panel_shown_by_hovering_hides_hover_ms_after_the_mouse_leaves_it() {
     let app = launch_pad("hover_ms = 400");
     choose(&app, "左辺");
 
+    // Straight off the panel, which came up under the resting mouse and
+    // never saw it move.
     hover_show(&app);
-    let panel = left_panel(&app);
-    mouse_move_to(key_centre(panel, 0));
     mouse_move_to(away());
     pump(150);
     assert!(shown(&app), "250 ms after leaving it is still shown");
     pump(600);
     assert!(!shown(&app), "hover_ms after leaving it is hidden");
+
+    // Over the panel first, then off it.
+    hover_show(&app);
+    mouse_move_to(key_centre(left_panel(&app), 0));
+    mouse_move_to(away());
+    pump(800);
+    assert!(!shown(&app), "hover_ms after leaving it is hidden, having moved over it");
 
     hover_show(&app);
     let panel = left_panel(&app);
