@@ -134,6 +134,15 @@ fn repeat_timer(index: usize) -> usize {
 /// The timer ending a macro's wait: past any repeat key's.
 const MACRO_TIMER: usize = 0x1_0000;
 
+/// The timers that hide a panel: `auto_hide_ms` after it was last used, and
+/// `hover_ms` after the mouse left a panel it showed by hovering.
+const AUTO_HIDE_TIMER: usize = 0x1_0001;
+const LEAVE_TIMER: usize = 0x1_0002;
+
+/// The timer on a handle that shows its panel once the mouse has rested on
+/// it for `hover_ms`. A handle window's own, apart from the panel's timers.
+const HOVER_TIMER: usize = 1;
+
 struct Panel {
     hwnd: HWND,
     edge: Edge,
@@ -169,6 +178,12 @@ struct Panel {
     handle: Option<Handle>,
     /// The handle's window; null with `handle = none`.
     handle_hwnd: HWND,
+    /// From the settings; 0 is off.
+    hover_ms: u32,
+    auto_hide_ms: u32,
+    /// Shown by hovering (see HOVERED): whether the mouse is outside both
+    /// the panel and its handle now.
+    mouse_out: bool,
 }
 
 /// Where and when a pointer went down, in screen pixels.
@@ -269,6 +284,12 @@ thread_local! {
     // Every panel shares them; Windows changing its own makes them anew.
     static STYLE: Cell<(Theme, Accent)> = const { Cell::new((Theme::Auto, Accent::Auto)) };
     static PALETTE: Cell<Option<Palette>> = const { Cell::new(None) };
+    // The handle the mouse is resting on, its hover timer running.
+    static HOVERING: Cell<HWND> = const { Cell::new(null_mut()) };
+    // The edges shown by the mouse resting on their handle, to hide once it
+    // goes. Their handle stays up meanwhile, beside or under the panel: the
+    // mouse is still over it, and it tells when the mouse goes.
+    static HOVERED: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
     // Each pointer down on a handle, with that handle's window.
     static HANDLE_DRAGS: RefCell<Vec<Start>> = const { RefCell::new(Vec::new()) };
 }
@@ -289,9 +310,19 @@ fn visible(edge: Edge) -> bool {
 }
 
 /// Whether the handle on `edge` should be on screen: while its panel is
-/// hidden, but not while paused.
+/// hidden or shown by hovering, but not while paused.
 fn handle_visible(edge: Edge) -> bool {
-    !PAUSED.get() && HIDDEN.get()[edge as usize]
+    !PAUSED.get() && (HIDDEN.get()[edge as usize] || hovered(edge))
+}
+
+fn hovered(edge: Edge) -> bool {
+    HOVERED.get()[edge as usize]
+}
+
+fn set_hovered(edge: Edge, on: bool) {
+    let mut hovered = HOVERED.get();
+    hovered[edge as usize] = on;
+    HOVERED.set(hovered);
 }
 
 /// The handle's window: plain accent colour (see `handle_proc`), see-through
@@ -393,6 +424,9 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             starts: Vec::new(),
             handle: p.handle,
             handle_hwnd,
+            hover_ms: panels.hover_ms,
+            auto_hide_ms: panels.auto_hide_ms,
+            mouse_out: false,
         };
         lay_out(&mut panel, None);
         let fits = panel.keys.iter().any(|k| k.rect.is_some());
@@ -417,6 +451,17 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         if show_handle && !handle_hwnd.is_null() {
             ShowWindow(handle_hwnd, SW_SHOWNOACTIVATE);
         }
+        if show {
+            with_panel(hwnd, |panel| {
+                // Rebuilt while shown by hovering: still so, over its handle.
+                if hovered(edge) {
+                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    panel.mouse_out = !in_reach(panel, cursor());
+                }
+                // At launch and on every rebuild: it was shown just now.
+                count_idle(panel);
+            });
+        }
         true
     }
 }
@@ -426,6 +471,14 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
 /// Returns false if a window could not be created.
 pub unsafe fn rebuild(panels: &Panels) -> bool {
     unsafe {
+        // The handles go, and their hover timers with them. An edge shown by
+        // hovering stays so, if it still has a panel.
+        HOVERING.set(null_mut());
+        let mut hovered = HOVERED.get();
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            hovered[edge as usize] &= panels.edges.iter().any(|p| p.edge == edge);
+        }
+        HOVERED.set(hovered);
         // Taken out first: messages sent while a window is destroyed (capture
         // lost, for one) then find no panel and change nothing.
         for panel in PANELS.take() {
@@ -537,6 +590,7 @@ unsafe fn apply_visibility() {
                 debug_log!("パネル {}: {}", edge_name(panel.edge), if show { "表示" } else { "非表示" });
                 if show {
                     ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
+                    count_idle(panel);
                 } else {
                     let mut dimmed = DIMMED.get();
                     dimmed[panel.edge as usize] = false;
@@ -544,6 +598,10 @@ unsafe fn apply_visibility() {
                     // Draws it, now at its normal alpha.
                     let_go(panel);
                     ShowWindow(panel.hwnd, SW_HIDE);
+                    KillTimer(panel.hwnd, AUTO_HIDE_TIMER);
+                    KillTimer(panel.hwnd, LEAVE_TIMER);
+                    set_hovered(panel.edge, false);
+                    panel.mouse_out = false;
                 }
             }
             let handle = handle_visible(panel.edge);
@@ -591,6 +649,7 @@ pub unsafe fn release_all() {
         PANELS.with_borrow_mut(|panels| {
             for panel in panels {
                 let_go(panel);
+                count_idle(panel);
             }
         });
         // Anything still recorded (a key-up that failed) goes too.
@@ -720,12 +779,23 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_POINTERUPDATE => {
+                mouse_moved(hwnd, wp, Some(pointer_at(lp)));
                 pointer_update(hwnd, wp, lp);
+                0
+            }
+            WM_POINTERENTER => {
+                mouse_moved(hwnd, wp, Some(pointer_at(lp)));
+                0
+            }
+            // Gone from the panel, though perhaps onto its handle.
+            WM_POINTERLEAVE => {
+                mouse_moved(hwnd, wp, None);
                 0
             }
             WM_TIMER => {
                 match wp {
                     MACRO_TIMER => macro_wait_over(hwnd),
+                    AUTO_HIDE_TIMER | LEAVE_TIMER => idle_over(hwnd, wp),
                     _ => repeat(hwnd, wp),
                 }
                 0
@@ -802,6 +872,8 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
             WM_POINTERDOWN => {
                 let id = pointer_id(wp);
+                // Pressed, not resting: no hover.
+                hover_off(hwnd);
                 if let Some(kind) = finger_or_mouse(id) {
                     let (x, y) = pointer_at(lp);
                     HANDLE_DRAGS.with_borrow_mut(|drags| {
@@ -816,7 +888,20 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 0
             }
             WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERCAPTURECHANGED => {
+                if msg == WM_POINTERUPDATE && hovering_mouse(wp) {
+                    hover_on(hwnd);
+                    mouse_on_handle(hwnd, true);
+                }
                 handle_pointer(hwnd, msg, pointer_id(wp), pointer_at(lp));
+                0
+            }
+            WM_POINTERLEAVE => {
+                hover_off(hwnd);
+                mouse_on_handle(hwnd, false);
+                0
+            }
+            WM_TIMER if wp == HOVER_TIMER => {
+                hover_over(hwnd);
                 0
             }
             WM_ERASEBKGND => {
@@ -868,6 +953,8 @@ unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
         }
     }
     if let Some(look) = shows {
+        // Shown on purpose, though it was up by hovering: it stays.
+        set_hovered(edge, false);
         unsafe { show(edge, look) };
     }
 }
@@ -933,6 +1020,9 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
         let (sx, sy) = pointer_at(lp);
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
+            // In use: nothing counts toward hiding it until it is let go.
+            KillTimer(hwnd, AUTO_HIDE_TIMER);
+            KillTimer(hwnd, LEAVE_TIMER);
             panel.starts.retain(|s| s.id != id);
             panel.starts.push(Start { hwnd, id, x: sx, y: sy, at: Instant::now() });
             if kind == PT_MOUSE {
@@ -1055,6 +1145,13 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                 let mode = panel.latch_mode;
                 end_one_shot_latches(panels, mode);
             }
+            // A mouse let go outside a panel it had captured: no leave
+            // follows, so look where it is.
+            let panel = &mut panels[i];
+            if hovered(panel.edge) {
+                panel.mouse_out = !in_reach(panel, cursor());
+            }
+            count_idle(panel);
         });
     }
 }
@@ -1094,6 +1191,7 @@ unsafe fn run_macro(panel: &mut Panel) {
         }
     }
     panel.running = None;
+    unsafe { count_idle(panel) };
 }
 
 /// A macro's wait is over: carry on with its steps. While the panels are in
@@ -1119,9 +1217,176 @@ unsafe fn end_one_shot_latches(panels: &mut [Panel], mode: LatchMode) {
             }
         }
         if changed {
-            unsafe { draw(panel) };
+            unsafe {
+                draw(panel);
+                count_idle(panel);
+            }
         }
     }
+}
+
+/// Whether anything is held or latched on `panel`, or a macro of it is
+/// running: while so, nothing counts toward hiding it, which would cut the
+/// macro short.
+fn busy(panel: &Panel) -> bool {
+    panel.running.is_some()
+        || panel.keys.iter().enumerate().any(|(i, k)| {
+            panel.presses.is_down(i) || matches!(k.sends, Sends::Modifier { state, .. } if state.is_latched())
+        })
+}
+
+/// Start both counts toward hiding `panel` afresh, `auto_hide_ms` and (for a
+/// panel shown by hovering) `hover_ms` from the mouse leaving: it was shown,
+/// used or let go of. Neither runs while it is hidden or busy.
+unsafe fn count_idle(panel: &Panel) {
+    unsafe {
+        KillTimer(panel.hwnd, AUTO_HIDE_TIMER);
+        if panel.auto_hide_ms > 0 && IsWindowVisible(panel.hwnd) != 0 && !busy(panel) {
+            SetTimer(panel.hwnd, AUTO_HIDE_TIMER, panel.auto_hide_ms, None);
+        }
+        count_leave(panel);
+    }
+}
+
+/// Start or stop counting toward hiding a panel shown by hovering, as the
+/// mouse is outside it or not.
+unsafe fn count_leave(panel: &Panel) {
+    unsafe {
+        KillTimer(panel.hwnd, LEAVE_TIMER);
+        let counts = hovered(panel.edge) && panel.hover_ms > 0 && panel.mouse_out;
+        if counts && IsWindowVisible(panel.hwnd) != 0 && !busy(panel) {
+            SetTimer(panel.hwnd, LEAVE_TIMER, panel.hover_ms, None);
+        }
+    }
+}
+
+/// A timer hiding the panel of `hwnd` ran out. Should anything be held or
+/// latched by now, the count starts again once it is let go of.
+unsafe fn idle_over(hwnd: HWND, timer: WPARAM) {
+    let mut hide = None;
+    with_panel(hwnd, |panel| unsafe {
+        KillTimer(hwnd, timer);
+        let gone = timer == AUTO_HIDE_TIMER || hovered(panel.edge);
+        if gone && !busy(panel) {
+            debug_log!("パネル {}: {}", edge_name(panel.edge), if timer == AUTO_HIDE_TIMER { "自動非表示" } else { "マウスが離れた" });
+            hide = Some(panel.edge);
+        }
+    });
+    if let Some(edge) = hide {
+        unsafe { set_hidden(edge, true) };
+    }
+}
+
+/// The mouse moved to `at` over or around the panel of `hwnd`, or left it
+/// (none: where it is now counts). A mouse the panel has captured gets here
+/// from outside it, too.
+unsafe fn mouse_moved(hwnd: HWND, wp: WPARAM, at: Option<(i32, i32)>) {
+    let mut kind = 0;
+    if unsafe { GetPointerType(pointer_id(wp), &mut kind) } == 0 || kind != PT_MOUSE {
+        return;
+    }
+    let at = at.unwrap_or_else(cursor);
+    with_panel(hwnd, |panel| unsafe {
+        let out = !in_reach(panel, at);
+        set_mouse_out(panel, out);
+    });
+}
+
+/// The mouse is over handle `hwnd` (`on`) or has left it: for a panel shown
+/// by hovering, it has gone once it is off both the handle and the panel.
+unsafe fn mouse_on_handle(hwnd: HWND, on: bool) {
+    PANELS.with(|panels| {
+        let Ok(mut panels) = panels.try_borrow_mut() else { return };
+        if let Some(panel) = panels.iter_mut().find(|p| p.handle_hwnd == hwnd) {
+            let out = !on && !in_reach(panel, cursor());
+            unsafe { set_mouse_out(panel, out) };
+        }
+    });
+}
+
+/// Note whether the mouse is `out` of a panel shown by hovering, and count
+/// toward hiding it from when it went out.
+unsafe fn set_mouse_out(panel: &mut Panel, out: bool) {
+    if hovered(panel.edge) && panel.mouse_out != out {
+        panel.mouse_out = out;
+        unsafe { count_leave(panel) };
+    }
+}
+
+/// Where the mouse is now.
+fn cursor() -> (i32, i32) {
+    let mut at = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&mut at) };
+    (at.x, at.y)
+}
+
+/// Whether `(x, y)` is on `panel` or on its handle while that is up.
+fn in_reach(panel: &Panel, (x, y): (i32, i32)) -> bool {
+    if panel.rect.contains(x, y) {
+        return true;
+    }
+    let mut r: RECT = unsafe { zeroed() };
+    let up = !panel.handle_hwnd.is_null() && unsafe { IsWindowVisible(panel.handle_hwnd) != 0 && GetWindowRect(panel.handle_hwnd, &mut r) != 0 };
+    up && x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+/// Whether a pointer message is the mouse, button up: hovering.
+unsafe fn hovering_mouse(wp: WPARAM) -> bool {
+    let mut kind = 0;
+    let found = unsafe { GetPointerType(pointer_id(wp), &mut kind) } != 0;
+    found && kind == PT_MOUSE && ((wp >> 16) as u32 & POINTER_MESSAGE_FLAG_INCONTACT) == 0
+}
+
+/// The edge and `hover_ms` of the panel whose handle is `hwnd`.
+fn handle_panel(hwnd: HWND) -> Option<(Edge, u32)> {
+    PANELS.with(|panels| {
+        let panels = panels.try_borrow().ok()?;
+        panels.iter().find(|p| p.handle_hwnd == hwnd).map(|p| (p.edge, p.hover_ms))
+    })
+}
+
+/// The mouse is on handle `hwnd`: once it has rested there for `hover_ms`,
+/// the panel shows. Moving on the handle does not start the count again.
+unsafe fn hover_on(hwnd: HWND) {
+    let Some((edge, ms)) = handle_panel(hwnd) else { return };
+    if ms > 0 && HIDDEN.get()[edge as usize] && HOVERING.get() != hwnd {
+        HOVERING.set(hwnd);
+        if unsafe { SetTimer(hwnd, HOVER_TIMER, ms, None) } == 0 {
+            HOVERING.set(null_mut());
+        }
+    }
+}
+
+/// The mouse left handle `hwnd` before its panel showed.
+unsafe fn hover_off(hwnd: HWND) {
+    if HOVERING.get() == hwnd {
+        HOVERING.set(null_mut());
+        unsafe { KillTimer(hwnd, HOVER_TIMER) };
+    }
+}
+
+/// The mouse rested on handle `hwnd` for `hover_ms`: show its panel, to hide
+/// again once the mouse has left it.
+unsafe fn hover_over(hwnd: HWND) {
+    unsafe { hover_off(hwnd) };
+    let Some((edge, _)) = handle_panel(hwnd) else { return };
+    if PAUSED.get() || !HIDDEN.get()[edge as usize] {
+        return;
+    }
+    debug_log!("パネル {}: マウスのホバー", edge_name(edge));
+    // Before showing: the handle stays up (see HOVERED).
+    set_hovered(edge, true);
+    unsafe { show(edge, Look::Normal) };
+    PANELS.with_borrow_mut(|panels| {
+        for panel in panels.iter_mut().filter(|p| p.edge == edge) {
+            unsafe {
+                // Over its handle, which keeps the mouse it has.
+                SetWindowPos(panel.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                panel.mouse_out = !in_reach(panel, cursor());
+                count_leave(panel);
+            }
+        }
+    });
 }
 
 /// Paint the keys into a 32-bit DIB and hand it to the window with

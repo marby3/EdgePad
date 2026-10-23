@@ -81,6 +81,11 @@ pub struct General {
     pub theme: Theme,
     /// The colour of held and latched keys, and of the handle.
     pub accent: Accent,
+    /// The mouse resting on a handle this long shows its panel, which hides
+    /// this long after the mouse leaves it. 0: off.
+    pub hover_ms: u32,
+    /// A panel hides this long after it was shown or last pressed. 0: off.
+    pub auto_hide_ms: u32,
 }
 
 impl Default for General {
@@ -95,6 +100,8 @@ impl Default for General {
             pen_presses: false,
             theme: Theme::Auto,
             accent: Accent::Auto,
+            hover_ms: 0,
+            auto_hide_ms: 0,
         }
     }
 }
@@ -430,6 +437,8 @@ impl Parser {
                     _ => return Err(format!("theme は light / dark / auto のどれか（「{value}」）")),
                 }
             }
+            "hover_ms" => g.hover_ms = off_or_number(name, value, 100, 5000)?,
+            "auto_hide_ms" => g.auto_hide_ms = off_or_number(name, value, 1000, 3_600_000)?,
             "accent" => {
                 g.accent = Accent::parse(value).ok_or_else(|| format!("accent は auto か #RRGGBB（「{value}」）"))?;
             }
@@ -624,6 +633,14 @@ fn number(name: &str, value: &str, min: u32, max: u32) -> Result<u32, String> {
     match value.parse::<u32>() {
         Ok(v) if digits && (min..=max).contains(&v) => Ok(v),
         _ => Err(format!("{name} は {min}〜{max} の整数（「{value}」）")),
+    }
+}
+
+/// 0 for off, or a number from `min` to `max`, written as `number` takes it.
+fn off_or_number(name: &str, value: &str, min: u32, max: u32) -> Result<u32, String> {
+    match number(name, value, 0, max) {
+        Ok(v) if v == 0 || v >= min => Ok(v),
+        _ => Err(format!("{name} は 0（オフ）か {min}〜{max} の整数（「{value}」）")),
     }
 }
 

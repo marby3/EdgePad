@@ -805,6 +805,32 @@ pub fn panels_now(app: &Running) -> Vec<RECT> {
     }
 }
 
+/// The visible handle against the left edge of the primary monitor, once it
+/// can be touched (see `find_panel`).
+pub fn left_handle(app: &Running) -> RECT {
+    let m = primary_monitor();
+    let name = wide("EdgePadHandle");
+    let end = Instant::now() + Duration::from_secs(1);
+    loop {
+        let mut hwnd = null_mut();
+        loop {
+            hwnd = unsafe { FindWindowExW(null_mut(), hwnd, name.as_ptr(), null()) };
+            if hwnd.is_null() {
+                break;
+            }
+            let mut pid = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+            let r = window_rect(hwnd);
+            if pid == app.0.id() && unsafe { IsWindowVisible(hwnd) } != 0 && r.left == m.left {
+                assert_eq!(unsafe { DwmFlush() }, 0, "DwmFlush failed");
+                return r;
+            }
+        }
+        assert!(Instant::now() < end, "no handle on the left edge");
+        pump(20);
+    }
+}
+
 /// The panel against the left edge of the primary monitor.
 pub fn left_panel(app: &Running) -> RECT {
     let m = primary_monitor();

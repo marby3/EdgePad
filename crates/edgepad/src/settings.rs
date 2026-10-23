@@ -84,6 +84,11 @@ pub struct Panels {
     pub dim_opacity: u8,
     pub theme: config::Theme,
     pub accent: config::Accent,
+    /// How long the mouse rests on a handle to show its panel, and how long
+    /// after it leaves a panel so shown that it hides. 0: off.
+    pub hover_ms: u32,
+    /// How long after it was shown or last pressed a panel hides. 0: off.
+    pub auto_hide_ms: u32,
     /// Every key set, for page keys that switch a panel to another.
     pub sets: Rc<[KeySet]>,
 }
@@ -184,6 +189,8 @@ pub fn fallback() -> Panels {
         dim_opacity: general.dim_opacity,
         theme: general.theme,
         accent: general.accent,
+        hover_ms: general.hover_ms,
+        auto_hide_ms: general.auto_hide_ms,
         sets: Rc::new([]),
     }
 }
@@ -202,6 +209,7 @@ pub fn panels(config: &Config, profile: &Profile) -> Panels {
     let g = &config.general;
     let (key_size, hotkey, latch_ms, latch) = (g.key_size, g.hotkey, g.latch_ms, g.latch);
     let (opacity, dim_opacity, theme, accent) = (g.opacity, g.dim_opacity, g.theme, g.accent);
+    let (hover_ms, auto_hide_ms) = (g.hover_ms, g.auto_hide_ms);
     let sets = config.sets.as_slice().into();
-    Panels { key_size, edges, hotkey, latch_ms, latch, opacity, dim_opacity, theme, accent, sets }
+    Panels { key_size, edges, hotkey, latch_ms, latch, opacity, dim_opacity, theme, accent, hover_ms, auto_hide_ms, sets }
 }
