@@ -492,6 +492,8 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         }
         let (show, show_handle) = (visible(edge), handle_visible(edge));
         PANELS.with_borrow_mut(|p| p.push(panel));
+        // At once, slide or not: panels are made anew on every profile
+        // switch, and would slide each time another app came to the front.
         if show {
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
@@ -636,8 +638,8 @@ unsafe fn apply_visibility() {
         for panel in panels {
             let show = visible(panel.edge);
             // Sliding out, it is as good as hidden already.
-            let up = IsWindowVisible(panel.hwnd) != 0 && !panel.slide.is_some_and(|s| !s.inward);
-            if show != up {
+            let shown_now = IsWindowVisible(panel.hwnd) != 0 && !panel.slide.is_some_and(|s| !s.inward);
+            if show != shown_now {
                 debug_log!("パネル {}: {}", edge_name(panel.edge), if show { "表示" } else { "非表示" });
                 if show {
                     // Room first: no maximised window is under it as it shows.
@@ -1490,20 +1492,25 @@ fn slid_out(panel: &Panel) -> i32 {
     s.from + ((to - s.from) as f64 * done).round() as i32
 }
 
-/// Where the panel is now, from its place.
-fn slid_by(panel: &Panel) -> (i32, i32) {
-    let out = slid_out(panel);
+/// The part of the panel in the screen now: where on the screen, how big,
+/// and where in the panel's picture. Nothing goes past the edge, so a panel
+/// sliding on an edge another monitor adjoins never shows on that monitor.
+/// At least a pixel is in: a layered window cannot be empty.
+fn in_part(panel: &Panel) -> (POINT, SIZE, POINT) {
+    let r = panel.rect;
+    let out = slid_out(panel).clamp(0, thickness(panel) - 1);
     match panel.edge {
-        Edge::Left => (-out, 0),
-        Edge::Right => (out, 0),
-        Edge::Top => (0, -out),
-        Edge::Bottom => (0, out),
+        Edge::Left => (POINT { x: r.x, y: r.y }, SIZE { cx: r.w - out, cy: r.h }, POINT { x: out, y: 0 }),
+        Edge::Right => (POINT { x: r.x + out, y: r.y }, SIZE { cx: r.w - out, cy: r.h }, POINT { x: 0, y: 0 }),
+        Edge::Top => (POINT { x: r.x, y: r.y }, SIZE { cx: r.w, cy: r.h - out }, POINT { x: 0, y: out }),
+        Edge::Bottom => (POINT { x: r.x, y: r.y + out }, SIZE { cx: r.w, cy: r.h - out }, POINT { x: 0, y: 0 }),
     }
 }
 
 /// Start `panel` sliding in (`inward`) or out from where it is now. A panel
 /// coming in from hidden starts all the way out. Returns false, and does
-/// nothing, with slides off.
+/// nothing, with slides off or no timer to drive them: it then comes or
+/// goes at once.
 unsafe fn slide(panel: &mut Panel, inward: bool) -> bool {
     if panel.slide_ms == 0 {
         return false;
@@ -1515,16 +1522,15 @@ unsafe fn slide(panel: &mut Panel, inward: bool) -> bool {
     };
     panel.slide = Some(Slide { inward, from, at: Instant::now() });
     unsafe {
-        move_to_slide(panel);
-        SetTimer(panel.hwnd, SLIDE_TIMER, SLIDE_STEP, None);
+        if SetTimer(panel.hwnd, SLIDE_TIMER, SLIDE_STEP, None) == 0 {
+            debug_log!("パネル {}: スライドのタイマーを作れない", edge_name(panel.edge));
+            panel.slide = None;
+            draw(panel);
+            return false;
+        }
+        draw(panel);
     }
     true
-}
-
-unsafe fn move_to_slide(panel: &Panel) {
-    let (dx, dy) = slid_by(panel);
-    let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
-    unsafe { SetWindowPos(panel.hwnd, null_mut(), panel.rect.x + dx, panel.rect.y + dy, 0, 0, flags) };
 }
 
 /// The slide timer: move the panel on, and once the slide is over, stop the
@@ -1537,17 +1543,18 @@ unsafe fn slide_step(panel: &mut Panel) {
     unsafe {
         let over = s.at.elapsed().as_millis() >= panel.slide_ms as u128;
         if !over {
-            move_to_slide(panel);
+            draw(panel);
             return;
         }
         KillTimer(panel.hwnd, SLIDE_TIMER);
-        panel.slide = None;
-        move_to_slide(panel);
         if !s.inward {
+            // Gone first, then whole again for the next time it shows.
             ShowWindow(panel.hwnd, SW_HIDE);
             // The room goes back once it is gone.
             undock(panel);
         }
+        panel.slide = None;
+        draw(panel);
     }
 }
 
@@ -1726,20 +1733,9 @@ unsafe fn draw(panel: &Panel) -> bool {
             SourceConstantAlpha: panel.current_alpha(),
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
-        let shown = UpdateLayeredWindow(
-            hwnd,
-            screen,
-            &{
-                let (dx, dy) = slid_by(panel);
-                POINT { x: r.x + dx, y: r.y + dy }
-            },
-            &SIZE { cx: r.w, cy: r.h },
-            mem,
-            &POINT { x: 0, y: 0 },
-            0,
-            &blend,
-            ULW_ALPHA,
-        ) != 0;
+        // Sliding, only the part already in is shown, against the edge.
+        let (at, size, from) = in_part(panel);
+        let shown = UpdateLayeredWindow(hwnd, screen, &at, &size, mem, &from, 0, &blend, ULW_ALPHA) != 0;
 
         SelectObject(mem, old_bitmap);
         DeleteObject(dib);
