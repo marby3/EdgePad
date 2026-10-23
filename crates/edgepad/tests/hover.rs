@@ -3,8 +3,8 @@
 //! after it was last used.
 //!
 //! Times here run on the wall clock with margins either side: a hover of
-//! 400 ms is checked at 250 ms (not yet) and 700 ms (done), an auto-hide of
-//! 1500 ms at 1000 ms and 1900 ms.
+//! 400 ms is checked at 150-250 ms (not yet) and 700-800 ms (done), an
+//! auto-hide of 1500 ms at 700-1000 ms and 1900 ms.
 
 mod common;
 
@@ -73,7 +73,7 @@ fn hover_show_at(app: &Running, p: POINT) {
 fn resting_the_mouse_on_the_handle_for_hover_ms_shows_the_panel() {
     let _desktop = desktop();
     let _cursor = Cursor::save();
-    let app = launch_pad("hover_ms = 400");
+    let app = launch_pad(&format!("hover_ms = {HOVER_MS}"));
     choose(&app, "左辺");
 
     // 150 ms on the handle, then away: too short.
@@ -100,7 +100,7 @@ fn resting_the_mouse_on_the_handle_for_hover_ms_shows_the_panel() {
 fn a_panel_shown_by_hovering_hides_hover_ms_after_the_mouse_leaves_it() {
     let _desktop = desktop();
     let _cursor = Cursor::save();
-    let app = launch_pad("hover_ms = 400");
+    let app = launch_pad(&format!("hover_ms = {HOVER_MS}"));
     choose(&app, "左辺");
 
     // Straight off the panel, which came up under the resting mouse and
@@ -124,6 +124,8 @@ fn a_panel_shown_by_hovering_hides_hover_ms_after_the_mouse_leaves_it() {
     let handle = left_handle(&app);
     hover_show_at(&app, POINT { x: centre(handle).x, y: handle.top + 3 });
     let panel = left_panel(&app);
+    // Both are centred along the edge, and two keys are shorter than the
+    // handle's 40% of it.
     assert!(handle.top + 3 < panel.top, "precondition: the end of the handle is beyond the panel");
     pump(HOVER_MS + 400);
     assert!(shown(&app), "the mouse resting on the end of the handle keeps the panel");
@@ -167,9 +169,10 @@ fn auto_hide_ms_after_it_was_shown_or_last_pressed_the_panel_hides() {
     assert!(!shown(&app), "auto_hide_ms after launch, the panel is hidden");
     drop(app);
 
+    // Launching takes a while after the panel is up: check well before.
     let app = launch_pad("auto_hide_ms = 1500");
-    pump(1000);
-    assert!(shown(&app), "1000 ms after it was shown it is still there");
+    pump(700);
+    assert!(shown(&app), "700 ms after it was shown it is still there");
     let mut touch = Touch::new();
     touch.down(1, key_centre(left_panel(&app), 0));
     touch.up(1);
@@ -192,7 +195,7 @@ fn neither_counts_while_a_key_is_held_or_a_modifier_latched() {
     let _desktop = desktop();
     let _cursor = Cursor::save();
     let log = KeyLog::start();
-    let app = launch_pad("auto_hide_ms = 1500\nhover_ms = 400");
+    let app = launch_pad(&format!("auto_hide_ms = 1500\nhover_ms = {HOVER_MS}"));
     let mut touch = Touch::new();
 
     // Auto-hide waits for a held key.

@@ -447,11 +447,20 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         PANELS.with_borrow_mut(|p| p.push(panel));
         if show {
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            // At launch and on every rebuild: it was shown just now.
-            with_panel(hwnd, |panel| count_idle(panel));
         }
         if show_handle && !handle_hwnd.is_null() {
             ShowWindow(handle_hwnd, SW_SHOWNOACTIVATE);
+        }
+        if show {
+            with_panel(hwnd, |panel| {
+                // Rebuilt while shown by hovering: still so, over its handle.
+                if hovered(edge) {
+                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    panel.mouse_out = !in_reach(panel, cursor());
+                }
+                // At launch and on every rebuild: it was shown just now.
+                count_idle(panel);
+            });
         }
         true
     }
@@ -462,9 +471,14 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
 /// Returns false if a window could not be created.
 pub unsafe fn rebuild(panels: &Panels) -> bool {
     unsafe {
-        // The handles go, and their hover timers with them.
+        // The handles go, and their hover timers with them. An edge shown by
+        // hovering stays so, if it still has a panel.
         HOVERING.set(null_mut());
-        HOVERED.set([false; 4]);
+        let mut hovered = HOVERED.get();
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            hovered[edge as usize] &= panels.edges.iter().any(|p| p.edge == edge);
+        }
+        HOVERED.set(hovered);
         // Taken out first: messages sent while a window is destroyed (capture
         // lost, for one) then find no panel and change nothing.
         for panel in PANELS.take() {
@@ -939,6 +953,8 @@ unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
         }
     }
     if let Some(look) = shows {
+        // Shown on purpose, though it was up by hovering: it stays.
+        set_hovered(edge, false);
         unsafe { show(edge, look) };
     }
 }
@@ -1175,6 +1191,7 @@ unsafe fn run_macro(panel: &mut Panel) {
         }
     }
     panel.running = None;
+    unsafe { count_idle(panel) };
 }
 
 /// A macro's wait is over: carry on with its steps. While the panels are in
@@ -1208,16 +1225,19 @@ unsafe fn end_one_shot_latches(panels: &mut [Panel], mode: LatchMode) {
     }
 }
 
-/// Whether anything is held or latched on `panel`: while so, nothing counts
-/// toward hiding it.
+/// Whether anything is held or latched on `panel`, or a macro of it is
+/// running: while so, nothing counts toward hiding it, which would cut the
+/// macro short.
 fn busy(panel: &Panel) -> bool {
-    panel.keys.iter().enumerate().any(|(i, k)| {
-        panel.presses.is_down(i) || matches!(k.sends, Sends::Modifier { state, .. } if state.is_latched())
-    })
+    panel.running.is_some()
+        || panel.keys.iter().enumerate().any(|(i, k)| {
+            panel.presses.is_down(i) || matches!(k.sends, Sends::Modifier { state, .. } if state.is_latched())
+        })
 }
 
-/// Start counting toward hiding `panel` afresh: it was shown, used or let
-/// go of. Neither count runs while it is hidden or busy.
+/// Start both counts toward hiding `panel` afresh, `auto_hide_ms` and (for a
+/// panel shown by hovering) `hover_ms` from the mouse leaving: it was shown,
+/// used or let go of. Neither runs while it is hidden or busy.
 unsafe fn count_idle(panel: &Panel) {
     unsafe {
         KillTimer(panel.hwnd, AUTO_HIDE_TIMER);
@@ -1246,7 +1266,8 @@ unsafe fn idle_over(hwnd: HWND, timer: WPARAM) {
     let mut hide = None;
     with_panel(hwnd, |panel| unsafe {
         KillTimer(hwnd, timer);
-        if !busy(panel) {
+        let gone = timer == AUTO_HIDE_TIMER || hovered(panel.edge);
+        if gone && !busy(panel) {
             debug_log!("パネル {}: {}", edge_name(panel.edge), if timer == AUTO_HIDE_TIMER { "自動非表示" } else { "マウスが離れた" });
             hide = Some(panel.edge);
         }
