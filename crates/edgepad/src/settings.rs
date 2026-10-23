@@ -78,6 +78,9 @@ pub struct Panels {
     pub latch_ms: u32,
     /// Whether a shortcut ends a latch.
     pub latch: LatchMode,
+    /// Opacity of a panel in percent, shown and dimmed.
+    pub opacity: u8,
+    pub dim_opacity: u8,
     /// Every key set, for page keys that switch a panel to another.
     pub sets: Rc<[KeySet]>,
 }
@@ -174,6 +177,8 @@ pub fn fallback() -> Panels {
         hotkey: None,
         latch_ms: general.latch_ms,
         latch: general.latch,
+        opacity: general.opacity,
+        dim_opacity: general.dim_opacity,
         sets: Rc::new([]),
     }
 }
@@ -191,5 +196,6 @@ pub fn panels(config: &Config, profile: &Profile) -> Panels {
         .collect();
     let g = &config.general;
     let (key_size, hotkey, latch_ms, latch) = (g.key_size, g.hotkey, g.latch_ms, g.latch);
-    Panels { key_size, edges, hotkey, latch_ms, latch, sets: config.sets.as_slice().into() }
+    let (opacity, dim_opacity) = (g.opacity, g.dim_opacity);
+    Panels { key_size, edges, hotkey, latch_ms, latch, opacity, dim_opacity, sets: config.sets.as_slice().into() }
 }
