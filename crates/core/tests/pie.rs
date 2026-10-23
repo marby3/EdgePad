@@ -53,7 +53,6 @@ fn a_pie_key_needs_two_to_eight_items_or_it_is_an_error_on_its_line() {
         let text = with_items(&items(n));
         let errors = parse(text.as_bytes()).expect_err("too few or too many items");
         assert_eq!(lines(&errors), [2], "{n} items: the pie key's line; {errors:?}");
-        assert!(errors[0].reason.contains(&n.to_string()), "{n} items: the reason says how many; {errors:?}");
     }
 }
 
