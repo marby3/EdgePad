@@ -8,12 +8,14 @@
 
 mod common;
 
-use windows_sys::Win32::Foundation::POINT;
-use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-use windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos;
+use windows_sys::Win32::Foundation::{POINT, RECT};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 use common::*;
 
 const A: u16 = b'A' as u16;
+
+/// The hover_ms every test here sets.
+const HOVER_MS: u64 = 400;
 
 /// A and Ctrl down the left, under `general`.
 fn launch_pad(general: &str) -> Running {
@@ -27,7 +29,7 @@ fn shown(app: &Running) -> bool {
     !panels_now(app).is_empty()
 }
 
-fn centre(r: windows_sys::Win32::Foundation::RECT) -> POINT {
+fn centre(r: RECT) -> POINT {
     POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }
 }
 
@@ -57,8 +59,12 @@ impl Drop for Cursor {
 /// Rest the mouse on the left handle long enough to show the panel, as in
 /// AC1.
 fn hover_show(app: &Running) {
-    mouse_move_to(centre(left_handle(app)));
-    pump(700);
+    hover_show_at(app, centre(left_handle(app)));
+}
+
+fn hover_show_at(app: &Running, p: POINT) {
+    mouse_move_to(p);
+    pump(HOVER_MS + 300);
     assert!(shown(app), "precondition: resting on the handle shows the panel");
 }
 
@@ -70,9 +76,9 @@ fn resting_the_mouse_on_the_handle_for_hover_ms_shows_the_panel() {
     let app = launch_pad("hover_ms = 400");
     choose(&app, "左辺");
 
-    // 250 ms on the handle, then away: too short.
+    // 150 ms on the handle, then away: too short.
     mouse_move_to(centre(left_handle(&app)));
-    pump(150);
+    pump(50);
     mouse_move_to(away());
     pump(600);
     assert!(!shown(&app), "a mouse that left the handle before hover_ms shows nothing");
@@ -113,6 +119,16 @@ fn a_panel_shown_by_hovering_hides_hover_ms_after_the_mouse_leaves_it() {
     pump(800);
     assert!(!shown(&app), "hover_ms after leaving it is hidden, having moved over it");
 
+    // From the end of the handle, beyond the panel: the mouse is outside it
+    // from the start.
+    let handle = left_handle(&app);
+    hover_show_at(&app, POINT { x: centre(handle).x, y: handle.top + 3 });
+    let panel = left_panel(&app);
+    assert!(handle.top + 3 < panel.top, "precondition: the end of the handle is beyond the panel");
+    mouse_move_to(away());
+    pump(800);
+    assert!(!shown(&app), "shown from beyond the panel, it hides hover_ms after the mouse goes");
+
     hover_show(&app);
     let panel = left_panel(&app);
     mouse_move_to(key_centre(panel, 0));
@@ -140,8 +156,13 @@ fn auto_hide_ms_after_it_was_shown_or_last_pressed_the_panel_hides() {
     let _desktop = desktop();
     let _cursor = Cursor::save();
     let _log = KeyLog::start();
+    // As launched, never touched.
     let app = launch_pad("auto_hide_ms = 1500");
+    pump(1900);
+    assert!(!shown(&app), "auto_hide_ms after launch, the panel is hidden");
+    drop(app);
 
+    let app = launch_pad("auto_hide_ms = 1500");
     pump(1000);
     assert!(shown(&app), "1000 ms after it was shown it is still there");
     let mut touch = Touch::new();
