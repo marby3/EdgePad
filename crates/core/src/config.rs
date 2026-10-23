@@ -233,7 +233,39 @@ pub enum Action {
     /// A program or URL to start.
     Run(String),
     Page(Page),
+    /// Opens a pie menu of another key set's keys (spec 4.6).
+    Pie(String),
 }
+
+impl Action {
+    /// Its kind as the settings file writes it.
+    fn kind(&self) -> &'static str {
+        match self {
+            Action::Modifier(_) => "modifier",
+            Action::Hold(_) => "hold",
+            Action::Shortcut(_) => "shortcut",
+            Action::Repeat { .. } => "repeat",
+            Action::Macro(_) => "macro",
+            Action::Text(_) => "text",
+            Action::Run(_) => "run",
+            Action::Page(_) => "page",
+            Action::Pie(_) => "pie",
+        }
+    }
+
+    /// Whether it can be an item of a pie menu: items run once, when the
+    /// finger lifts. Held keys cannot, and a pie inside a pie would need a
+    /// menu opened from a menu.
+    fn is_pie_item(&self) -> bool {
+        match self {
+            Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Run(_) | Action::Page(_) => true,
+            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) => false,
+        }
+    }
+}
+
+/// How many items a pie menu has, from its key set (spec 4.6).
+const PIE_ITEMS: std::ops::RangeInclusive<usize> = 2..=8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
@@ -314,6 +346,8 @@ struct Parser {
     profile_lines: Vec<usize>,
     /// Key set names to check once all sets are known: (line, name).
     refs: Vec<(usize, String)>,
+    /// The key sets pie keys open, to check once all sets are known.
+    pies: Vec<(usize, String)>,
     errors: Vec<Error>,
 }
 
@@ -332,6 +366,7 @@ impl Default for Parser {
             set_lines: Vec::new(),
             profile_lines: Vec::new(),
             refs: Vec::new(),
+            pies: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -560,15 +595,22 @@ impl Parser {
             "page" => Action::Page(match content.to_ascii_lowercase().as_str() {
                 "next" => Page::Next,
                 "prev" => Page::Prev,
-                set => {
-                    self.refs.push((n, set.into()));
-                    Page::Set(set.into())
-                }
+                set => Page::Set(set.into()),
             }),
+            "pie" => Action::Pie(content.to_ascii_lowercase()),
             _ => return Err(format!("知らないキーの種類「{}」", fields[1])),
         };
         if let Some((k, _)) = options.first() {
             return Err(format!("{kind} キーに知らないオプション「{k}」がある"));
+        }
+        // Only a key that is read checks the sets it names.
+        match &action {
+            Action::Page(Page::Set(set)) => self.refs.push((n, set.clone())),
+            Action::Pie(set) => {
+                self.refs.push((n, set.clone()));
+                self.pies.push((n, set.clone()));
+            }
+            _ => {}
         }
         self.config.sets[set].keys.push(KeyDef { label: label.into(), action, width });
         Ok(())
@@ -603,6 +645,21 @@ impl Parser {
         for (line, name) in std::mem::take(&mut self.refs) {
             if self.config.set(&name).is_none() {
                 self.error(line, format!("キーセット「{name}」が定義されていない"));
+            }
+        }
+        for (line, name) in std::mem::take(&mut self.pies) {
+            let Some(set) = self.config.set(&name) else { continue };
+            let count = set.keys.len();
+            if !PIE_ITEMS.contains(&count) {
+                let (min, max) = (PIE_ITEMS.start(), PIE_ITEMS.end());
+                let reason = format!("pie の項目は{min}〜{max}個（[set.{name}] には {count} 個）");
+                self.errors.push(Error { line, reason });
+            }
+            for key in &set.keys {
+                if !key.action.is_pie_item() {
+                    let reason = format!("pie の項目に {} キーは使えない（[set.{name}] の「{}」）", key.action.kind(), key.label);
+                    self.errors.push(Error { line, reason });
+                }
             }
         }
         for (profile, &line) in self.config.profiles.iter().zip(&self.profile_lines) {

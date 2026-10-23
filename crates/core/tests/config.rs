@@ -41,6 +41,13 @@ key = 選択解除 | shortcut | Ctrl+D
 key = 左右反転 | shortcut | F13      ; CSP側でF13に割り当てる運用
 key = 保存     | macro    | Ctrl+S, wait 300, Esc
 key = 次へ     | page     | next
+key = 変形     | pie      | csp-transform
+
+[set.csp-transform]                ; pie の項目（先頭から2〜8個）
+key = 拡大縮小 | shortcut | Ctrl+T
+key = 上下反転 | shortcut | F14
+key = 回転戻し | shortcut | F15
+key = 確定     | shortcut | Enter
 
 [profile.default]
 left  = mods
@@ -105,6 +112,16 @@ fn the_spec_example_reads_without_errors_and_every_value_comes_through() {
                 ])
             ),
             key("次へ", Action::Page(Page::Next)),
+            key("変形", Action::Pie("csp-transform".into())),
+        ]
+    );
+    assert_eq!(
+        config.set("csp-transform").expect("set csp-transform").keys,
+        [
+            key("拡大縮小", Action::Shortcut(combo(ctrl, Key::Char(b'T')))),
+            key("上下反転", Action::Shortcut(combo(Mods::NONE, Key::F(14)))),
+            key("回転戻し", Action::Shortcut(combo(Mods::NONE, Key::F(15)))),
+            key("確定", Action::Shortcut(combo(Mods::NONE, Key::Enter))),
         ]
     );
 
