@@ -212,6 +212,9 @@ struct Slide {
     inward: bool,
     from: i32,
     at: Instant,
+    /// How long it takes: `slide_ms` for the whole way, less for the rest of
+    /// a slide turned back.
+    ms: u32,
 }
 
 /// Where and when a pointer went down, in screen pixels.
@@ -1488,7 +1491,7 @@ fn thickness(panel: &Panel) -> i32 {
 fn slid_out(panel: &Panel) -> i32 {
     let Some(s) = panel.slide else { return 0 };
     let to = if s.inward { 0 } else { thickness(panel) };
-    let done = (s.at.elapsed().as_millis() as f64 / panel.slide_ms.max(1) as f64).min(1.0);
+    let done = (s.at.elapsed().as_millis() as f64 / s.ms.max(1) as f64).min(1.0);
     s.from + ((to - s.from) as f64 * done).round() as i32
 }
 
@@ -1520,7 +1523,10 @@ unsafe fn slide(panel: &mut Panel, inward: bool) -> bool {
         None if inward => thickness(panel),
         None => 0,
     };
-    panel.slide = Some(Slide { inward, from, at: Instant::now() });
+    // Turned back part way, it takes the share of the time the rest needs.
+    let way = if inward { from } else { thickness(panel) - from };
+    let ms = (panel.slide_ms as i64 * way as i64 / thickness(panel).max(1) as i64).max(1) as u32;
+    panel.slide = Some(Slide { inward, from, at: Instant::now(), ms });
     unsafe {
         if SetTimer(panel.hwnd, SLIDE_TIMER, SLIDE_STEP, None) == 0 {
             debug_log!("パネル {}: スライドのタイマーを作れない", edge_name(panel.edge));
@@ -1541,7 +1547,7 @@ unsafe fn slide_step(panel: &mut Panel) {
         return;
     };
     unsafe {
-        let over = s.at.elapsed().as_millis() >= panel.slide_ms as u128;
+        let over = s.at.elapsed().as_millis() >= s.ms as u128;
         if !over {
             draw(panel);
             return;
@@ -1555,6 +1561,10 @@ unsafe fn slide_step(panel: &mut Panel) {
         }
         panel.slide = None;
         draw(panel);
+        if s.inward {
+            // Whole and in place now: it counts from here toward hiding.
+            count_idle(panel);
+        }
     }
 }
 

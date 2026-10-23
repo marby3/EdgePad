@@ -51,13 +51,31 @@ fn sliding(r: RECT) -> bool {
 /// Watch the left panel closely after a command, until it is no longer as
 /// it was (`was`: shown, or not): the first new state seen. A slide shows a
 /// part before the whole; coming and going at once shows the end at once.
+/// Panics if nothing changes within a second.
 fn first_change(app: &Running, was: bool) -> Option<RECT> {
     let end = std::time::Instant::now() + Duration::from_secs(1);
     loop {
         let now = panel_now(app);
-        if now.is_some() != was || std::time::Instant::now() >= end {
+        if now.is_some() != was {
             return now;
         }
+        assert!(std::time::Instant::now() < end, "nothing changed within a second");
+        pump(5);
+    }
+}
+
+/// Watch the left panel closely after a command to hide it, until it is
+/// gone: whether it stayed whole and in place until then, as one that goes
+/// at once does. A slide out shows a part on its way.
+fn gone_whole(app: &Running) -> bool {
+    let end = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match panel_now(app) {
+            None => return true,
+            Some(r) if !in_place(r) => return false,
+            Some(_) => {}
+        }
+        assert!(std::time::Instant::now() < end, "not gone within a second");
         pump(5);
     }
 }
@@ -116,7 +134,7 @@ fn with_slide_ms_off_panels_come_and_go_at_once() {
     let toggle = LeftToggle::of(&app);
 
     toggle.post();
-    assert!(first_change(&app, true).is_none(), "hidden at once");
+    assert!(gone_whole(&app), "hidden at once, whole until gone");
     toggle.post();
     let r = first_change(&app, false).expect("shown");
     assert!(in_place(r), "whole and in place from the first look: {}", sides(&Some(r)));
