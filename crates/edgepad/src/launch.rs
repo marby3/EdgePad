@@ -44,14 +44,15 @@ unsafe fn open(file: &str, params: &str) -> std::io::Result<()> {
         // The shell may hand the work to COM objects. Already initialised on
         // this thread is fine (S_FALSE); either way it is balanced below.
         let initialised = CoInitializeEx(null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32) >= 0;
-        let started = ShellExecuteExW(&mut info) != 0;
+        // Read before CoUninitialize, which clears the thread's last error.
+        let started = match ShellExecuteExW(&mut info) != 0 {
+            true => Ok(()),
+            false => Err(std::io::Error::last_os_error()),
+        };
         if initialised {
             CoUninitialize();
         }
-        match started {
-            true => Ok(()),
-            false => Err(std::io::Error::last_os_error()),
-        }
+        started
     }
 }
 
