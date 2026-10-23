@@ -233,7 +233,29 @@ pub enum Action {
     /// A program or URL to start.
     Run(String),
     Page(Page),
+    /// Opens a pie menu of another key set's keys (spec 4.6).
+    Pie(String),
 }
+
+impl Action {
+    /// Its kind as the settings file writes it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Action::Modifier(_) => "modifier",
+            Action::Hold(_) => "hold",
+            Action::Shortcut(_) => "shortcut",
+            Action::Repeat { .. } => "repeat",
+            Action::Macro(_) => "macro",
+            Action::Text(_) => "text",
+            Action::Run(_) => "run",
+            Action::Page(_) => "page",
+            Action::Pie(_) => "pie",
+        }
+    }
+}
+
+/// How many items a pie menu has, from its key set (spec 4.6).
+pub const PIE_ITEMS: std::ops::RangeInclusive<usize> = 2..=8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
@@ -314,6 +336,8 @@ struct Parser {
     profile_lines: Vec<usize>,
     /// Key set names to check once all sets are known: (line, name).
     refs: Vec<(usize, String)>,
+    /// The key sets pie keys open, to check once all sets are known.
+    pies: Vec<(usize, String)>,
     errors: Vec<Error>,
 }
 
@@ -332,6 +356,7 @@ impl Default for Parser {
             set_lines: Vec::new(),
             profile_lines: Vec::new(),
             refs: Vec::new(),
+            pies: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -565,6 +590,12 @@ impl Parser {
                     Page::Set(set.into())
                 }
             }),
+            "pie" => {
+                let set = content.to_ascii_lowercase();
+                self.refs.push((n, set.clone()));
+                self.pies.push((n, set.clone()));
+                Action::Pie(set)
+            }
             _ => return Err(format!("知らないキーの種類「{}」", fields[1])),
         };
         if let Some((k, _)) = options.first() {
@@ -603,6 +634,22 @@ impl Parser {
         for (line, name) in std::mem::take(&mut self.refs) {
             if self.config.set(&name).is_none() {
                 self.error(line, format!("キーセット「{name}」が定義されていない"));
+            }
+        }
+        // Items run once, on release: keys held down cannot be one.
+        for (line, name) in std::mem::take(&mut self.pies) {
+            let Some(set) = self.config.set(&name) else { continue };
+            let count = set.keys.len();
+            if !PIE_ITEMS.contains(&count) {
+                let (min, max) = (PIE_ITEMS.start(), PIE_ITEMS.end());
+                let reason = format!("pie の項目は{min}〜{max}個（[set.{name}] には {count} 個）");
+                self.errors.push(Error { line, reason });
+            }
+            for key in &set.keys {
+                if let Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) = key.action {
+                    let reason = format!("pie の項目に {} キーは使えない（[set.{name}] の「{}」）", key.action.kind(), key.label);
+                    self.errors.push(Error { line, reason });
+                }
             }
         }
         for (profile, &line) in self.config.profiles.iter().zip(&self.profile_lines) {

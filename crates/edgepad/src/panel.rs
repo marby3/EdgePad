@@ -77,6 +77,8 @@ enum Sends {
     Run(String),
     /// Turns the page, or switches to another key set, on release.
     Page(Page),
+    /// Nothing yet: the pie menu is still to come (spec 4.6).
+    Nothing,
 }
 
 impl Sends {
@@ -107,6 +109,7 @@ impl Sends {
             Action::Text(text) => Sends::Text(text.clone()),
             Action::Run(command) => Sends::Run(command.clone()),
             Action::Page(page) => Sends::Page(page.clone()),
+            Action::Pie(_) => Sends::Nothing,
         }
     }
 }
@@ -1217,6 +1220,7 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                     Sends::Text(text) => send::text(text),
                     Sends::Run(command) => launch::run(command),
                     Sends::Page(page) => turned = Some(page.clone()),
+                    Sends::Nothing => {}
                 }
                 if matches!(panel.running, Some((k, 0)) if k == key) {
                     run_macro(panel);

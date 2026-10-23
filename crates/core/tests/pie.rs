@@ -73,7 +73,8 @@ key = 次へ | page     | next
         ("modifier", "key = 修飾 | modifier | Ctrl\n"),
         ("hold", "key = 押す | hold | Space\n"),
         ("repeat", "key = 連打 | repeat | ]\n"),
-        ("pie", "key = 入れ子 | pie | pad\n"),
+        // A pie of its own good items: only the nesting is wrong.
+        ("pie", "key = 入れ子 | pie | ok\n[set.ok]\nkey = A | shortcut | A\nkey = B | shortcut | B\n"),
     ] {
         let text = with_items(&format!("key = 戻す | shortcut | Ctrl+Z\n{item}"));
         let errors = parse(text.as_bytes()).expect_err("an item of a kind a pie cannot hold");
