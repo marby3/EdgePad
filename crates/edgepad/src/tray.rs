@@ -296,6 +296,7 @@ unsafe fn exit(hwnd: HWND) {
     unsafe {
         debug_log!("全キー解放: 終了");
         send::release_all();
+        panel::undock_all();
         WTSUnRegisterSessionNotification(hwnd);
         Shell_NotifyIconW(NIM_DELETE, &icon_data(hwnd));
         PostQuitMessage(0);

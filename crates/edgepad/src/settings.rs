@@ -101,6 +101,8 @@ pub struct EdgePanel {
     pub keys: Vec<KeyDef>,
     /// The strip left while the panel is hidden; none with `handle = none`.
     pub handle: Option<Handle>,
+    /// Registered as an AppBar while shown.
+    pub dock: bool,
 }
 
 /// What reading the settings file came to.
@@ -181,6 +183,7 @@ pub fn fallback() -> Panels {
             lines: 1,
             keys: config::fallback_keys(),
             handle: config::EdgeConfig::default().handle,
+            dock: false,
         }],
         hotkey: None,
         latch_ms: general.latch_ms,
@@ -203,7 +206,7 @@ pub fn panels(config: &Config, profile: &Profile) -> Panels {
         .filter_map(|edge| {
             let set = config.set(profile.edges[edge as usize].as_deref()?)?;
             let e = &config.edges[edge as usize];
-            Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone(), handle: e.handle })
+            Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone(), handle: e.handle, dock: e.dock })
         })
         .collect();
     let g = &config.general;
