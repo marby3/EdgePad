@@ -20,7 +20,7 @@ fn work_area() -> RECT {
         let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
         let mut info: MONITORINFO = zeroed();
         info.cbSize = size_of::<MONITORINFO>() as u32;
-        GetMonitorInfoW(monitor, &mut info);
+        assert!(GetMonitorInfoW(monitor, &mut info) != 0, "GetMonitorInfoW");
         info.rcWork
     }
 }
@@ -48,24 +48,28 @@ fn narrowed(base: RECT, by: i32) -> RECT {
     RECT { left: base.left + by, ..base }
 }
 
-/// A running EdgePad, ended from its tray menu when dropped.
+/// A running EdgePad, ended from its tray menu when dropped, which then
+/// waits for the work area it found at launch to come back.
 struct Docked {
     app: Running,
+    tray: windows_sys::Win32::Foundation::HWND,
     exit: u32,
+    base: RECT,
 }
 
 impl Docked {
     fn launch(text: &str) -> Docked {
+        let base = work_area();
         let app = launch_with(Some(text), None);
         find_panel(&app);
+        let tray = find_window(&app, TRAY_CLASS, false);
         let exit = menu_item(&app, "終了").id;
-        Docked { app, exit }
+        Docked { app, tray, exit, base }
     }
 
     /// End EdgePad from the tray and wait for it to go.
     fn quit(&mut self) -> bool {
-        let tray = find_window(&self.app, TRAY_CLASS, false);
-        unsafe { PostMessageW(tray, WM_COMMAND, self.exit as usize, 0) };
+        unsafe { PostMessageW(self.tray, WM_COMMAND, self.exit as usize, 0) };
         let end = Instant::now() + Duration::from_secs(3);
         while Instant::now() < end {
             if matches!(self.app.0.try_wait(), Ok(Some(_))) {
@@ -79,10 +83,12 @@ impl Docked {
 
 impl Drop for Docked {
     fn drop(&mut self) {
-        // Best effort: the test may be failing already.
+        // Best effort, never a panic: the test may be failing already.
         if matches!(self.app.0.try_wait(), Ok(None)) {
             let _ = self.quit();
         }
+        // The next test starts from the work area this one found.
+        let _ = work_area_becomes(self.base);
     }
 }
 

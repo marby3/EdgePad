@@ -143,7 +143,9 @@ const MACRO_TIMER: usize = 0x1_0000;
 const AUTO_HIDE_TIMER: usize = 0x1_0001;
 const LEAVE_TIMER: usize = 0x1_0002;
 
-/// What the shell sends a docked panel: another AppBar or the taskbar moved.
+/// The message the shell notifies a docked panel with; ABN_POSCHANGED in
+/// wParam says another AppBar or the taskbar moved. A panel window's own,
+/// apart from the tray's messages.
 const APPBAR_CALLBACK: u32 = WM_APP + 1;
 
 /// The timer on a handle that shows its panel once the mouse has rested on
@@ -603,18 +605,19 @@ unsafe fn apply_visibility() {
             if show != (IsWindowVisible(panel.hwnd) != 0) {
                 debug_log!("パネル {}: {}", edge_name(panel.edge), if show { "表示" } else { "非表示" });
                 if show {
+                    // Room first: no maximised window is under it as it shows.
+                    dock(panel);
                     ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
                     count_idle(panel);
-                    dock(panel);
                 } else {
-                    // The room goes back while hidden.
-                    undock(panel);
                     let mut dimmed = DIMMED.get();
                     dimmed[panel.edge as usize] = false;
                     DIMMED.set(dimmed);
                     // Draws it, now at its normal alpha.
                     let_go(panel);
                     ShowWindow(panel.hwnd, SW_HIDE);
+                    // The room goes back while hidden.
+                    undock(panel);
                     KillTimer(panel.hwnd, AUTO_HIDE_TIMER);
                     KillTimer(panel.hwnd, LEAVE_TIMER);
                     set_hovered(panel.edge, false);
@@ -814,7 +817,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             APPBAR_CALLBACK if wp as u32 == ABN_POSCHANGED => {
-                with_panel(hwnd, |panel| dock(panel));
+                // A notice that comes after the panel was hidden registers
+                // nothing again.
+                let done = with_panel(hwnd, |panel| {
+                    if panel.docked {
+                        dock(panel);
+                    }
+                });
+                if !done {
+                    PostMessageW(hwnd, msg, wp, lp);
+                }
                 0
             }
             WM_TIMER => {
@@ -1476,11 +1488,24 @@ unsafe fn undock(panel: &mut Panel) {
 
 /// EdgePad is ending: every docked panel gives its room back.
 pub unsafe fn undock_all() {
-    PANELS.with(|panels| {
-        if let Ok(mut panels) = panels.try_borrow_mut() {
+    PANELS.with(|panels| match panels.try_borrow_mut() {
+        Ok(mut panels) => {
             for panel in panels.iter_mut() {
                 unsafe { undock(panel) };
             }
+        }
+        Err(_) => debug_log!("パネルが使用中: ドッキングを解除できない"),
+    });
+}
+
+/// Explorer started again and forgot every AppBar: the panels shown and
+/// docked register afresh.
+pub unsafe fn redock_all() {
+    PANELS.with(|panels| {
+        let Ok(mut panels) = panels.try_borrow_mut() else { return };
+        for panel in panels.iter_mut().filter(|p| p.docked) {
+            panel.docked = false;
+            unsafe { dock(panel) };
         }
     });
 }
