@@ -82,6 +82,8 @@ pub struct Panels {
     pub opacity: u8,
     /// Opacity in percent of a panel shown dimmed.
     pub dim_opacity: u8,
+    pub theme: config::Theme,
+    pub accent: config::Accent,
     /// Every key set, for page keys that switch a panel to another.
     pub sets: Rc<[KeySet]>,
 }
@@ -180,6 +182,8 @@ pub fn fallback() -> Panels {
         latch: general.latch,
         opacity: general.opacity,
         dim_opacity: general.dim_opacity,
+        theme: general.theme,
+        accent: general.accent,
         sets: Rc::new([]),
     }
 }
@@ -197,6 +201,7 @@ pub fn panels(config: &Config, profile: &Profile) -> Panels {
         .collect();
     let g = &config.general;
     let (key_size, hotkey, latch_ms, latch) = (g.key_size, g.hotkey, g.latch_ms, g.latch);
-    let (opacity, dim_opacity) = (g.opacity, g.dim_opacity);
-    Panels { key_size, edges, hotkey, latch_ms, latch, opacity, dim_opacity, sets: config.sets.as_slice().into() }
+    let (opacity, dim_opacity, theme, accent) = (g.opacity, g.dim_opacity, g.theme, g.accent);
+    let sets = config.sets.as_slice().into();
+    Panels { key_size, edges, hotkey, latch_ms, latch, opacity, dim_opacity, theme, accent, sets }
 }

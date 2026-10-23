@@ -10,3 +10,4 @@ pub mod keys;
 pub mod layout;
 pub mod modifier;
 pub mod press;
+pub mod theme;
