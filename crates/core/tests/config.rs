@@ -214,15 +214,14 @@ accent = AUTO
     assert_eq!(config.general.accent, Accent::Auto);
     assert_eq!(General::default().accent, Accent::Auto, "auto is the default");
 
-    let bad = "[general]
-accent = red
-accent = #12345
-accent = #12345G
+    for value in ["red", "#12345", "#12345G"] {
+        let bad = format!("[general]
+accent = {value}
 [profile.default]
-";
-    let errors = parse(bad.as_bytes()).expect_err("none of these is a colour");
-    assert_eq!(errors.iter().map(|e| e.line).collect::<Vec<_>>(), [2, 3, 4], "{errors:#?}");
-    for (error, value) in errors.iter().zip(["red", "#12345", "#12345G"]) {
-        assert!(error.reason.contains("#RRGGBB") && error.reason.contains(value), "line {}: {:?}", error.line, error.reason);
+");
+        let errors = parse(bad.as_bytes()).expect_err("not a colour");
+        assert_eq!(errors.iter().map(|e| e.line).collect::<Vec<_>>(), [2], "{value}: {errors:#?}");
+        let reason = &errors[0].reason;
+        assert!(reason.contains("#RRGGBB") && reason.contains(value), "{value}: {reason:?}");
     }
 }
