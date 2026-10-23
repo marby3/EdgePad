@@ -86,6 +86,9 @@ pub struct General {
     pub hover_ms: u32,
     /// A panel hides this long after it was shown or last pressed. 0: off.
     pub auto_hide_ms: u32,
+    /// Panels slide in and out over this long. 0: off, they come and go at
+    /// once (spec 5.2).
+    pub slide_ms: u32,
 }
 
 impl Default for General {
@@ -102,6 +105,7 @@ impl Default for General {
             accent: Accent::Auto,
             hover_ms: 0,
             auto_hide_ms: 0,
+            slide_ms: 0,
         }
     }
 }
@@ -443,6 +447,7 @@ impl Parser {
             }
             "hover_ms" => g.hover_ms = off_or_number(name, value, 100, 5000)?,
             "auto_hide_ms" => g.auto_hide_ms = off_or_number(name, value, 1000, 3_600_000)?,
+            "slide_ms" => g.slide_ms = off_or_number(name, value, 50, 500)?,
             "accent" => {
                 g.accent = Accent::parse(value).ok_or_else(|| format!("accent は auto か #RRGGBB（「{value}」）"))?;
             }

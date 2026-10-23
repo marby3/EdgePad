@@ -143,6 +143,10 @@ const MACRO_TIMER: usize = 0x1_0000;
 const AUTO_HIDE_TIMER: usize = 0x1_0001;
 const LEAVE_TIMER: usize = 0x1_0002;
 
+/// The timer moving a sliding panel, every SLIDE_STEP ms while it slides.
+const SLIDE_TIMER: usize = 0x1_0003;
+const SLIDE_STEP: u32 = 10;
+
 /// The message the shell notifies a docked panel with; ABN_POSCHANGED in
 /// wParam says another AppBar or the taskbar moved. A panel window's own,
 /// apart from the tray's messages.
@@ -196,6 +200,21 @@ struct Panel {
     /// To be an AppBar while shown, and whether it is one now.
     dock: bool,
     docked: bool,
+    /// How long a slide takes (0: none), and the slide going on, if any.
+    slide_ms: u32,
+    slide: Option<Slide>,
+}
+
+/// A panel sliding in or out: how far out of its place it was when the
+/// slide began, in pixels, and when that was.
+#[derive(Clone, Copy)]
+struct Slide {
+    inward: bool,
+    from: i32,
+    at: Instant,
+    /// How long it takes: `slide_ms` for the whole way, less for the rest of
+    /// a slide turned back.
+    ms: u32,
 }
 
 /// Where and when a pointer went down, in screen pixels.
@@ -456,6 +475,8 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             mouse_out: false,
             dock: p.dock,
             docked: false,
+            slide_ms: panels.slide_ms,
+            slide: None,
         };
         lay_out(&mut panel, None);
         let fits = panel.keys.iter().any(|k| k.rect.is_some());
@@ -474,6 +495,8 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         }
         let (show, show_handle) = (visible(edge), handle_visible(edge));
         PANELS.with_borrow_mut(|p| p.push(panel));
+        // At once, slide or not: panels are made anew on every profile
+        // switch, and would slide each time another app came to the front.
         if show {
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
@@ -617,22 +640,28 @@ unsafe fn apply_visibility() {
     PANELS.with_borrow_mut(|panels| unsafe {
         for panel in panels {
             let show = visible(panel.edge);
-            if show != (IsWindowVisible(panel.hwnd) != 0) {
+            // Sliding out, it is as good as hidden already.
+            let shown_now = IsWindowVisible(panel.hwnd) != 0 && !panel.slide.is_some_and(|s| !s.inward);
+            if show != shown_now {
                 debug_log!("パネル {}: {}", edge_name(panel.edge), if show { "表示" } else { "非表示" });
                 if show {
                     // Room first: no maximised window is under it as it shows.
                     dock(panel);
+                    slide(panel, true);
                     ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
                     count_idle(panel);
                 } else {
                     let mut dimmed = DIMMED.get();
                     dimmed[panel.edge as usize] = false;
                     DIMMED.set(dimmed);
-                    // Draws it, now at its normal alpha.
+                    // Draws it, now at its normal alpha. Its keys go before
+                    // it slides away, as when it goes at once.
                     let_go(panel);
-                    ShowWindow(panel.hwnd, SW_HIDE);
-                    // The room goes back while hidden.
-                    undock(panel);
+                    if !slide(panel, false) {
+                        ShowWindow(panel.hwnd, SW_HIDE);
+                        // The room goes back while hidden.
+                        undock(panel);
+                    }
                     KillTimer(panel.hwnd, AUTO_HIDE_TIMER);
                     KillTimer(panel.hwnd, LEAVE_TIMER);
                     set_hovered(panel.edge, false);
@@ -848,6 +877,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 match wp {
                     MACRO_TIMER => macro_wait_over(hwnd),
                     AUTO_HIDE_TIMER | LEAVE_TIMER => idle_over(hwnd, wp),
+                    SLIDE_TIMER => {
+                        with_panel(hwnd, |panel| slide_step(panel));
+                    }
                     _ => repeat(hwnd, wp),
                 }
                 0
@@ -1077,6 +1109,10 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
         let (sx, sy) = pointer_at(lp);
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
+            // Its keys are on the move, not where they will be.
+            if panel.slide.is_some() {
+                return;
+            }
             // In use: nothing counts toward hiding it until it is let go.
             KillTimer(hwnd, AUTO_HIDE_TIMER);
             KillTimer(hwnd, LEAVE_TIMER);
@@ -1446,6 +1482,92 @@ unsafe fn hover_over(hwnd: HWND) {
     });
 }
 
+/// How far a panel is a key thick across its edge: how far it slides.
+fn thickness(panel: &Panel) -> i32 {
+    if panel.edge.is_side() { panel.rect.w } else { panel.rect.h }
+}
+
+/// How far out of its place, toward the screen edge, the panel is now.
+fn slid_out(panel: &Panel) -> i32 {
+    let Some(s) = panel.slide else { return 0 };
+    let to = if s.inward { 0 } else { thickness(panel) };
+    let done = (s.at.elapsed().as_millis() as f64 / s.ms.max(1) as f64).min(1.0);
+    s.from + ((to - s.from) as f64 * done).round() as i32
+}
+
+/// The part of the panel in the screen now: where on the screen, how big,
+/// and where in the panel's picture. Nothing goes past the edge, so a panel
+/// sliding on an edge another monitor adjoins never shows on that monitor.
+/// At least a pixel is in: a layered window cannot be empty.
+fn in_part(panel: &Panel) -> (POINT, SIZE, POINT) {
+    let r = panel.rect;
+    let out = slid_out(panel).clamp(0, thickness(panel) - 1);
+    match panel.edge {
+        Edge::Left => (POINT { x: r.x, y: r.y }, SIZE { cx: r.w - out, cy: r.h }, POINT { x: out, y: 0 }),
+        Edge::Right => (POINT { x: r.x + out, y: r.y }, SIZE { cx: r.w - out, cy: r.h }, POINT { x: 0, y: 0 }),
+        Edge::Top => (POINT { x: r.x, y: r.y }, SIZE { cx: r.w, cy: r.h - out }, POINT { x: 0, y: out }),
+        Edge::Bottom => (POINT { x: r.x, y: r.y + out }, SIZE { cx: r.w, cy: r.h - out }, POINT { x: 0, y: 0 }),
+    }
+}
+
+/// Start `panel` sliding in (`inward`) or out from where it is now. A panel
+/// coming in from hidden starts all the way out. Returns false, and does
+/// nothing, with slides off or no timer to drive them: it then comes or
+/// goes at once.
+unsafe fn slide(panel: &mut Panel, inward: bool) -> bool {
+    if panel.slide_ms == 0 {
+        return false;
+    }
+    let from = match panel.slide {
+        Some(_) => slid_out(panel),
+        None if inward => thickness(panel),
+        None => 0,
+    };
+    // Turned back part way, it takes the share of the time the rest needs.
+    let way = if inward { from } else { thickness(panel) - from };
+    let ms = (panel.slide_ms as i64 * way as i64 / thickness(panel).max(1) as i64).max(1) as u32;
+    panel.slide = Some(Slide { inward, from, at: Instant::now(), ms });
+    unsafe {
+        if SetTimer(panel.hwnd, SLIDE_TIMER, SLIDE_STEP, None) == 0 {
+            debug_log!("パネル {}: スライドのタイマーを作れない", edge_name(panel.edge));
+            panel.slide = None;
+            draw(panel);
+            return false;
+        }
+        draw(panel);
+    }
+    true
+}
+
+/// The slide timer: move the panel on, and once the slide is over, stop the
+/// timer and leave it in place, or hidden.
+unsafe fn slide_step(panel: &mut Panel) {
+    let Some(s) = panel.slide else {
+        unsafe { KillTimer(panel.hwnd, SLIDE_TIMER) };
+        return;
+    };
+    unsafe {
+        let over = s.at.elapsed().as_millis() >= s.ms as u128;
+        if !over {
+            draw(panel);
+            return;
+        }
+        KillTimer(panel.hwnd, SLIDE_TIMER);
+        if !s.inward {
+            // Gone first, then whole again for the next time it shows.
+            ShowWindow(panel.hwnd, SW_HIDE);
+            // The room goes back once it is gone.
+            undock(panel);
+        }
+        panel.slide = None;
+        draw(panel);
+        if s.inward {
+            // Whole and in place now: it counts from here toward hiding.
+            count_idle(panel);
+        }
+    }
+}
+
 fn appbar_data(hwnd: HWND) -> APPBARDATA {
     let mut data: APPBARDATA = unsafe { zeroed() };
     data.cbSize = size_of::<APPBARDATA>() as u32;
@@ -1621,17 +1743,9 @@ unsafe fn draw(panel: &Panel) -> bool {
             SourceConstantAlpha: panel.current_alpha(),
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
-        let shown = UpdateLayeredWindow(
-            hwnd,
-            screen,
-            &POINT { x: r.x, y: r.y },
-            &SIZE { cx: r.w, cy: r.h },
-            mem,
-            &POINT { x: 0, y: 0 },
-            0,
-            &blend,
-            ULW_ALPHA,
-        ) != 0;
+        // Sliding, only the part already in is shown, against the edge.
+        let (at, size, from) = in_part(panel);
+        let shown = UpdateLayeredWindow(hwnd, screen, &at, &size, mem, &from, 0, &blend, ULW_ALPHA) != 0;
 
         SelectObject(mem, old_bitmap);
         DeleteObject(dib);

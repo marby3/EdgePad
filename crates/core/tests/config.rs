@@ -266,3 +266,26 @@ dock = yes
     let reason = &errors[0].reason;
     assert!(reason.contains("dock") && reason.contains("yes"), "{reason:?}");
 }
+
+// Issue #64 AC5: slide_ms is 0 or 50..=500; anything else is an error.
+#[test]
+fn slide_ms_takes_zero_or_50_to_500_and_anything_else_is_an_error() {
+    assert_eq!(General::default().slide_ms, 0, "off by default");
+    for (value, want) in [("0", 0), ("50", 50), ("500", 500)] {
+        let text = format!("[general]
+slide_ms = {value}
+[profile.default]
+");
+        assert_eq!(parse(text.as_bytes()).expect("in range").general.slide_ms, want);
+    }
+    for value in ["49", "501", "fast"] {
+        let text = format!("[general]
+slide_ms = {value}
+[profile.default]
+");
+        let errors = parse(text.as_bytes()).expect_err("out of range");
+        assert_eq!(errors.iter().map(|e| e.line).collect::<Vec<_>>(), [2], "{value}: {errors:#?}");
+        let reason = &errors[0].reason;
+        assert!(reason.contains("slide_ms") && reason.contains(value), "{value}: {reason:?}");
+    }
+}
