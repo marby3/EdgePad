@@ -28,8 +28,6 @@ use crate::log::debug_log;
 use crate::{launch, send};
 use crate::settings::{EdgePanel, Panels};
 
-/// Opacity of the shown panel: 90%.
-const OPACITY: u8 = 230;
 const PANEL_BG: u32 = 0x0020_2020;
 const KEY_FACE: u32 = 0x003A_3A3A;
 /// Face of a held key: accent blue, RGB(0, 120, 215).
@@ -153,6 +151,10 @@ struct Panel {
     /// A modifier tapped for less than this latches.
     latch_time: Duration,
     latch_mode: LatchMode,
+    /// Constant alpha of the panel shown normally.
+    alpha: u8,
+    /// Constant alpha of the panel shown dimmed.
+    dim_alpha: u8,
     /// The panel on screen, and the side of a key, in pixels at the current DPI.
     rect: Rect,
     key: i32,
@@ -197,10 +199,27 @@ impl Panel {
         (self.key / 2).max(1)
     }
 
-    /// How far a flick on the panel goes before it hides it: a whole key.
+    /// How far a swipe from the handle goes before it shows the panel
+    /// normally, not dimmed: two keys.
+    fn long_swipe_distance(&self) -> i32 {
+        (self.key * 2).max(1)
+    }
+
+    /// How far a flick on the panel goes before it hides it, or undims it: a
+    /// whole key.
     fn flick_distance(&self) -> i32 {
         self.key.max(1)
     }
+
+    /// The constant alpha it is drawn with now.
+    fn current_alpha(&self) -> u8 {
+        if DIMMED.get()[self.edge as usize] { self.dim_alpha } else { self.alpha }
+    }
+}
+
+/// `percent` opacity as a constant alpha.
+fn alpha(percent: u8) -> u8 {
+    ((percent.min(100) as u32 * 255 + 50) / 100) as u8
 }
 
 thread_local! {
@@ -214,6 +233,9 @@ thread_local! {
     // across rebuilds, never written to disk.
     static HIDDEN: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
+    // The edges shown dimmed by a short swipe from their handle (spec 4.5).
+    // Hiding an edge ends it, so every other way of showing it is normal.
+    static DIMMED: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
     // Each pointer down on a handle, with that handle's window.
     static HANDLE_DRAGS: RefCell<Vec<Start>> = const { RefCell::new(Vec::new()) };
 }
@@ -324,6 +346,8 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             key_size: panels.key_size,
             latch_time: Duration::from_millis(panels.latch_ms as u64),
             latch_mode: panels.latch,
+            alpha: alpha(panels.opacity),
+            dim_alpha: alpha(panels.dim_opacity),
             rect,
             key: 0,
             screen: rect,
@@ -384,6 +408,12 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
                 send::key(vk as u16, false);
             }
         }
+        // An edge left without a panel is not dimmed when it comes back.
+        let mut dimmed = DIMMED.get();
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            dimmed[edge as usize] &= panels.edges.iter().any(|p| p.edge == edge);
+        }
+        DIMMED.set(dimmed);
         // Every edge is tried, even after one fails.
         panels.edges.iter().fold(true, |ok, p| create(p, panels) && ok)
     }
@@ -422,6 +452,31 @@ unsafe fn set_hidden(edge: Edge, hide: bool) {
     unsafe { apply_visibility() };
 }
 
+/// How a panel is shown.
+#[derive(Clone, Copy, PartialEq)]
+enum Look {
+    Normal,
+    Dimmed,
+}
+
+/// Show the panel on `edge` with `look`, or change how it is shown. It is
+/// redrawn at its new alpha before it goes up.
+unsafe fn show(edge: Edge, look: Look) {
+    let dim = look == Look::Dimmed;
+    let mut dimmed = DIMMED.get();
+    if dimmed[edge as usize] != dim {
+        dimmed[edge as usize] = dim;
+        DIMMED.set(dimmed);
+        debug_log!("パネル {}: {}", edge_name(edge), if dim { "半透明" } else { "通常表示" });
+        PANELS.with_borrow(|panels| {
+            for panel in panels.iter().filter(|p| p.edge == edge) {
+                unsafe { draw(panel) };
+            }
+        });
+    }
+    unsafe { set_hidden(edge, false) };
+}
+
 /// Pause (hide every panel) or resume, back to the edges shown before.
 pub unsafe fn toggle_pause() {
     PAUSED.set(!PAUSED.get());
@@ -440,7 +495,8 @@ pub unsafe fn toggle_all() {
 }
 
 /// Show or hide each panel and handle as `visible` and `handle_visible`
-/// say. A panel going away lets go of the keys held on it first.
+/// say. A panel going away lets go of the keys held on it first, and is no
+/// longer dimmed: shown again, it is normal unless shown dimmed.
 unsafe fn apply_visibility() {
     PANELS.with_borrow_mut(|panels| unsafe {
         for panel in panels {
@@ -450,6 +506,10 @@ unsafe fn apply_visibility() {
                 if show {
                     ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
                 } else {
+                    let mut dimmed = DIMMED.get();
+                    dimmed[panel.edge as usize] = false;
+                    DIMMED.set(dimmed);
+                    // Draws it, now at its normal alpha.
                     let_go(panel);
                     ShowWindow(panel.hwnd, SW_HIDE);
                 }
@@ -682,20 +742,25 @@ unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
 }
 
 /// A pointer moved on a panel: a quick flick toward the screen edge hides the
-/// panel, letting go of the key it pressed.
+/// panel, letting go of the key it pressed. On a dimmed panel, a quick flick
+/// the other way shows it normally, and the key it pressed comes up as for a
+/// contact taken away: a gesture, not a key press.
 unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
-    let mut hide = None;
+    let mut flick = None;
     with_panel(hwnd, |panel| {
         if let Some(s) = panel.starts.iter().find(|s| s.id == id && s.at.elapsed() <= FLICK_TIME) {
-            if gesture::swipe(panel.edge, x - s.x, y - s.y, panel.flick_distance()) == Some(Swipe::Outward) {
-                hide = Some(panel.edge);
-            }
+            flick = gesture::swipe(panel.edge, x - s.x, y - s.y, panel.flick_distance()).map(|f| (panel.edge, f));
         }
     });
-    // Outside the borrow: hiding goes over every panel.
-    if let Some(edge) = hide {
-        unsafe { set_hidden(edge, true) };
+    // Outside the borrow: hiding and undimming go over every panel.
+    match flick {
+        Some((edge, Swipe::Outward)) => unsafe { set_hidden(edge, true) },
+        Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] => unsafe {
+            pointer_up(hwnd, wp, true);
+            show(edge, Look::Normal);
+        },
+        _ => {}
     }
 }
 
@@ -728,33 +793,41 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 }
 
 /// A pointer that went down on handle `hwnd` moved, lifted or was lost. A
-/// swipe inward, or a tap, shows the panel.
+/// short swipe inward shows the panel dimmed; carried on to a long one, the
+/// panel turns normal. A tap shows it normally.
 unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
     let Some(Start { x: x0, y: y0, .. }) =
         HANDLE_DRAGS.with_borrow(|drags| drags.iter().find(|d| d.hwnd == hwnd && d.id == id).copied())
     else {
         return;
     };
-    let Some((edge, distance)) = PANELS.with(|panels| {
+    let Some((edge, short, long)) = PANELS.with(|panels| {
         let panels = panels.try_borrow().ok()?;
-        panels.iter().find(|p| p.handle_hwnd == hwnd).map(|p| (p.edge, p.swipe_distance()))
+        let p = panels.iter().find(|p| p.handle_hwnd == hwnd)?;
+        Some((p.edge, p.swipe_distance(), p.long_swipe_distance()))
     }) else {
         return;
     };
-    let show = match msg {
-        WM_POINTERUPDATE => gesture::swipe(edge, x - x0, y - y0, distance) == Some(Swipe::Inward),
-        WM_POINTERUP => gesture::is_tap(x - x0, y - y0, distance),
-        // Capture lost: the gesture ends with nothing.
-        _ => false,
+    let (dx, dy) = (x - x0, y - y0);
+    let inward = |distance| gesture::swipe(edge, dx, dy, distance) == Some(Swipe::Inward);
+    // How it shows the panel, if it does, and whether the gesture is over.
+    let (shows, over) = match msg {
+        WM_POINTERUPDATE if inward(long) => (Some(Look::Normal), true),
+        // Once: the swipe goes on, and may yet turn the panel normal.
+        WM_POINTERUPDATE if inward(short) && HIDDEN.get()[edge as usize] => (Some(Look::Dimmed), false),
+        WM_POINTERUPDATE => (None, false),
+        WM_POINTERUP => (gesture::is_tap(dx, dy, short).then_some(Look::Normal), true),
+        // Capture lost: the gesture ends with nothing more.
+        _ => (None, true),
     };
-    if msg != WM_POINTERUPDATE || show {
+    if over {
         HANDLE_DRAGS.with_borrow_mut(|drags| drags.retain(|d| d.id != id));
         if unsafe { GetCapture() } == hwnd {
             unsafe { ReleaseCapture() };
         }
     }
-    if show {
-        unsafe { set_hidden(edge, false) };
+    if let Some(look) = shows {
+        unsafe { show(edge, look) };
     }
 }
 
@@ -1087,7 +1160,7 @@ unsafe fn draw(panel: &Panel) -> bool {
         DeleteObject(latched_face);
 
         // GDI leaves alpha at 0; make every pixel opaque and let the constant
-        // alpha below give the panel its 90%.
+        // alpha below give the panel its opacity, shown or dimmed.
         let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (r.w * r.h) as usize);
         for p in pixels {
             *p |= 0xFF00_0000;
@@ -1096,7 +1169,7 @@ unsafe fn draw(panel: &Panel) -> bool {
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
-            SourceConstantAlpha: OPACITY,
+            SourceConstantAlpha: panel.current_alpha(),
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
         let shown = UpdateLayeredWindow(
