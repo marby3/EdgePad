@@ -226,9 +226,11 @@ impl Panel {
     }
 
     /// How far a flick on the panel goes before it hides it, or undims it: a
-    /// whole key.
+    /// third of a key. A one-column panel is a key thick, so from the middle
+    /// of a key there is only half a key to the screen edge. The quickness
+    /// (FLICK_TIME), not the distance, tells a flick from a drifting hand.
     fn flick_distance(&self) -> i32 {
-        self.key.max(1)
+        (self.key / 3).max(1)
     }
 
     /// The constant alpha it is drawn with now.
