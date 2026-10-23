@@ -5,7 +5,8 @@
 //! Windows is checked by writing the user's own settings in the registry and
 //! announcing the change as Windows does (WM_SETTINGCHANGE,
 //! "ImmersiveColorSet"); each value is put back afterwards, even when the
-//! test fails.
+//! test fails. A test process killed outright leaves the change in place:
+//! these tests are meant for CI and a developer's own machine, knowingly.
 
 mod common;
 
@@ -13,6 +14,7 @@ use std::ptr::null_mut;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::Graphics::Dwm::DwmFlush;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use common::*;
@@ -68,11 +70,17 @@ impl Setting {
 
 impl Drop for Setting {
     fn drop(&mut self) {
-        match self.was {
-            Some(v) => write_dword(&self.key, &self.name, v),
-            None => unsafe {
-                RegDeleteKeyValueW(HKEY_CURRENT_USER, self.key.as_ptr(), self.name.as_ptr());
-            },
+        // Best effort, no assertion: the test may already be failing, and a
+        // second panic here would abort the whole run.
+        unsafe {
+            match self.was {
+                Some(v) => {
+                    RegSetKeyValueW(HKEY_CURRENT_USER, self.key.as_ptr(), self.name.as_ptr(), REG_DWORD, &v as *const u32 as _, 4);
+                }
+                None => {
+                    RegDeleteKeyValueW(HKEY_CURRENT_USER, self.key.as_ptr(), self.name.as_ptr());
+                }
+            }
         }
         announce();
     }
@@ -163,6 +171,8 @@ fn handle_colour(app: &Running) -> [i32; 3] {
             unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
             let r = window_rect(hwnd);
             if pid == app.0.id() && unsafe { IsWindowVisible(hwnd) } != 0 && r.left == m.left {
+                // Painted and composed before it is read.
+                assert_eq!(unsafe { DwmFlush() }, 0, "DwmFlush failed");
                 let (x, y) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
                 return channels(capture(RECT { left: x, top: y, right: x + 1, bottom: y + 1 })[0]);
             }
@@ -223,6 +233,7 @@ fn the_accent_colours_held_and_latched_keys_and_the_handle_and_auto_follows_wind
 
     // Set in the file.
     let (app, panel) = launch_pad("accent = #E02030");
+    // Swallows the keys sent, so a latched Ctrl never reaches the desktop.
     let _log = KeyLog::start();
     let mut touch = Touch::new();
     touch.down(1, key_centre(panel, 0));

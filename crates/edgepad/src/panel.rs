@@ -221,18 +221,19 @@ fn palette() -> Palette {
 }
 
 /// Windows' colour settings may have changed: if the colours come to
-/// something else now, redraw every panel and handle in them.
-pub unsafe fn restyle() {
+/// something else now, redraw every panel and handle in them. Returns false
+/// when the panels are in use further up the stack and nothing changed: the
+/// caller tries again later.
+pub unsafe fn restyle() -> bool {
     let (theme, accent) = STYLE.get();
     let p = colors::palette(theme, accent);
     if PALETTE.get() == Some(p) {
-        return;
+        return true;
     }
-    PALETTE.set(Some(p));
-    debug_log!("配色の変更");
     PANELS.with(|panels| {
-        // In use further up the stack: those draws pick the new colours up.
-        let Ok(panels) = panels.try_borrow() else { return };
+        let Ok(panels) = panels.try_borrow() else { return false };
+        PALETTE.set(Some(p));
+        debug_log!("配色の変更");
         for panel in panels.iter() {
             unsafe {
                 draw(panel);
@@ -241,7 +242,8 @@ pub unsafe fn restyle() {
                 }
             }
         }
-    });
+        true
+    })
 }
 
 /// `percent` opacity as a constant alpha.
@@ -820,6 +822,7 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_ERASEBKGND => {
                 let mut r: RECT = zeroed();
                 GetClientRect(hwnd, &mut r);
+                // Held keys are the accent, as plain as it comes.
                 let brush = CreateSolidBrush(colorref(palette().held));
                 FillRect(wp as HDC, &r, brush);
                 DeleteObject(brush);

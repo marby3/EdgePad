@@ -22,16 +22,19 @@ pub struct Palette {
 const WHITE: Rgb = [0xFF, 0xFF, 0xFF];
 const BLACK: Rgb = [0x00, 0x00, 0x00];
 
-/// Darker or lighter labels, whichever reads on `face`.
-fn text_on(face: Rgb) -> Rgb {
-    let [r, g, b] = face.map(u32::from);
+/// Darker or lighter labels, whichever reads on a key of `colour`.
+fn text_on(colour: Rgb) -> Rgb {
+    let [r, g, b] = colour.map(u32::from);
     // Perceived brightness, 0..=255.
     if (r * 299 + g * 587 + b * 114) / 1000 < 150 { WHITE } else { BLACK }
 }
 
 /// The palette for a `dark` or light panel with `accent`.
 pub fn palette(dark: bool, accent: Rgb) -> Palette {
+    // 60% of the accent: plainly the same colour, plainly not held.
     let latched = accent.map(|c| (c as u32 * 3 / 5) as u8);
+    // Background, key face and label of each theme. Dark is what EdgePad
+    // has drawn since v0.1.
     let (background, face, text) = match dark {
         true => ([0x20, 0x20, 0x20], [0x3A, 0x3A, 0x3A], [0xF0, 0xF0, 0xF0]),
         false => ([0xE4, 0xE4, 0xE4], [0xFA, 0xFA, 0xFA], [0x20, 0x20, 0x20]),

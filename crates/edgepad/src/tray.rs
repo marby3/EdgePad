@@ -382,7 +382,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             // Windows' theme or accent colour may have changed.
             WM_SETTINGCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED => {
-                panel::restyle();
+                if !panel::restyle() {
+                    PostMessageW(hwnd, msg, 0, 0);
+                }
                 0
             }
             WM_QUERYENDSESSION => 1,
