@@ -14,7 +14,7 @@ use common::*;
 
 const A: u16 = b'A' as u16;
 
-/// The hover_ms every test here sets.
+/// The hover_ms of every test here that hovers.
 const HOVER_MS: u64 = 400;
 
 /// A and Ctrl down the left, under `general`.
@@ -119,15 +119,19 @@ fn a_panel_shown_by_hovering_hides_hover_ms_after_the_mouse_leaves_it() {
     pump(800);
     assert!(!shown(&app), "hover_ms after leaving it is hidden, having moved over it");
 
-    // From the end of the handle, beyond the panel: the mouse is outside it
-    // from the start.
+    // From the end of the handle, beyond the panel: resting there keeps it,
+    // as on the panel; going hides it.
     let handle = left_handle(&app);
     hover_show_at(&app, POINT { x: centre(handle).x, y: handle.top + 3 });
     let panel = left_panel(&app);
     assert!(handle.top + 3 < panel.top, "precondition: the end of the handle is beyond the panel");
+    pump(HOVER_MS + 400);
+    assert!(shown(&app), "the mouse resting on the end of the handle keeps the panel");
     mouse_move_to(away());
-    pump(800);
-    assert!(!shown(&app), "shown from beyond the panel, it hides hover_ms after the mouse goes");
+    pump(150);
+    assert!(shown(&app), "250 ms after the mouse went from the end of the handle it is still shown");
+    pump(600);
+    assert!(!shown(&app), "hover_ms after the mouse went from the end of the handle it is hidden");
 
     hover_show(&app);
     let panel = left_panel(&app);
@@ -155,6 +159,7 @@ fn a_panel_shown_by_hovering_hides_hover_ms_after_the_mouse_leaves_it() {
 fn auto_hide_ms_after_it_was_shown_or_last_pressed_the_panel_hides() {
     let _desktop = desktop();
     let _cursor = Cursor::save();
+    // Swallows the A the tap below sends, so it never reaches the desktop.
     let _log = KeyLog::start();
     // As launched, never touched.
     let app = launch_pad("auto_hide_ms = 1500");
