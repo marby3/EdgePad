@@ -8,13 +8,18 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use crate::config::Edge;
+use crate::config::{Edge, PIE_ITEMS};
 
-/// The item of `items` a pointer points at after moving (`dx`, `dy`) pixels
-/// from where it pressed a pie key on `edge`, with keys `key` pixels across;
-/// none for the middle or the edge's side, where letting go cancels.
+/// The item of `items` a pointer points at, `dx`, `dy` pixels from the middle
+/// of a pie menu opened from `edge`, with keys `key` pixels across: where a
+/// finger has slid to since pressing the pie key, or where it taps a menu
+/// left open. None for the middle or the edge's side, where letting go
+/// cancels. The offsets and `key` are in the same pixels, and `items` is
+/// what the settings allow (2 to 8).
 pub fn item(edge: Edge, dx: i32, dy: i32, key: i32, items: usize) -> Option<usize> {
-    let (dx, dy, key) = (i64::from(dx), i64::from(dy), i64::from(key));
+    debug_assert!(PIE_ITEMS.contains(&items) && key > 0, "{items} items, key {key}");
+    // Wide enough that squaring any offset cannot overflow.
+    let (dx, dy, key) = (i128::from(dx), i128::from(dy), i128::from(key));
     // Within half a key: the middle.
     if 4 * (dx * dx + dy * dy) < key * key {
         return None;

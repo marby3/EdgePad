@@ -89,8 +89,8 @@ fn toward_the_edge_cancels_however_far_and_along_it_is_the_first_or_last_item() 
         }
         assert_eq!(item(Edge::Left, 0, -300, KEY, n), Some(0), "{n} items: straight up");
         assert_eq!(item(Edge::Left, 0, 300, KEY, n), Some(n - 1), "{n} items: straight down");
-        assert_eq!(item(Edge::Right, 1, 0, KEY, n), None);
-        assert_eq!(item(Edge::Top, 0, -1, KEY, n), None);
+        assert_eq!(item(Edge::Right, 300, -10, KEY, n), None);
+        assert_eq!(item(Edge::Top, 10, -300, KEY, n), None);
         assert_eq!(item(Edge::Bottom, 300, 1, KEY, n), None);
     }
 }

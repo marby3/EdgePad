@@ -265,7 +265,7 @@ impl Action {
 }
 
 /// How many items a pie menu has, from its key set (spec 4.6).
-const PIE_ITEMS: std::ops::RangeInclusive<usize> = 2..=8;
+pub(crate) const PIE_ITEMS: std::ops::RangeInclusive<usize> = 2..=8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
