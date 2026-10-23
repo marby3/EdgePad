@@ -159,7 +159,9 @@ fn carrying_the_swipe_on_to_two_keys_makes_the_panel_normal() {
 
     let key = key_px();
     let mut seen = Vec::new();
-    drag_from_handle(&app, &[key * 3 / 4, key * 2 + key / 4], |d| {
+    // Just past two keys: any shorter long swipe would already have turned
+    // it normal at the first stop, any longer one not yet at the second.
+    drag_from_handle(&app, &[key * 3 / 4, key * 2 + 2], |d| {
         let panel = panels_now(&app).first().copied().expect("the panel is shown during the swipe");
         seen.push((d, opacity(&backdrop, panel)));
     });
@@ -214,10 +216,21 @@ fn the_dimmed_panel_takes_fingers_ignores_pens_and_hides_with_a_flick_to_the_edg
     touch.hold(100);
     touch.up(1);
     assert_eq!(log.keys(), [(B, false), (B, true)], "a finger presses B");
+    let o = opacity(&backdrop, left_panel(&app));
+    assert!(near(o, 40), "and the panel is still dimmed, at {o}%");
+
+    let mut saved = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&mut saved) };
+    mouse_move_to(b);
+    mouse_down_at(b);
+    mouse_up_at(b);
+    unsafe { SetCursorPos(saved.x, saved.y) };
+    pump(200);
+    assert_eq!(log.keys()[2..], [(B, false), (B, true)], "so does the mouse");
 
     pen_tap(b);
     pump(200);
-    assert_eq!(log.keys().len(), 2, "a pen presses nothing");
+    assert_eq!(log.keys().len(), 4, "a pen presses nothing");
     let o = opacity(&backdrop, left_panel(&app));
     assert!(near(o, 40), "and the panel is still dimmed, at {o}%");
 

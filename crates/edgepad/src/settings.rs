@@ -78,8 +78,9 @@ pub struct Panels {
     pub latch_ms: u32,
     /// Whether a shortcut ends a latch.
     pub latch: LatchMode,
-    /// Opacity of a panel in percent, shown and dimmed.
+    /// Opacity in percent of a panel shown normally.
     pub opacity: u8,
+    /// Opacity in percent of a panel shown dimmed.
     pub dim_opacity: u8,
     /// Every key set, for page keys that switch a panel to another.
     pub sets: Rc<[KeySet]>,

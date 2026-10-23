@@ -151,8 +151,9 @@ struct Panel {
     /// A modifier tapped for less than this latches.
     latch_time: Duration,
     latch_mode: LatchMode,
-    /// Constant alpha of the panel, shown and dimmed.
+    /// Constant alpha of the panel shown normally.
     alpha: u8,
+    /// Constant alpha of the panel shown dimmed.
     dim_alpha: u8,
     /// The panel on screen, and the side of a key, in pixels at the current DPI.
     rect: Rect,
@@ -407,6 +408,12 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
                 send::key(vk as u16, false);
             }
         }
+        // An edge left without a panel is not dimmed when it comes back.
+        let mut dimmed = DIMMED.get();
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            dimmed[edge as usize] &= panels.edges.iter().any(|p| p.edge == edge);
+        }
+        DIMMED.set(dimmed);
         // Every edge is tried, even after one fails.
         panels.edges.iter().fold(true, |ok, p| create(p, panels) && ok)
     }
@@ -445,9 +452,17 @@ unsafe fn set_hidden(edge: Edge, hide: bool) {
     unsafe { apply_visibility() };
 }
 
-/// Show the panel on `edge`, dimmed or not, or change how it is shown. It is
+/// How a panel is shown.
+#[derive(Clone, Copy, PartialEq)]
+enum Look {
+    Normal,
+    Dimmed,
+}
+
+/// Show the panel on `edge` with `look`, or change how it is shown. It is
 /// redrawn at its new alpha before it goes up.
-unsafe fn show(edge: Edge, dim: bool) {
+unsafe fn show(edge: Edge, look: Look) {
+    let dim = look == Look::Dimmed;
     let mut dimmed = DIMMED.get();
     if dimmed[edge as usize] != dim {
         dimmed[edge as usize] = dim;
@@ -738,12 +753,12 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             flick = gesture::swipe(panel.edge, x - s.x, y - s.y, panel.flick_distance()).map(|f| (panel.edge, f));
         }
     });
-    // Outside the borrow: both go over every panel.
+    // Outside the borrow: hiding and undimming go over every panel.
     match flick {
         Some((edge, Swipe::Outward)) => unsafe { set_hidden(edge, true) },
         Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] => unsafe {
             pointer_up(hwnd, wp, true);
-            show(edge, false);
+            show(edge, Look::Normal);
         },
         _ => {}
     }
@@ -795,13 +810,13 @@ unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
     };
     let (dx, dy) = (x - x0, y - y0);
     let inward = |distance| gesture::swipe(edge, dx, dy, distance) == Some(Swipe::Inward);
-    // How it shows the panel, dimmed or not, and whether the gesture is over.
+    // How it shows the panel, if it does, and whether the gesture is over.
     let (shows, over) = match msg {
-        WM_POINTERUPDATE if inward(long) => (Some(false), true),
+        WM_POINTERUPDATE if inward(long) => (Some(Look::Normal), true),
         // Once: the swipe goes on, and may yet turn the panel normal.
-        WM_POINTERUPDATE if inward(short) && HIDDEN.get()[edge as usize] => (Some(true), false),
+        WM_POINTERUPDATE if inward(short) && HIDDEN.get()[edge as usize] => (Some(Look::Dimmed), false),
         WM_POINTERUPDATE => (None, false),
-        WM_POINTERUP => (gesture::is_tap(dx, dy, short).then_some(false), true),
+        WM_POINTERUP => (gesture::is_tap(dx, dy, short).then_some(Look::Normal), true),
         // Capture lost: the gesture ends with nothing more.
         _ => (None, true),
     };
@@ -811,8 +826,8 @@ unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
             unsafe { ReleaseCapture() };
         }
     }
-    if let Some(dim) = shows {
-        unsafe { show(edge, dim) };
+    if let Some(look) = shows {
+        unsafe { show(edge, look) };
     }
 }
 
