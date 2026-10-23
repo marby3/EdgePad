@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use edgepad_core::config::{self, Edge, Handle, KeyDef, Monitor};
 use edgepad_core::keys::Combo;
 use edgepad_core::layout;
+use edgepad_core::modifier::LatchMode;
 
 const FILE: &str = "edgepad.ini";
 
@@ -72,6 +73,10 @@ pub struct Panels {
     pub edges: Vec<EdgePanel>,
     /// Shows and hides every edge, if set.
     pub hotkey: Option<Combo>,
+    /// A modifier tapped for less than this many milliseconds latches.
+    pub latch_ms: u32,
+    /// Whether a shortcut ends a latch.
+    pub latch: LatchMode,
 }
 
 pub struct EdgePanel {
@@ -152,6 +157,7 @@ pub fn folders() -> Vec<PathBuf> {
 }
 
 fn fallback() -> Panels {
+    let general = config::General::default();
     Panels {
         key_size: layout::KEY_SIZE as u32,
         edges: vec![EdgePanel {
@@ -162,6 +168,8 @@ fn fallback() -> Panels {
             handle: config::EdgeConfig::default().handle,
         }],
         hotkey: None,
+        latch_ms: general.latch_ms,
+        latch: general.latch,
     }
 }
 
@@ -178,5 +186,6 @@ fn panels(bytes: &[u8]) -> Result<Panels, Vec<config::Error>> {
             Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone(), handle: e.handle })
         })
         .collect();
-    Ok(Panels { key_size: config.general.key_size, edges, hotkey: config.general.hotkey })
+    let g = &config.general;
+    Ok(Panels { key_size: g.key_size, edges, hotkey: g.hotkey, latch_ms: g.latch_ms, latch: g.latch })
 }

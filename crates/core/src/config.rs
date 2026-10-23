@@ -6,6 +6,7 @@
 //! mistake is collected with its line number, so one read reports them all.
 
 use crate::keys::{Combo, Key};
+use crate::modifier::LatchMode;
 
 /// Largest settings file read; anything bigger is refused unread.
 pub const MAX_BYTES: usize = 64 * 1024;
@@ -62,6 +63,8 @@ pub struct General {
     pub dim_opacity: u8,
     /// A modifier tapped for less than this latches.
     pub latch_ms: u32,
+    /// Whether a shortcut ends a latch.
+    pub latch: LatchMode,
     pub pen_presses: bool,
     pub theme: Theme,
 }
@@ -74,6 +77,7 @@ impl Default for General {
             opacity: 90,
             dim_opacity: 35,
             latch_ms: 250,
+            latch: LatchMode::OneShot,
             pen_presses: false,
             theme: Theme::Auto,
         }
@@ -376,6 +380,13 @@ impl Parser {
             "opacity" => g.opacity = number(name, value, 10, 100)? as u8,
             "dim_opacity" => g.dim_opacity = number(name, value, 10, 100)? as u8,
             "latch_ms" => g.latch_ms = number(name, value, 50, 2000)?,
+            "latch" => {
+                g.latch = match value.to_ascii_lowercase().as_str() {
+                    "oneshot" => LatchMode::OneShot,
+                    "lock" => LatchMode::Lock,
+                    _ => return Err(format!("latch は oneshot か lock（「{value}」）")),
+                }
+            }
             "pen_presses" => g.pen_presses = boolean(name, value)?,
             "theme" => {
                 g.theme = match value.to_ascii_lowercase().as_str() {

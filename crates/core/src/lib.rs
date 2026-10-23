@@ -8,4 +8,5 @@ pub mod config;
 pub mod gesture;
 pub mod keys;
 pub mod layout;
+pub mod modifier;
 pub mod press;
