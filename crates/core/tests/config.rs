@@ -72,7 +72,7 @@ fn the_spec_example_reads_without_errors_and_every_value_comes_through() {
     assert_eq!(g.theme, Theme::Auto);
 
     let left = &config.edges[Edge::Left as usize];
-    assert_eq!(*left, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }) });
+    assert_eq!(*left, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false });
     let right = &config.edges[Edge::Right as usize];
     assert_eq!((right.enabled, right.monitor, right.lines), (true, Monitor::Primary, 2));
 
@@ -144,7 +144,7 @@ top = more
     assert_eq!((g.key_size, g.opacity, g.dim_opacity, g.latch_ms), (56, 90, 35, 250));
     assert_eq!((g.pen_presses, g.theme), (false, Theme::Auto));
     for edge in &config.edges {
-        assert_eq!(*edge, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }) });
+        assert_eq!(*edge, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false });
     }
     assert_eq!(config.default_profile().edges, [None, None, Some("more".into()), None]);
 }
@@ -246,4 +246,23 @@ fn hover_ms_and_auto_hide_ms_take_zero_or_their_range_and_anything_else_is_an_er
         let reason = &errors[0].reason;
         assert!(reason.contains(name) && reason.contains(value), "{name} = {value}: {reason:?}");
     }
+}
+
+// Issue #60 AC4: `dock` is true or false; anything else is an error.
+#[test]
+fn dock_is_true_or_false_and_anything_else_is_an_error_with_its_line() {
+    assert!(!EdgeConfig::default().dock, "off by default");
+    let config = parse(b"[edge.left]
+dock = true
+[profile.default]
+").expect("true reads");
+    assert!(config.edges[Edge::Left as usize].dock);
+
+    let errors = parse(b"[edge.left]
+dock = yes
+[profile.default]
+").expect_err("yes is not a boolean");
+    assert_eq!(errors.iter().map(|e| e.line).collect::<Vec<_>>(), [2], "{errors:#?}");
+    let reason = &errors[0].reason;
+    assert!(reason.contains("dock") && reason.contains("yes"), "{reason:?}");
 }

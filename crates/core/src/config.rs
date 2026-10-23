@@ -162,6 +162,9 @@ pub struct EdgeConfig {
     pub lines: u8,
     /// None: `handle = none`, shown and hidden from the tray or hotkey only.
     pub handle: Option<Handle>,
+    /// Registered as an AppBar while shown, so maximised windows leave it
+    /// room (spec 5.5).
+    pub dock: bool,
 }
 
 impl Default for EdgeConfig {
@@ -171,6 +174,7 @@ impl Default for EdgeConfig {
             monitor: Monitor::Primary,
             lines: 1,
             handle: Some(Handle { width: 6, length: 40, position: 50 }),
+            dock: false,
         }
     }
 }
@@ -451,6 +455,7 @@ impl Parser {
         let e = &mut self.config.edges[edge as usize];
         match name {
             "enabled" => e.enabled = boolean(name, value)?,
+            "dock" => e.dock = boolean(name, value)?,
             "monitor" => {
                 e.monitor = match value.to_ascii_lowercase().as_str() {
                     "primary" => Monitor::Primary,

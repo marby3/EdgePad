@@ -22,6 +22,10 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
+use windows_sys::Win32::UI::Shell::{
+    ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABN_POSCHANGED, APPBARDATA,
+    SHAppBarMessage,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
@@ -139,6 +143,11 @@ const MACRO_TIMER: usize = 0x1_0000;
 const AUTO_HIDE_TIMER: usize = 0x1_0001;
 const LEAVE_TIMER: usize = 0x1_0002;
 
+/// The message the shell notifies a docked panel with; ABN_POSCHANGED in
+/// wParam says another AppBar or the taskbar moved. A panel window's own,
+/// apart from the tray's messages.
+const APPBAR_CALLBACK: u32 = WM_APP + 1;
+
 /// The timer on a handle that shows its panel once the mouse has rested on
 /// it for `hover_ms`. A handle window's own, apart from the panel's timers.
 const HOVER_TIMER: usize = 1;
@@ -184,6 +193,9 @@ struct Panel {
     /// Shown by hovering (see HOVERED): whether the mouse is outside both
     /// the panel and its handle now.
     mouse_out: bool,
+    /// To be an AppBar while shown, and whether it is one now.
+    dock: bool,
+    docked: bool,
 }
 
 /// Where and when a pointer went down, in screen pixels.
@@ -427,6 +439,8 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             hover_ms: panels.hover_ms,
             auto_hide_ms: panels.auto_hide_ms,
             mouse_out: false,
+            dock: p.dock,
+            docked: false,
         };
         lay_out(&mut panel, None);
         let fits = panel.keys.iter().any(|k| k.rect.is_some());
@@ -460,6 +474,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
                 }
                 // At launch and on every rebuild: it was shown just now.
                 count_idle(panel);
+                dock(panel);
             });
         }
         true
@@ -481,7 +496,8 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
         HOVERED.set(hovered);
         // Taken out first: messages sent while a window is destroyed (capture
         // lost, for one) then find no panel and change nothing.
-        for panel in PANELS.take() {
+        for mut panel in PANELS.take() {
+            undock(&mut panel);
             DestroyWindow(panel.hwnd);
             if !panel.handle_hwnd.is_null() {
                 DestroyWindow(panel.handle_hwnd);
@@ -589,6 +605,8 @@ unsafe fn apply_visibility() {
             if show != (IsWindowVisible(panel.hwnd) != 0) {
                 debug_log!("パネル {}: {}", edge_name(panel.edge), if show { "表示" } else { "非表示" });
                 if show {
+                    // Room first: no maximised window is under it as it shows.
+                    dock(panel);
                     ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
                     count_idle(panel);
                 } else {
@@ -598,6 +616,8 @@ unsafe fn apply_visibility() {
                     // Draws it, now at its normal alpha.
                     let_go(panel);
                     ShowWindow(panel.hwnd, SW_HIDE);
+                    // The room goes back while hidden.
+                    undock(panel);
                     KillTimer(panel.hwnd, AUTO_HIDE_TIMER);
                     KillTimer(panel.hwnd, LEAVE_TIMER);
                     set_hovered(panel.edge, false);
@@ -686,6 +706,10 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
         if let (Some(h), false) = (panel.handle, panel.handle_hwnd.is_null()) {
             let r = layout::handle(screen, panel.edge, layout::scale(h.width as i32, dpi), h.length, h.position);
             SetWindowPos(panel.handle_hwnd, HWND_TOPMOST, r.x, r.y, r.w, r.h, SWP_NOACTIVATE);
+        }
+        // Moved or resized: a docked panel takes the room it needs now.
+        if panel.docked {
+            dock(panel);
         }
     }
 }
@@ -790,6 +814,19 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // Gone from the panel, though perhaps onto its handle.
             WM_POINTERLEAVE => {
                 mouse_moved(hwnd, wp, None);
+                0
+            }
+            APPBAR_CALLBACK if wp as u32 == ABN_POSCHANGED => {
+                // A notice that comes after the panel was hidden registers
+                // nothing again.
+                let done = with_panel(hwnd, |panel| {
+                    if panel.docked {
+                        dock(panel);
+                    }
+                });
+                if !done {
+                    PostMessageW(hwnd, msg, wp, lp);
+                }
                 0
             }
             WM_TIMER => {
@@ -1385,6 +1422,90 @@ unsafe fn hover_over(hwnd: HWND) {
                 panel.mouse_out = !in_reach(panel, cursor());
                 count_leave(panel);
             }
+        }
+    });
+}
+
+fn appbar_data(hwnd: HWND) -> APPBARDATA {
+    let mut data: APPBARDATA = unsafe { zeroed() };
+    data.cbSize = size_of::<APPBARDATA>() as u32;
+    data.hWnd = hwnd;
+    data
+}
+
+/// Register `panel` as an AppBar if it docks, and reserve a strip of its
+/// thickness along the whole of its edge: the shell keeps maximised windows
+/// out of it. Asked again, it takes the room it needs now. The panel itself
+/// stays where its layout put it.
+unsafe fn dock(panel: &mut Panel) {
+    if !panel.dock {
+        return;
+    }
+    let mut data = appbar_data(panel.hwnd);
+    unsafe {
+        if !panel.docked {
+            data.uCallbackMessage = APPBAR_CALLBACK;
+            if SHAppBarMessage(ABM_NEW, &mut data) == 0 {
+                debug_log!("パネル {}: AppBar に登録できない", edge_name(panel.edge));
+                return;
+            }
+            panel.docked = true;
+            debug_log!("パネル {}: ドッキング", edge_name(panel.edge));
+        }
+        let m = panel.screen;
+        data.rc = RECT { left: m.x, top: m.y, right: m.x + m.w, bottom: m.y + m.h };
+        let thick = if panel.edge.is_side() { panel.rect.w } else { panel.rect.h };
+        data.uEdge = match panel.edge {
+            Edge::Left => ABE_LEFT,
+            Edge::Right => ABE_RIGHT,
+            Edge::Top => ABE_TOP,
+            Edge::Bottom => ABE_BOTTOM,
+        };
+        // The shell may move the strip off the very edge (another AppBar,
+        // the taskbar); it keeps its thickness from wherever it lands.
+        let fit = |rc: &mut RECT| match panel.edge {
+            Edge::Left => rc.right = rc.left + thick,
+            Edge::Right => rc.left = rc.right - thick,
+            Edge::Top => rc.bottom = rc.top + thick,
+            Edge::Bottom => rc.top = rc.bottom - thick,
+        };
+        fit(&mut data.rc);
+        SHAppBarMessage(ABM_QUERYPOS, &mut data);
+        fit(&mut data.rc);
+        SHAppBarMessage(ABM_SETPOS, &mut data);
+    }
+}
+
+/// Give the room of a docked `panel` back.
+unsafe fn undock(panel: &mut Panel) {
+    if panel.docked {
+        let mut data = appbar_data(panel.hwnd);
+        unsafe { SHAppBarMessage(ABM_REMOVE, &mut data) };
+        panel.docked = false;
+        debug_log!("パネル {}: ドッキング解除", edge_name(panel.edge));
+    }
+}
+
+/// EdgePad is ending: every docked panel gives its room back.
+pub unsafe fn undock_all() {
+    PANELS.with(|panels| match panels.try_borrow_mut() {
+        Ok(mut panels) => {
+            for panel in panels.iter_mut() {
+                unsafe { undock(panel) };
+            }
+        }
+        Err(_) => debug_log!("パネルが使用中: ドッキングを解除できない"),
+    });
+}
+
+/// Explorer started again and forgot every AppBar: the panels shown and
+/// docked register afresh.
+pub unsafe fn redock_all() {
+    PANELS.with(|panels| {
+        let Ok(mut panels) = panels.try_borrow_mut() else { return };
+        for panel in panels.iter_mut().filter(|p| p.docked) {
+            panel.docked = false;
+            unsafe { dock(panel) };
         }
     });
 }

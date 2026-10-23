@@ -296,6 +296,7 @@ unsafe fn exit(hwnd: HWND) {
     unsafe {
         debug_log!("全キー解放: 終了");
         send::release_all();
+        panel::undock_all();
         WTSUnRegisterSessionNotification(hwnd);
         Shell_NotifyIconW(NIM_DELETE, &icon_data(hwnd));
         PostQuitMessage(0);
@@ -396,6 +397,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             m if m == TASKBAR_CREATED_MSG.load(Ordering::Relaxed) => {
                 add_icon(hwnd);
+                panel::redock_all();
                 0
             }
             #[cfg(feature = "fault-injection")]

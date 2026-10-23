@@ -52,11 +52,14 @@ fn main() -> ExitCode {
         for p in &panels.edges {
             if !panel::create(p, &panels) {
                 log::debug_log!("終了（パネルを作れない）");
+                // Panels made before this one may have taken room.
+                panel::undock_all();
                 return ExitCode::FAILURE;
             }
         }
         if tray::create().is_null() {
             log::debug_log!("終了（トレイを作れない）");
+            panel::undock_all();
             return ExitCode::FAILURE;
         }
         // Everything is message driven: no timers, no polling.
