@@ -1,8 +1,9 @@
 //! Acceptance tests for Issue #64: panels that slide in and out.
 //!
-//! A slide of 400 ms is checked about 100 ms in (part of the panel still
-//! off the screen) and 600 ms in (done). Commands are posted to the tray
-//! without waiting, so the first look comes before the slide is over.
+//! A slide of 400 ms is checked about 100 ms in (only part of the panel in
+//! the screen) and 600 ms in (done). Commands are posted to the tray without
+//! waiting, so the first look comes before the slide is over. A sliding
+//! panel never reaches past its edge: only the part already in is shown.
 
 mod common;
 
@@ -31,34 +32,34 @@ fn panel_now(app: &Running) -> Option<RECT> {
 }
 
 /// A rectangle, or none, for a failure message.
-trait Sides {
-    fn text(&self) -> String;
+fn sides(r: &Option<RECT>) -> String {
+    r.map_or("none".into(), |r| format!("({}, {}, {}, {})", r.left, r.top, r.right, r.bottom))
 }
 
-impl Sides for RECT {
-    fn text(&self) -> String {
-        format!("({}, {}, {}, {})", self.left, self.top, self.right, self.bottom)
-    }
-}
-
-impl Sides for Option<RECT> {
-    fn text(&self) -> String {
-        self.as_ref().map_or("none".into(), Sides::text)
-    }
-}
-
-fn sides(r: &impl Sides) -> String {
-    r.text()
-}
-
-/// Whether the panel sits in its place against the left edge.
+/// Whether the panel sits whole in its place against the left edge: a key
+/// thick, one column.
 fn in_place(r: RECT) -> bool {
-    r.left == primary_monitor().left
+    r.left == primary_monitor().left && r.right - r.left == key_px()
 }
 
-/// Whether the panel is part way out of the screen past the left edge.
+/// Whether only part of the panel is in, against the left edge, and none of
+/// it beyond the edge.
 fn sliding(r: RECT) -> bool {
-    r.left < primary_monitor().left && r.right > primary_monitor().left
+    r.left == primary_monitor().left && r.right - r.left < key_px()
+}
+
+/// Watch the left panel closely after a command, until it is no longer as
+/// it was (`was`: shown, or not): the first new state seen. A slide shows a
+/// part before the whole; coming and going at once shows the end at once.
+fn first_change(app: &Running, was: bool) -> Option<RECT> {
+    let end = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let now = panel_now(app);
+        if now.is_some() != was || std::time::Instant::now() >= end {
+            return now;
+        }
+        pump(5);
+    }
 }
 
 /// The tray's 左辺 command, posted without waiting for it.
@@ -115,13 +116,15 @@ fn with_slide_ms_off_panels_come_and_go_at_once() {
     let toggle = LeftToggle::of(&app);
 
     toggle.post();
-    assert!(after(&app, 30).is_none(), "hidden at once");
+    assert!(first_change(&app, true).is_none(), "hidden at once");
     toggle.post();
-    let r = after(&app, 30).expect("shown at once");
-    assert!(in_place(r), "and in place at once: {}", sides(&r));
+    let r = first_change(&app, false).expect("shown");
+    assert!(in_place(r), "whole and in place from the first look: {}", sides(&Some(r)));
 }
 
-// AC2
+// AC2: the tray, the hotkey, a flick on the panel, a tap on the handle and
+// a short swipe from it. Hovering and auto-hide go the same way as these
+// (apply_visibility), and are left to their own tests.
 #[test]
 fn with_slide_ms_set_every_way_of_showing_slides_in_and_every_way_of_hiding_slides_out() {
     let _desktop = desktop();
@@ -129,13 +132,13 @@ fn with_slide_ms_set_every_way_of_showing_slides_in_and_every_way_of_hiding_slid
     let toggle = LeftToggle::of(&app);
     let check_in = |how: &str| {
         let r = after(&app, 100).unwrap_or_else(|| panic!("{how}: shown"));
-        assert!(sliding(r), "{how}: 100 ms in, the panel is still sliding in: {}", sides(&r));
+        assert!(sliding(r), "{how}: 100 ms in, the panel is still sliding in: {}", sides(&Some(r)));
         let r = after(&app, 500).unwrap_or_else(|| panic!("{how}: still shown"));
-        assert!(in_place(r), "{how}: then in place: {}", sides(&r));
+        assert!(in_place(r), "{how}: then in place: {}", sides(&Some(r)));
     };
     let check_out = |how: &str| {
         let r = after(&app, 100).unwrap_or_else(|| panic!("{how}: 100 ms in, the panel is still on screen"));
-        assert!(sliding(r), "{how}: and sliding out: {}", sides(&r));
+        assert!(sliding(r), "{how}: and sliding out: {}", sides(&Some(r)));
         assert!(after(&app, 500).is_none(), "{how}: then gone");
     };
 
@@ -175,9 +178,9 @@ fn with_slide_ms_set_every_way_of_showing_slides_in_and_every_way_of_hiding_slid
     let r = after(&app, 100).expect("dimmed: shown");
     mouse_up_at(POINT { x: start.x + key_px() * 3 / 4, y: start.y });
     unsafe { SetCursorPos(saved.x, saved.y) };
-    assert!(sliding(r), "shown dimmed: 100 ms in, still sliding in: {}", sides(&r));
+    assert!(sliding(r), "shown dimmed: 100 ms in, still sliding in: {}", sides(&Some(r)));
     let r = after(&app, 500).expect("dimmed: still shown");
-    assert!(in_place(r), "shown dimmed: then in place: {}", sides(&r));
+    assert!(in_place(r), "shown dimmed: then in place: {}", sides(&Some(r)));
 }
 
 // AC3
@@ -193,9 +196,13 @@ fn keys_let_go_as_the_slide_out_starts_and_a_sliding_panel_presses_nothing() {
     touch.hold(100);
     assert_eq!(log.keys(), [(A, false)], "precondition: A held");
     toggle.post();
-    let r = after(&app, 60).expect("still on screen");
-    assert!(sliding(r) || in_place(r), "about to slide or sliding out: {}", sides(&r));
+    let end = std::time::Instant::now() + Duration::from_secs(1);
+    while log.keys().len() < 2 && std::time::Instant::now() < end {
+        pump(5);
+    }
     assert_eq!(log.keys(), [(A, false), (A, true)], "A is let go as the slide out starts");
+    let r = panel_now(&app);
+    assert!(r.is_some(), "the panel is still on its way out as A is let go");
     touch.up(1);
     pump(SLIDE_MS + 200);
     assert!(panel_now(&app).is_none(), "precondition: hidden");
@@ -203,21 +210,21 @@ fn keys_let_go_as_the_slide_out_starts_and_a_sliding_panel_presses_nothing() {
     // A touch on the panel as it slides in, where it is at that moment.
     toggle.post();
     let r = after(&app, 100).expect("sliding in");
-    assert!(sliding(r), "precondition: sliding in: {}", sides(&r));
-    let on_it = POINT { x: (r.left.max(primary_monitor().left) + r.right) / 2, y: key_centre(r, 0).y };
+    assert!(sliding(r), "precondition: sliding in: {}", sides(&Some(r)));
+    let on_it = POINT { x: (r.left + r.right) / 2, y: key_centre(RECT { right: r.left + key_px(), ..r }, 0).y };
     touch.down(1, on_it);
     touch.up(1);
     pump(SLIDE_MS);
     assert_eq!(log.keys().len(), 2, "a touch on the sliding panel presses nothing: {:?}", log.keys());
 
     let r = panel_now(&app).expect("in place");
-    assert!(in_place(r), "precondition: in place: {}", sides(&r));
+    assert!(in_place(r), "precondition: in place: {}", sides(&Some(r)));
     touch.down(1, key_centre(r, 0));
     touch.up(1);
     assert_eq!(log.keys()[2..], [(A, false), (A, true)], "once in place, keys press again");
 }
 
-// AC4
+// AC4: a slide's timer, if it ran on, would show as CPU time while idle.
 #[test]
 fn the_timer_runs_only_while_sliding_and_an_idle_panel_after_it_uses_no_cpu() {
     let _desktop = desktop();
