@@ -247,3 +247,22 @@ fn hover_ms_and_auto_hide_ms_take_zero_or_their_range_and_anything_else_is_an_er
         assert!(reason.contains(name) && reason.contains(value), "{name} = {value}: {reason:?}");
     }
 }
+
+// Issue #60 AC4: `dock` is true or false; anything else is an error.
+#[test]
+fn dock_is_true_or_false_and_anything_else_is_an_error_with_its_line() {
+    assert!(!EdgeConfig::default().dock, "off by default");
+    let config = parse(b"[edge.left]
+dock = true
+[profile.default]
+").expect("true reads");
+    assert!(config.edges[Edge::Left as usize].dock);
+
+    let errors = parse(b"[edge.left]
+dock = yes
+[profile.default]
+").expect_err("yes is not a boolean");
+    assert_eq!(errors.iter().map(|e| e.line).collect::<Vec<_>>(), [2], "{errors:#?}");
+    let reason = &errors[0].reason;
+    assert!(reason.contains("dock") && reason.contains("yes"), "{reason:?}");
+}
