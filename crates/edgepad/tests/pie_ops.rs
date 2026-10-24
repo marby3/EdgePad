@@ -6,6 +6,7 @@
 mod common;
 
 use std::ptr::{null, null_mut};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
@@ -67,6 +68,41 @@ fn pie_window(app: &Running) -> Option<HWND> {
     }
 }
 
+/// Wait up to 3 s for `done`: a debug build of EdgePad, on a slow machine,
+/// takes a while to draw a menu, and handles what comes after once done.
+fn within_3s(mut done: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + Duration::from_secs(3);
+    while !done() {
+        if Instant::now() > end {
+            return false;
+        }
+        pump(20);
+    }
+    true
+}
+
+/// The menu of `app`, once it is open.
+fn opened(app: &Running) -> Option<HWND> {
+    let mut pie = None;
+    within_3s(|| {
+        pie = pie_window(app);
+        pie.is_some()
+    });
+    pie
+}
+
+/// Whether the menu of `app` closes.
+fn closed(app: &Running) -> bool {
+    within_3s(|| pie_window(app).is_none())
+}
+
+/// Let `app` handle what it has been sent, then say whether its menu is
+/// still open: for what must leave it so.
+fn still_open(app: &Running) -> bool {
+    pump(500);
+    pie_window(app).is_some()
+}
+
 /// The middle of item `i`'s direction, in degrees: -90 is up on the left
 /// edge, +90 down.
 fn angle(i: usize) -> f64 {
@@ -112,8 +148,9 @@ fn sliding_to_an_item_and_letting_go_runs_it_as_a_panel_key_would() {
     let mut touch = Touch::new();
 
     slide(&mut touch, p, on_item(p, 0));
+    log.wait_for(2);
     assert_eq!(log.keys(), [d(B), u(B)], "the shortcut B");
-    assert!(pie_window(&app).is_none(), "and the menu is closed");
+    assert!(closed(&app), "and the menu is closed");
 
     slide(&mut touch, p, on_item(p, 1));
     log.wait_for(6);
@@ -125,13 +162,18 @@ fn sliding_to_an_item_and_letting_go_runs_it_as_a_panel_key_would() {
     assert_eq!(log.keys().len(), 10, "a and b, down and up");
 
     slide(&mut touch, p, on_item(p, 3));
-    let runs: Vec<String> = test_events(&app).into_iter().filter(|e| e.starts_with("run: ")).collect();
-    assert_eq!(runs, ["run: calc.exe | "], "the program");
+    let runs = || test_events(&app).into_iter().filter(|e| e.starts_with("run: ")).collect::<Vec<_>>();
+    within_3s(|| !runs().is_empty());
+    assert_eq!(runs(), ["run: calc.exe | "], "the program");
 
     slide(&mut touch, p, on_item(p, 4));
-    let r = left_panel(&app);
-    assert_eq!((r.bottom - r.top) / key_px(), 2, "the panel switched to the two keys of [set.other]");
-    assert!(pie_window(&app).is_none());
+    let keys = || {
+        let r = left_panel(&app);
+        (r.bottom - r.top) / key_px()
+    };
+    within_3s(|| keys() == 2);
+    assert_eq!(keys(), 2, "the panel switched to the two keys of [set.other]");
+    assert!(closed(&app));
 }
 
 // AC2
@@ -147,10 +189,10 @@ fn letting_go_in_the_middle_or_toward_the_edge_does_nothing_and_closes() {
     touch.move_to(1, on_item(p, 0));
     touch.move_to(1, toward(p, 0.0, k / 4.0));
     touch.up(1);
-    assert!(pie_window(&app).is_none(), "back in the middle: closed");
+    assert!(closed(&app), "back in the middle: closed");
 
     slide(&mut touch, p, POINT { x: p.x - (k / 4.0) as i32, y: p.y - k as i32 });
-    assert!(pie_window(&app).is_none(), "toward the edge: closed");
+    assert!(closed(&app), "toward the edge: closed");
     assert_eq!(log.keys(), [], "nothing sent either way");
 }
 
@@ -174,18 +216,19 @@ fn a_tap_leaves_the_menu_open_for_an_item_to_be_tapped() {
     let mut touch = Touch::new();
 
     tap(&mut touch, 1, p);
-    assert!(pie_window(&app).is_some(), "a tap leaves it open");
+    assert!(opened(&app).is_some(), "a tap leaves it open");
     tap(&mut touch, 2, on_item(p, 0));
+    log.wait_for(2);
     assert_eq!(log.keys(), [d(B), u(B)], "tapping an item runs it");
-    assert!(pie_window(&app).is_none(), "and closes the menu");
+    assert!(closed(&app), "and closes the menu");
 
     tap(&mut touch, 1, p);
     tap(&mut touch, 2, p);
-    assert!(pie_window(&app).is_none(), "tapping the middle, on the pie key, closes it");
+    assert!(closed(&app), "tapping the middle, on the pie key, closes it");
     assert_eq!(log.keys().len(), 2, "and runs nothing");
 
     tap(&mut touch, 1, p);
-    let pie = pie_window(&app).expect("open again");
+    let pie = opened(&app).expect("open again");
     let gap = toward(p, -90.0 + 180.0 / ITEMS as f64, 2.0 * k);
     let outside = toward(p, angle(2), 4.0 * k);
     for (spot, name) in [(gap, "the gap between items"), (outside, "outside the ring")] {
@@ -194,7 +237,7 @@ fn a_tap_leaves_the_menu_open_for_an_item_to_be_tapped() {
         assert_eq!(under, backdrop.0, "{name} is the window under it");
     }
     tap(&mut touch, 2, outside);
-    assert!(pie_window(&app).is_some(), "a tap outside leaves the menu open");
+    assert!(still_open(&app), "a tap outside leaves the menu open");
     assert_eq!(log.keys().len(), 2, "and runs nothing");
     tap(&mut touch, 2, p);
 }
@@ -210,6 +253,7 @@ fn a_latched_modifier_combines_with_the_item_and_a_one_shot_latch_ends() {
 
     tap(&mut touch, 1, shift);
     slide(&mut touch, p, on_item(p, 0));
+    log.wait_for(4);
     assert_eq!(log.keys(), [d(VK_LSHIFT), d(B), u(B), u(VK_LSHIFT)], "Shift+B, then the latch ends");
 
     tap(&mut touch, 1, shift);
@@ -232,8 +276,9 @@ fn a_flick_toward_the_edge_on_the_pie_key_neither_hides_the_panel_nor_closes_the
     // Quick, and half a key toward the edge: well past the third of a key
     // that hides the panel from any other key this close to the edge.
     touch.move_to(1, POINT { x: p.x - key_px() / 2, y: p.y });
+    pump(500);
     assert_eq!(panels_now(&app).len(), 1, "the panel stays");
-    assert!(pie_window(&app).is_some(), "the menu stays open");
+    assert!(still_open(&app), "the menu stays open");
     touch.up(1);
     assert_eq!(log.keys(), [], "let go toward the edge: nothing");
 }
@@ -247,12 +292,13 @@ fn a_pen_neither_opens_the_menu_nor_runs_an_item() {
     let mut touch = Touch::new();
 
     pen_tap(p);
+    pump(500);
     assert!(pie_window(&app).is_none(), "a pen does not open it");
 
     tap(&mut touch, 1, p);
-    assert!(pie_window(&app).is_some(), "precondition: open after a finger's tap");
+    assert!(opened(&app).is_some(), "precondition: open after a finger's tap");
     pen_tap(on_item(p, 0));
     assert_eq!(log.keys(), [], "a pen runs no item");
-    assert!(pie_window(&app).is_some(), "and the menu stays open");
+    assert!(still_open(&app), "and the menu stays open");
     tap(&mut touch, 1, p);
 }
