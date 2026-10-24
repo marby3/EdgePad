@@ -244,7 +244,7 @@ def table(r, env):
     kib = lambda b: f"{b / 1024:,.0f} KiB"
     mib = lambda b: f"{b / 1024 / 1024:.2f} MiB"
     rows = [
-        ("exe size", kib(r["exe_bytes"]), "1 MiB or less"),
+        ("exe size", kib(r["exe_bytes"]), "1,024 KiB (1 MiB) or less"),
         ("startup (launch to panel shown)", f'{r["startup_ms"]} ms', "100 ms or less"),
         ("private memory", mib(r["private_bytes"]), "2 MiB or less"),
         ("working set", mib(r["working_set_bytes"]), "5 MiB or less"),
