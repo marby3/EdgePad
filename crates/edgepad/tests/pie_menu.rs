@@ -143,7 +143,7 @@ fn gdi_objects(app: &Running) -> u32 {
 
 // AC1
 #[test]
-fn a_pie_key_opens_a_layered_menu_that_takes_no_focus_and_goes_away_on_release() {
+fn a_pie_key_opens_a_layered_menu_that_takes_no_focus_and_goes_away_when_let_go() {
     let _desktop = desktop();
     let m = primary_monitor();
     let front = test_window("EdgePadTestPieFront", 0, RECT { left: m.right - 300, top: m.top + 100, right: m.right - 100, bottom: m.top + 300 });

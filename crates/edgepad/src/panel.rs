@@ -1319,12 +1319,15 @@ fn pie_item(panel: &Panel, set: &str, item: usize) -> Option<Sends> {
 /// A tap on a menu left open lands on item `item` of key set `set`: run it
 /// on the panel of `hwnd`, which opened the menu.
 pub unsafe fn run_pie_item(hwnd: HWND, set: &str, item: usize) {
-    with_panels(hwnd, |panels, i| unsafe {
+    let done = with_panels(hwnd, |panels, i| unsafe {
         if let Some(item) = pie_item(&panels[i], set, item) {
             act(panels, i, &item);
         }
         count_idle(&panels[i]);
     });
+    if !done {
+        debug_log!("パネルが使用中: パイの項目 {item} は送らない");
+    }
 }
 
 /// A repeat key's timer fired: send its combination again, every interval

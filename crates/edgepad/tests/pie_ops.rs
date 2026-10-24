@@ -229,8 +229,9 @@ fn a_flick_toward_the_edge_on_the_pie_key_neither_hides_the_panel_nor_closes_the
     let mut touch = Touch::new();
 
     touch.down(1, p);
-    // Quick, and far enough that it would hide the panel from any other key.
-    touch.move_to(1, POINT { x: p.x - key_px() / 3, y: p.y });
+    // Quick, and half a key toward the edge: well past the third of a key
+    // that hides the panel from any other key this close to the edge.
+    touch.move_to(1, POINT { x: p.x - key_px() / 2, y: p.y });
     assert_eq!(panels_now(&app).len(), 1, "the panel stays");
     assert!(pie_window(&app).is_some(), "the menu stays open");
     touch.up(1);

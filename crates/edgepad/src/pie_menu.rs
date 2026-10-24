@@ -1,8 +1,9 @@
 //! The pie menu on screen (spec 4.6, 5.3 and 5.6): a layered, topmost,
 //! never-activated window around where a pie key was pressed: a half ring
 //! of sectors, one per item, with the middle left open. It is made when the
-//! key goes down and destroyed when it comes up, so nothing of it is kept
-//! while it is closed.
+//! key goes down and destroyed once it closes: when the key comes up, or,
+//! after a tap left it open, when an item or its middle is tapped. Nothing
+//! of it is kept while it is closed.
 
 use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
@@ -20,9 +21,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::colors::colorref;
-use crate::panel::{key_font, key_gap};
 use crate::log::debug_log;
-use crate::panel::{self, finger_or_mouse, pointer_at, pointer_id};
+use crate::panel::{self, finger_or_mouse, key_font, key_gap, pointer_at, pointer_id};
 use crate::tray;
 
 /// The menu open now.
@@ -146,8 +146,7 @@ impl Menu {
 
     /// Whether `(x, y)` on screen is in the middle, where letting go cancels.
     fn in_middle(&self, (x, y): (i32, i32)) -> bool {
-        let (dx, dy, key) = (i64::from(x - self.at.0), i64::from(y - self.at.1), i64::from(self.key));
-        4 * (dx * dx + dy * dy) < key * key
+        pie::in_middle(x - self.at.0, y - self.at.1, self.key)
     }
 
     /// Light `pointing` instead of the item lit now.
@@ -286,12 +285,13 @@ unsafe fn tap_down(id: u32, at: (i32, i32)) {
 }
 
 /// The pointer that went down on a menu left open lifted at `at`, or was
-/// taken away (`cancelled`): on an item, run it and close the menu.
+/// taken away (`cancelled`): on the item it went down on, run it and close
+/// the menu.
 unsafe fn tap_up(id: u32, at: (i32, i32), cancelled: bool) {
     let item = MENU.with_borrow_mut(|menu| {
         let m = menu.as_mut().filter(|m| m.tap == Some(id))?;
         m.tap = None;
-        let item = m.item_at(at).filter(|_| !cancelled);
+        let item = m.item_at(at).filter(|&i| !cancelled && m.pointing == Some(i));
         if item.is_none() {
             unsafe { m.light(None) };
         }
