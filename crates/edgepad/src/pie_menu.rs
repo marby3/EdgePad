@@ -1,7 +1,8 @@
 //! The pie menu on screen (spec 4.6, 5.3 and 5.6): a layered, topmost,
-//! never-activated window of rounded buttons around where a pie key was
-//! pressed. It is made when the key goes down and destroyed when it comes
-//! up, so nothing of it is kept while it is closed.
+//! never-activated window around where a pie key was pressed: a half ring
+//! of sectors, one per item, with the middle left open. It is made when the
+//! key goes down and destroyed when it comes up, so nothing of it is kept
+//! while it is closed.
 
 use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
@@ -33,8 +34,7 @@ struct Menu {
     at: (i32, i32),
     key: i32,
     labels: Vec<Vec<u16>>,
-    /// The middle of each button, from `at`.
-    buttons: Vec<(i32, i32)>,
+    ring: pie::Ring,
     pointing: Option<usize>,
     palette: Palette,
     alpha: u8,
@@ -103,7 +103,7 @@ pub unsafe fn open(o: Opening) {
             at: o.at,
             key: o.key,
             labels: o.labels.iter().map(|l| l.encode_utf16().collect()).collect(),
-            buttons: pie::buttons(o.edge, o.labels.len(), o.key),
+            ring: pie::Ring::new(o.labels.len(), o.key),
             pointing: None,
             palette: o.palette,
             alpha: o.alpha,
@@ -171,16 +171,28 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     }
 }
 
-/// Paint the buttons into a 32-bit DIB just big enough for them and hand it
-/// to the window with UpdateLayeredWindow, then free it. Between and around
-/// the buttons the menu is see-through. Returns false on failure.
+/// Paint the ring into a 32-bit DIB just big enough for it and hand it to
+/// the window with UpdateLayeredWindow, then free it. The ring is worked out
+/// pixel by pixel, smooth at its edges (GDI's own pies are not); GDI writes
+/// the labels on it. Outside the ring the menu is see-through. Returns false
+/// on failure.
 unsafe fn draw(m: &Menu) -> bool {
-    let half = m.key / 2;
-    let left = m.buttons.iter().map(|b| b.0).min().unwrap_or(0) - half;
-    let top = m.buttons.iter().map(|b| b.1).min().unwrap_or(0) - half;
-    let right = m.buttons.iter().map(|b| b.0).max().unwrap_or(0) + half;
-    let bottom = m.buttons.iter().map(|b| b.1).max().unwrap_or(0) + half;
+    let n = m.labels.len();
+    let r = m.ring.outer.ceil() as i32 + 1;
+    // The half the ring is in, from its middle.
+    let (left, top, right, bottom) = match m.edge {
+        Edge::Left => (-1, -r, r, r),
+        Edge::Right => (-r, -r, 1, r),
+        Edge::Top => (-r, -1, r, r),
+        Edge::Bottom => (-r, -r, r, 1),
+    };
     let (w, h) = (right - left, bottom - top);
+    // As far apart as the keys of a panel.
+    let gap = f64::from((m.key / 16).max(2));
+    let cover = |x: i32, y: i32| {
+        let (dx, dy) = (f64::from(x + left) + 0.5, f64::from(y + top) + 0.5);
+        m.ring.cover(m.edge, n, gap, dx, dy)
+    };
     unsafe {
         let screen = GetDC(null_mut());
         let mem = CreateCompatibleDC(screen);
@@ -199,21 +211,21 @@ unsafe fn draw(m: &Menu) -> bool {
             return false;
         }
         let old_bitmap = SelectObject(mem, dib);
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
+        // A DIB pixel is 0xAARRGGBB.
+        let rgb = |[r, g, b]: [u8; 3]| (r as u32) << 16 | (g as u32) << 8 | b as u32;
 
-        // Filled with a colour no button is drawn in, which then turns
-        // see-through: GDI draws with no alpha of its own.
+        // Each sector in its colour, edges and all; the coverage comes last.
         let c = m.palette;
-        let clear = [[0x01, 0x02, 0x03], [0x03, 0x02, 0x01]]
-            .into_iter()
-            .find(|k| ![c.face, c.text, c.held, c.held_text].contains(k))
-            .unwrap_or([0x01, 0x02, 0x03]);
-        let clear = colorref(clear);
-        let backdrop = CreateSolidBrush(clear);
-        FillRect(mem, &RECT { left: 0, top: 0, right: w, bottom: h }, backdrop);
-        DeleteObject(backdrop);
+        for y in 0..h {
+            for x in 0..w {
+                let (_, sector) = cover(x, y);
+                let lit = m.pointing == Some(sector);
+                pixels[(y * w + x) as usize] = rgb(if lit { c.held } else { c.face });
+            }
+        }
 
-        let face = CreateSolidBrush(colorref(c.face));
-        let held = CreateSolidBrush(colorref(c.held));
+        // The labels, as the panel writes its keys'.
         let font = CreateFontW(
             -(m.key * 2 / 7),
             0,
@@ -230,38 +242,29 @@ unsafe fn draw(m: &Menu) -> bool {
             0,
             w!("Segoe UI"),
         );
-        let old_brush = SelectObject(mem, face);
-        let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
         let old_font = SelectObject(mem, font);
         SetBkMode(mem, TRANSPARENT as i32);
-
-        // As the panel draws its keys.
-        let gap = (m.key / 16).max(2);
-        let corner = m.key / 6;
-        for (i, (&(bx, by), label)) in m.buttons.iter().zip(&m.labels).enumerate() {
-            let (x, y) = (bx - left - half, by - top - half);
-            let mut cell = RECT { left: x + gap, top: y + gap, right: x + m.key - gap, bottom: y + m.key - gap };
-            let (brush, text) = if m.pointing == Some(i) { (held, c.held_text) } else { (face, c.text) };
-            SelectObject(mem, brush);
-            SetTextColor(mem, colorref(text));
-            RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
+        let half_width = ((m.ring.label_width(n) - 2.0 * gap) / 2.0).max(f64::from(m.key) / 2.0) as i32;
+        let half_height = m.key / 2;
+        for (i, (&(lx, ly), label)) in m.ring.labels(m.edge, n).iter().zip(&m.labels).enumerate() {
+            let (x, y) = (lx - left, ly - top);
+            let mut cell = RECT { left: x - half_width, top: y - half_height, right: x + half_width, bottom: y + half_height };
+            SetTextColor(mem, colorref(if m.pointing == Some(i) { c.held_text } else { c.text }));
             DrawTextW(mem, label.as_ptr(), label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
-
         SelectObject(mem, old_font);
-        SelectObject(mem, old_pen);
-        SelectObject(mem, old_brush);
         DeleteObject(font);
-        DeleteObject(face);
-        DeleteObject(held);
+        GdiFlush();
 
-        // The buttons opaque, the rest clear (premultiplied: all zero). The
+        // Premultiplied by how much of each pixel the ring covers. The
         // constant alpha below gives the menu the panel's opacity.
-        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
-        // The DIB holds 0x00RRGGBB; a COLORREF is 0x00BBGGRR.
-        let clear = (clear & 0xFF) << 16 | (clear & 0xFF00) | (clear >> 16 & 0xFF);
-        for p in pixels {
-            *p = if *p & 0x00FF_FFFF == clear { 0 } else { *p | 0xFF00_0000 };
+        for y in 0..h {
+            for x in 0..w {
+                let p = &mut pixels[(y * w + x) as usize];
+                let a = (cover(x, y).0 * 255.0).round() as u32;
+                let scale = |shift: u32| ((*p >> shift & 0xFF) * a / 255) << shift;
+                *p = a << 24 | scale(16) | scale(8) | scale(0);
+            }
         }
 
         let blend = BLENDFUNCTION {
