@@ -31,7 +31,7 @@ use windows_sys::w;
 
 use crate::colors::{self, colorref};
 use crate::log::debug_log;
-use crate::{launch, send};
+use crate::{launch, pie_menu, send};
 use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
@@ -77,8 +77,9 @@ enum Sends {
     Run(String),
     /// Turns the page, or switches to another key set, on release.
     Page(Page),
-    /// Nothing yet: the pie menu is still to come (spec 4.6).
-    Nothing,
+    /// Opens a pie menu of the key set it names while pressed (spec 4.6).
+    /// Nothing is sent yet.
+    Pie(String),
 }
 
 impl Sends {
@@ -109,7 +110,7 @@ impl Sends {
             Action::Text(text) => Sends::Text(text.clone()),
             Action::Run(command) => Sends::Run(command.clone()),
             Action::Page(page) => Sends::Page(page.clone()),
-            Action::Pie(_) => Sends::Nothing,
+            Action::Pie(set) => Sends::Pie(set.clone()),
         }
     }
 }
@@ -537,6 +538,7 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
         HOVERED.set(hovered);
         // Taken out first: messages sent while a window is destroyed (capture
         // lost, for one) then find no panel and change nothing.
+        pie_menu::close_all();
         for mut panel in PANELS.take() {
             undock(&mut panel);
             DestroyWindow(panel.hwnd);
@@ -706,6 +708,7 @@ unsafe fn let_go(panel: &mut Panel) {
         if panel.captured.take().is_some() {
             ReleaseCapture();
         }
+        pie_menu::close(panel.hwnd, None);
         draw(panel);
     }
 }
@@ -933,9 +936,11 @@ unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
 /// A pointer moved on a panel: a quick flick toward the screen edge hides the
 /// panel, letting go of the key it pressed. On a dimmed panel, a quick flick
 /// the other way shows it normally, and the key it pressed comes up as for a
-/// contact taken away: a gesture, not a key press.
+/// contact taken away: a gesture, not a key press. A finger holding a pie
+/// menu open slides inward to its items instead.
 unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
+    unsafe { pie_menu::point(id, (x, y)) };
     let mut flick = None;
     with_panel(hwnd, |panel| {
         if let Some(s) = panel.starts.iter().find(|s| s.id == id && s.at.elapsed() <= FLICK_TIME) {
@@ -950,7 +955,7 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     // Outside the borrow: hiding and undimming go over every panel.
     match flick {
         Some((edge, Swipe::Outward)) => unsafe { set_hidden(edge, true) },
-        Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] => unsafe {
+        Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] && !pie_menu::is_held_by(id) => unsafe {
             pointer_up(hwnd, wp, true);
             show(edge, Look::Normal);
         },
@@ -1164,6 +1169,22 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
                 hold(vk, true);
             }
             draw(panel);
+            // Over the panel, drawn with the key held.
+            if let Sends::Pie(name) = &panel.keys[key].sends {
+                // The parser made sure the set is there.
+                let set = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(name));
+                let labels: Vec<&str> = set.map_or(Vec::new(), |s| s.keys.iter().map(|k| k.label.as_str()).collect());
+                pie_menu::open(pie_menu::Opening {
+                    panel: hwnd,
+                    pointer: id,
+                    edge: panel.edge,
+                    at: (sx, sy),
+                    key: panel.key,
+                    labels: &labels,
+                    palette: palette(),
+                    alpha: panel.current_alpha(),
+                });
+            }
         });
     }
 }
@@ -1174,6 +1195,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
 unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
     unsafe {
         let id = pointer_id(wp);
+        pie_menu::close(hwnd, Some(id));
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
             panel.starts.retain(|s| s.id != id);
@@ -1220,7 +1242,7 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                     Sends::Text(text) => send::text(text),
                     Sends::Run(command) => launch::run(command),
                     Sends::Page(page) => turned = Some(page.clone()),
-                    Sends::Nothing => {}
+                    Sends::Pie(_) => {}
                 }
                 if matches!(panel.running, Some((k, 0)) if k == key) {
                     run_macro(panel);
@@ -1656,6 +1678,19 @@ pub unsafe fn redock_all() {
     });
 }
 
+/// The space between a key's face and its cell, keys `key` pixels across:
+/// half the gap between neighbouring keys.
+pub fn key_gap(key: i32) -> i32 {
+    (key / 16).max(2)
+}
+
+/// The font key labels are written in, keys `key` pixels across. The
+/// caller deletes it.
+pub unsafe fn key_font(key: i32) -> HFONT {
+    let (bold, charset, quality) = (FW_SEMIBOLD as i32, DEFAULT_CHARSET as u32, CLEARTYPE_QUALITY as u32);
+    unsafe { CreateFontW(-(key * 2 / 7), 0, 0, 0, bold, 0, 0, 0, charset, 0, 0, quality, 0, w!("Segoe UI")) }
+}
+
 /// Paint the keys into a 32-bit DIB and hand it to the window with
 /// UpdateLayeredWindow. The DIB is freed right after; the window keeps its
 /// own copy, so nothing is held between redraws. Returns false on failure.
@@ -1688,28 +1723,13 @@ unsafe fn draw(panel: &Panel) -> bool {
         let face = CreateSolidBrush(colorref(colours.face));
         let held = CreateSolidBrush(colorref(colours.held));
         let latched_face = CreateSolidBrush(colorref(colours.latched));
-        let font = CreateFontW(
-            -(key * 2 / 7),
-            0,
-            0,
-            0,
-            FW_SEMIBOLD as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            0,
-            0,
-            CLEARTYPE_QUALITY as u32,
-            0,
-            w!("Segoe UI"),
-        );
+        let font = key_font(key);
         let old_brush = SelectObject(mem, face);
         let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
         let old_font = SelectObject(mem, font);
         SetBkMode(mem, TRANSPARENT as i32);
 
-        let gap = (key / 16).max(2);
+        let gap = key_gap(key);
         let corner = key / 6;
         for (i, k) in panel.keys.iter().enumerate() {
             let Some(at) = k.rect else { continue };
