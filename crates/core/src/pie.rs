@@ -45,7 +45,8 @@ pub fn item(edge: Edge, dx: i32, dy: i32, key: i32, items: usize) -> Option<usiz
 /// middle of the menu. They sit on an arc, each in the middle of the
 /// direction that points at it, as close in as they go without two
 /// neighbours, squares a key across, overlapping, and at least one and a
-/// half keys out.
+/// half keys out. As for `item`, `items` is what the settings allow (2 to
+/// 8) and `key` is positive.
 pub fn buttons(edge: Edge, items: usize, key: i32) -> Vec<(i32, i32)> {
     debug_assert!(PIE_ITEMS.contains(&items) && key > 0, "{items} items, key {key}");
     let key = f64::from(key);

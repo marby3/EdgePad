@@ -936,7 +936,8 @@ unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
 /// A pointer moved on a panel: a quick flick toward the screen edge hides the
 /// panel, letting go of the key it pressed. On a dimmed panel, a quick flick
 /// the other way shows it normally, and the key it pressed comes up as for a
-/// contact taken away: a gesture, not a key press.
+/// contact taken away: a gesture, not a key press. A finger holding a pie
+/// menu open slides inward to its items instead.
 unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
     unsafe { pie_menu::point(id, (x, y)) };
@@ -954,7 +955,7 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     // Outside the borrow: hiding and undimming go over every panel.
     match flick {
         Some((edge, Swipe::Outward)) => unsafe { set_hidden(edge, true) },
-        Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] => unsafe {
+        Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] && !pie_menu::is_held_by(id) => unsafe {
             pointer_up(hwnd, wp, true);
             show(edge, Look::Normal);
         },
@@ -1169,9 +1170,10 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             }
             draw(panel);
             // Over the panel, drawn with the key held.
-            if let Sends::Pie(set) = &panel.keys[key].sends {
-                let items = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(set));
-                let labels: Vec<&str> = items.into_iter().flat_map(|s| &s.keys).map(|k| k.label.as_str()).collect();
+            if let Sends::Pie(name) = &panel.keys[key].sends {
+                // The parser made sure the set is there.
+                let set = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(name));
+                let labels: Vec<&str> = set.map_or(Vec::new(), |s| s.keys.iter().map(|k| k.label.as_str()).collect());
                 pie_menu::open(pie_menu::Opening {
                     panel: hwnd,
                     pointer: id,

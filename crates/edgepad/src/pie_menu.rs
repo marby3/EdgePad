@@ -3,14 +3,16 @@
 //! pressed. It is made when the key goes down and destroyed when it comes
 //! up, so nothing of it is kept while it is closed.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
 use edgepad_core::config::Edge;
 use edgepad_core::pie;
 use edgepad_core::theme::Palette;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows_sys::Win32::Foundation::{
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -41,6 +43,7 @@ struct Menu {
 thread_local! {
     // One finger opens one menu; the UI thread owns it.
     static MENU: RefCell<Option<Menu>> = const { RefCell::new(None) };
+    static REGISTERED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// What a pie key opens its menu with.
@@ -62,16 +65,21 @@ pub unsafe fn open(o: Opening) {
     unsafe {
         close_all();
         let instance = GetModuleHandleW(null());
-        let mut wc: WNDCLASSW = zeroed();
-        wc.lpfnWndProc = Some(wnd_proc);
-        wc.hInstance = instance;
-        wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
-        wc.lpszClassName = w!("EdgePadPie");
-        // Fails harmlessly for every menu after the first.
-        RegisterClassW(&wc);
+        if !REGISTERED.get() {
+            let mut wc: WNDCLASSW = zeroed();
+            wc.lpfnWndProc = Some(wnd_proc);
+            wc.hInstance = instance;
+            wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+            wc.lpszClassName = w!("EdgePadPie");
+            if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+                debug_log!("パイメニューの窓クラスを登録できない");
+                return;
+            }
+            REGISTERED.set(true);
+        }
         let hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
-            wc.lpszClassName,
+            w!("EdgePadPie"),
             w!("EdgePad"),
             WS_POPUP,
             0,
@@ -115,18 +123,30 @@ pub unsafe fn point(pointer: u32, (x, y): (i32, i32)) {
     MENU.with_borrow_mut(|menu| {
         let Some(m) = menu.as_mut().filter(|m| m.pointer == pointer) else { return };
         let pointing = pie::item(m.edge, x - m.at.0, y - m.at.1, m.key, m.labels.len());
-        if pointing != m.pointing {
-            m.pointing = pointing;
-            tray::test_event(&match pointing {
-                Some(i) => format!("pie: point {i}"),
-                None => "pie: point none".into(),
-            });
-            unsafe { draw(m) };
+        if pointing == m.pointing {
+            return;
         }
+        let was = std::mem::replace(&mut m.pointing, pointing);
+        // Not drawn, it stays as it was: the next move tries again.
+        if !unsafe { draw(m) } {
+            debug_log!("パイメニューを描けない");
+            m.pointing = was;
+            return;
+        }
+        tray::test_event(&match pointing {
+            Some(i) => format!("pie: point {i}"),
+            None => "pie: point none".into(),
+        });
     });
 }
 
-/// Close the menu `pointer` opened from `panel`; any pointer's with none.
+/// Whether `pointer` holds the menu open.
+pub fn is_held_by(pointer: u32) -> bool {
+    MENU.with_borrow(|menu| menu.as_ref().is_some_and(|m| m.pointer == pointer))
+}
+
+/// Close the menu opened from `panel` by `pointer`, or by any pointer when
+/// `pointer` is none.
 pub unsafe fn close(panel: HWND, pointer: Option<u32>) {
     let menu = MENU.with_borrow_mut(|menu| menu.take_if(|m| m.panel == panel && pointer.is_none_or(|p| p == m.pointer)));
     if let Some(m) = menu {

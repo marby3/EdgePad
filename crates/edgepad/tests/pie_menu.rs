@@ -241,6 +241,7 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     {
         let app = launch_with(Some(&settings("opacity = 100\ntheme = light\naccent = #00FF00", n, ".")), None);
         let p = key_centre(left_panel(&app), 0);
+        let log = KeyLog::start();
         let mut touch = Touch::new();
         touch.down(1, p);
         touch.move_to(1, toward(p, angle(1, n), 2.0 * k));
@@ -248,6 +249,7 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
         assert!(near(face, [0xFA, 0xFA, 0xFA]), "a light key face, got {face:?}");
         assert!(near(lit, [0, 0xFF, 0]), "the accent where it points, got {lit:?}");
         touch.up(1);
+        assert_eq!(log.keys(), [], "let go on an item, nothing is sent yet");
     }
 
     let backdrop = backdrop();
@@ -264,6 +266,10 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     touch.down(1, p);
     let o = opacity(&backdrop, on_button(p, 0, n));
     assert!((o - 40).abs() <= 4, "opened from the dimmed panel: at 40%, not {o}%");
+    // Sliding in to an item is no flick that undims the panel.
+    touch.move_to(1, toward(p, angle(1, n), 2.0 * k));
+    assert!(pie_window(&app).is_some(), "the menu stays open as the finger slides in");
+    assert_eq!(points(&app).last().map(String::as_str), Some("pie: point 1"));
     touch.up(1);
 }
 
@@ -282,6 +288,7 @@ fn a_menu_running_off_the_screen_keeps_its_middle_where_it_was_pressed() {
     let panel = left_panel(&app);
     let p = key_centre(panel, 0);
     assert!(button(p, 0, n).1 < (m.top + key_px() / 2) as f64, "precondition: item 0 runs off the top of the screen");
+    let log = KeyLog::start();
     let mut touch = Touch::new();
 
     touch.down(1, p);
@@ -291,4 +298,5 @@ fn a_menu_running_off_the_screen_keeps_its_middle_where_it_was_pressed() {
     touch.move_to(1, toward(p, angle(0, n), 0.6 * key_px() as f64));
     assert_eq!(points(&app).last().map(String::as_str), Some("pie: point 0"), "item 0 is pointed at, off the screen as it is");
     touch.up(1);
+    assert_eq!(log.keys(), [], "let go on an item, nothing is sent yet");
 }
