@@ -19,19 +19,25 @@ use crate::config::{Edge, PIE_ITEMS};
 /// what the settings allow (2 to 8).
 pub fn item(edge: Edge, dx: i32, dy: i32, key: i32, items: usize) -> Option<usize> {
     debug_assert!(PIE_ITEMS.contains(&items) && key > 0, "{items} items, key {key}");
-    // Wide enough that squaring any offset cannot overflow.
-    let (dx, dy, key) = (i128::from(dx), i128::from(dy), i128::from(key));
-    // Within half a key: the middle.
-    if 4 * (dx * dx + dy * dy) < key * key {
+    if in_middle(dx, dy, key) {
         return None;
     }
-    let (inward, along) = frame(edge, dx as f64, dy as f64);
+    let (inward, along) = frame(edge, f64::from(dx), f64::from(dy));
     if inward < 0.0 {
         return None;
     }
     // From -90° (the first item) to +90° (the last), as a share of the half.
     let share = (along.atan2(inward) + FRAC_PI_2) / PI;
     Some(((share * items as f64) as usize).min(items - 1))
+}
+
+/// Whether `dx`, `dy` pixels from the middle of a pie menu, keys `key`
+/// pixels across, is in the middle: within half a key, where letting go
+/// cancels.
+pub fn in_middle(dx: i32, dy: i32, key: i32) -> bool {
+    // Wide enough that squaring any offset cannot overflow.
+    let (dx, dy, key) = (i128::from(dx), i128::from(dy), i128::from(key));
+    4 * (dx * dx + dy * dy) < key * key
 }
 
 /// Movement `dx`, `dy` as `edge` sees it: into the screen, and along the

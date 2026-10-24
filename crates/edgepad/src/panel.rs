@@ -59,6 +59,7 @@ impl PanelKey {
 }
 
 /// What a key sends, in virtual keys.
+#[derive(Clone)]
 enum Sends {
     /// Down while pressed, up on release.
     Hold(u16),
@@ -70,7 +71,7 @@ enum Sends {
     /// for REPEAT_DELAY.
     Repeat { mods: Vec<u16>, key: Option<u16>, interval: u32 },
     /// Steps sent in order on release, waiting where they say.
-    Macro(Vec<MacroStep>),
+    Macro(Rc<[MacroStep]>),
     /// Typed as Unicode characters on release.
     Text(String),
     /// A program or URL started on release.
@@ -105,7 +106,7 @@ impl Sends {
                         }
                         &Step::Wait(ms) => MacroStep::Wait(ms),
                     })
-                    .collect(),
+                    .collect::<Rc<[_]>>(),
             ),
             Action::Text(text) => Sends::Text(text.clone()),
             Action::Run(command) => Sends::Run(command.clone()),
@@ -186,8 +187,8 @@ struct Panel {
     /// Every key set, for a page key that switches to another.
     sets: Rc<[KeySet]>,
     presses: Presses,
-    /// The macro running on this panel: its key, and the step to send next.
-    running: Option<(usize, usize)>,
+    /// The macro running on this panel: its steps, and the one to send next.
+    running: Option<(Rc<[MacroStep]>, usize)>,
     /// The mouse pointer that holds the window's capture, if any.
     captured: Option<u32>,
     /// Where each pointer down on the panel started.
@@ -845,6 +846,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_POINTERUP => {
+                pie_menu::point(pointer_id(wp), pointer_at(lp));
                 pointer_up(hwnd, wp, (wp >> 16) as u32 & POINTER_MESSAGE_FLAG_CANCELED != 0);
                 0
             }
@@ -914,17 +916,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     }
 }
 
-fn pointer_id(wp: WPARAM) -> u32 {
+pub fn pointer_id(wp: WPARAM) -> u32 {
     (wp & 0xFFFF) as u32
 }
 
 /// The screen position a pointer message carries.
-fn pointer_at(lp: LPARAM) -> (i32, i32) {
+pub fn pointer_at(lp: LPARAM) -> (i32, i32) {
     ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32)
 }
 
 /// Touch or mouse, not pen (pens press nothing), as the pointer's kind.
-unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
+pub unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
     let mut kind = 0;
     match unsafe { GetPointerType(id, &mut kind) } {
         0 => None,
@@ -937,10 +939,13 @@ unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
 /// panel, letting go of the key it pressed. On a dimmed panel, a quick flick
 /// the other way shows it normally, and the key it pressed comes up as for a
 /// contact taken away: a gesture, not a key press. A finger holding a pie
-/// menu open slides inward to its items instead.
+/// menu open slides to its items instead, and flicks nothing.
 unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
     unsafe { pie_menu::point(id, (x, y)) };
+    if pie_menu::is_held_by(id) {
+        return;
+    }
     let mut flick = None;
     with_panel(hwnd, |panel| {
         if let Some(s) = panel.starts.iter().find(|s| s.id == id && s.at.elapsed() <= FLICK_TIME) {
@@ -955,7 +960,7 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     // Outside the borrow: hiding and undimming go over every panel.
     match flick {
         Some((edge, Swipe::Outward)) => unsafe { set_hidden(edge, true) },
-        Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] && !pie_menu::is_held_by(id) => unsafe {
+        Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] => unsafe {
             pointer_up(hwnd, wp, true);
             show(edge, Look::Normal);
         },
@@ -1113,8 +1118,11 @@ unsafe fn hold(vk: u16, down: bool) {
 unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     unsafe {
         let id = pointer_id(wp);
-        let Some(kind) = finger_or_mouse(id) else { return };
         let (sx, sy) = pointer_at(lp);
+        let Some(kind) = finger_or_mouse(id) else {
+            debug_log!("ポインタ {id} ({sx}, {sy}): ペンか種類が分からない");
+            return;
+        };
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
             // Its keys are on the move, not where they will be.
@@ -1133,9 +1141,18 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
                 panel.captured = Some(id);
             }
             let (x, y) = (sx - panel.rect.x, sy - panel.rect.y);
-            let Some(key) = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y))) else {
-                return;
-            };
+            let key = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y)));
+            debug_log!("ポインタ {id} ({sx}, {sy}) が押す: キー {key:?}");
+            // A menu left open by a tap closes on a tap in its middle or on
+            // a pie key, and that press goes no further.
+            if pie_menu::is_left_open(hwnd) {
+                let on_pie = key.is_some_and(|k| matches!(panel.keys[k].sends, Sends::Pie(_)));
+                if on_pie || pie_menu::in_middle(hwnd, (sx, sy)) {
+                    pie_menu::close(hwnd, None);
+                    return;
+                }
+            }
+            let Some(key) = key else { return };
             // A modifier pressed while another key is held is part of a
             // chord, as much as one held while another is pressed.
             let chord = panels.iter().any(|p| (0..p.keys.len()).any(|k| p.presses.is_down(k)));
@@ -1180,6 +1197,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
                     edge: panel.edge,
                     at: (sx, sy),
                     key: panel.key,
+                    set: name,
                     labels: &labels,
                     palette: palette(),
                     alpha: panel.current_alpha(),
@@ -1190,12 +1208,13 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
 }
 
 /// A pointer lifted, or was taken away (`cancelled`): release its key if
-/// nobody else holds it. A modifier tapped briefly latches instead, and a
-/// shortcut sent ends the one-shot latches. Macros and text end them first.
+/// nobody else holds it. A modifier tapped briefly latches instead. A key
+/// that acts once acts now (see `act`), and so does the pie item a finger
+/// holding a pie key lets go on.
 unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
     unsafe {
         let id = pointer_id(wp);
-        pie_menu::close(hwnd, Some(id));
+        let pie = pie_menu::release(hwnd, id, cancelled);
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
             panel.starts.retain(|s| s.id != id);
@@ -1210,49 +1229,38 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                     released = None;
                 }
             }
-            // A whole sequence under a latched Ctrl would go wrong: Esc
-            // would open Start, and typed text would turn into shortcuts.
-            if let Some(key) = released {
-                if matches!(panel.keys[key].sends, Sends::Macro(_) | Sends::Text(_)) {
-                    let mode = panel.latch_mode;
-                    end_one_shot_latches(panels, mode);
+            let mut sent = false;
+            let once = released.and_then(|key| match &mut panel.keys[key].sends {
+                Sends::Hold(vk) => {
+                    hold(*vk, false);
+                    None
+                }
+                Sends::Modifier { vk, state } => {
+                    match state.release(Instant::now(), panel.latch_time, cancelled) {
+                        true => hold(*vk, false),
+                        false => debug_log!("ラッチ 0x{vk:02X}"),
+                    }
+                    None
+                }
+                // Its sends were combined with the latches until now.
+                Sends::Repeat { .. } => {
+                    KillTimer(hwnd, repeat_timer(key));
+                    sent = true;
+                    None
+                }
+                once => Some(once.clone()),
+            });
+            if let Some(once) = once {
+                act(panels, i, &once);
+            }
+            if let Some(pie_menu::Release::Run { set, item }) = &pie {
+                if let Some(item) = pie_item(&panels[i], set, *item) {
+                    act(panels, i, &item);
                 }
             }
             let panel = &mut panels[i];
-            let (mut sent, mut turned) = (false, None);
-            if let Some(key) = released {
-                match &mut panel.keys[key].sends {
-                    Sends::Hold(vk) => hold(*vk, false),
-                    Sends::Modifier { vk, state } => match state.release(Instant::now(), panel.latch_time, cancelled) {
-                        true => hold(*vk, false),
-                        false => debug_log!("ラッチ 0x{vk:02X}"),
-                    },
-                    Sends::Shortcut { mods, key } => {
-                        send::shortcut(mods, *key);
-                        sent = true;
-                    }
-                    // Its sends were combined with the latches until now.
-                    Sends::Repeat { .. } => {
-                        KillTimer(hwnd, repeat_timer(key));
-                        sent = true;
-                    }
-                    // One macro at a time on a panel: their steps would mix.
-                    Sends::Macro(_) if panel.running.is_some() => debug_log!("マクロの実行中: 押されたマクロは送らない"),
-                    Sends::Macro(_) => panel.running = Some((key, 0)),
-                    Sends::Text(text) => send::text(text),
-                    Sends::Run(command) => launch::run(command),
-                    Sends::Page(page) => turned = Some(page.clone()),
-                    Sends::Pie(_) => {}
-                }
-                if matches!(panel.running, Some((k, 0)) if k == key) {
-                    run_macro(panel);
-                }
-            }
             if lifted.is_some() {
                 draw(panel);
-            }
-            if let Some(page) = turned {
-                turn(panel, &page);
             }
             // Only the mouse that took the capture gives it back; a finger
             // lifting meanwhile must not cut the mouse off from its button-up.
@@ -1272,6 +1280,57 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
             }
             count_idle(panel);
         });
+    }
+}
+
+/// Do what a key that acts once does, on panel `i` of `panels`: send its
+/// shortcut, run its macro, type its text, start its program or turn its
+/// page. A shortcut ends the one-shot latches once sent; a macro or text
+/// ends them first. Held keys and pie keys do nothing here.
+unsafe fn act(panels: &mut [Panel], i: usize, sends: &Sends) {
+    unsafe {
+        let mode = panels[i].latch_mode;
+        // A whole sequence under a latched Ctrl would go wrong: Esc would
+        // open Start, and typed text would turn into shortcuts.
+        if matches!(sends, Sends::Macro(_) | Sends::Text(_)) {
+            end_one_shot_latches(panels, mode);
+        }
+        match sends {
+            Sends::Shortcut { mods, key } => {
+                send::shortcut(mods, *key);
+                end_one_shot_latches(panels, mode);
+            }
+            // One macro at a time on a panel: their steps would mix.
+            Sends::Macro(_) if panels[i].running.is_some() => debug_log!("マクロの実行中: 押されたマクロは送らない"),
+            Sends::Macro(steps) => {
+                panels[i].running = Some((steps.clone(), 0));
+                run_macro(&mut panels[i]);
+            }
+            Sends::Text(text) => send::text(text),
+            Sends::Run(command) => launch::run(command),
+            Sends::Page(page) => turn(&mut panels[i], page),
+            Sends::Hold(_) | Sends::Modifier { .. } | Sends::Repeat { .. } | Sends::Pie(_) => {}
+        }
+    }
+}
+
+/// What item `item` of key set `set` of `panel`'s settings sends.
+fn pie_item(panel: &Panel, set: &str, item: usize) -> Option<Sends> {
+    let set = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(set))?;
+    Some(Sends::of(&set.keys.get(item)?.action))
+}
+
+/// A tap on a menu left open lands on item `item` of key set `set`: run it
+/// on the panel of `hwnd`, which opened the menu.
+pub unsafe fn run_pie_item(hwnd: HWND, set: &str, item: usize) {
+    let done = with_panels(hwnd, |panels, i| unsafe {
+        if let Some(item) = pie_item(&panels[i], set, item) {
+            act(panels, i, &item);
+        }
+        count_idle(&panels[i]);
+    });
+    if !done {
+        debug_log!("パネルが使用中: パイの項目 {item} は送らない");
     }
 }
 
@@ -1296,10 +1355,9 @@ unsafe fn repeat(hwnd: HWND, timer: WPARAM) {
 /// Send the running macro's steps from the next one on, up to a wait, which
 /// a timer ends, or to the last step.
 unsafe fn run_macro(panel: &mut Panel) {
-    while let Some((key, step)) = panel.running {
-        let Some(Sends::Macro(steps)) = panel.keys.get(key).map(|k| &k.sends) else { break };
+    while let Some((steps, step)) = panel.running.take() {
         let Some(next) = steps.get(step) else { break };
-        panel.running = Some((key, step + 1));
+        panel.running = Some((steps.clone(), step + 1));
         match *next {
             MacroStep::Keys { ref mods, key } => unsafe { send::shortcut(mods, key) },
             MacroStep::Wait(0) => {}
