@@ -127,6 +127,16 @@ fn pointed(app: &Running, want: &str) {
     assert_eq!(unsafe { DwmFlush() }, 0, "DwmFlush failed");
 }
 
+/// Let go of the pie key pressed at `p` without running anything: out
+/// toward the edge first, where letting go cancels and closes the menu. A
+/// finger lifted without leaving the middle would be a tap, which leaves it
+/// open.
+fn cancel(touch: &mut Touch, p: POINT) {
+    let k = key_px();
+    touch.move_to(1, POINT { x: p.x - k / 4, y: p.y + k });
+    touch.up(1);
+}
+
 fn gdi_objects(app: &Running) -> u32 {
     unsafe { GetGuiResources(app.0.as_raw_handle(), GR_GDIOBJECTS) }
 }
@@ -146,7 +156,7 @@ fn a_pie_key_opens_a_layered_menu_that_takes_no_focus_and_goes_away_on_release()
     // Windows sets aside one GDI object for good the first time a menu is
     // drawn: count from after that, so what is left of each menu shows.
     touch.down(1, key_centre(panel, 0));
-    touch.up(1);
+    cancel(&mut touch, key_centre(panel, 0));
     let gdi_before = gdi_objects(&app);
 
     touch.down(1, key_centre(panel, 0));
@@ -158,10 +168,10 @@ fn a_pie_key_opens_a_layered_menu_that_takes_no_focus_and_goes_away_on_release()
     }
     assert_eq!(unsafe { GetForegroundWindow() }, front.0, "the app in front keeps the focus");
 
-    touch.up(1);
+    cancel(&mut touch, key_centre(panel, 0));
     assert!(pie_window(&app).is_none(), "released, the menu window is gone");
     assert_eq!(gdi_objects(&app), gdi_before, "and nothing of its drawing is kept");
-    assert_eq!(log.keys(), [], "letting go sends nothing yet");
+    assert_eq!(log.keys(), [], "let go toward the edge, nothing is sent");
 }
 
 // AC2
@@ -201,7 +211,7 @@ fn the_menu_is_a_half_ring_of_sectors_one_per_item_with_a_hole_in_the_middle() {
         }
         let c = colour_at(toward(p, 0.0, hole / 2.0));
         assert!(!near(c, FACE), "{n} items: the middle is a hole, got {c:?}");
-        touch.up(1);
+        cancel(&mut touch, p);
     }
 }
 
@@ -301,8 +311,8 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
         let (face, lit) = (colour_at(on_item(p, 0, n)), colour_at(on_item(p, 1, n)));
         assert!(near(face, [0xFA, 0xFA, 0xFA]), "a light key face, got {face:?}");
         assert!(near(lit, [0, 0xFF, 0]), "the accent where it points, got {lit:?}");
-        touch.up(1);
-        assert_eq!(log.keys(), [], "let go on an item, nothing is sent yet");
+        cancel(&mut touch, p);
+        assert_eq!(log.keys(), [], "let go toward the edge, nothing is sent");
     }
 
     let backdrop = backdrop();
@@ -319,7 +329,7 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     assert!(o <= 4, "the gap between sectors is see-through, not {o}% opaque");
     let o = opacity(&backdrop, out(p, 0, n, rim + 6.0));
     assert!(o <= 4, "outside the ring is see-through, not {o}% opaque");
-    touch.up(1);
+    cancel(&mut touch, p);
 
     show_dimmed(&app);
     let p = key_centre(left_panel(&app), 0);
@@ -332,7 +342,7 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     pointed(&app, "pie: point 1");
     assert!(pie_window(&app).is_some(), "the menu stays open as the finger slides in");
     assert_eq!(points(&app).last().map(String::as_str), Some("pie: point 1"));
-    touch.up(1);
+    cancel(&mut touch, p);
 }
 
 // AC5
@@ -365,6 +375,6 @@ fn a_menu_running_off_the_screen_keeps_its_middle_where_it_was_pressed() {
     touch.move_to(1, toward(p, angle(0, n), 0.6 * key_px() as f64));
     pointed(&app, "pie: point 0");
     assert_eq!(points(&app).last().map(String::as_str), Some("pie: point 0"), "item 0 is pointed at, off the screen as it is");
-    touch.up(1);
-    assert_eq!(log.keys(), [], "let go on an item, nothing is sent yet");
+    cancel(&mut touch, p);
+    assert_eq!(log.keys(), [], "let go toward the edge, nothing is sent");
 }
