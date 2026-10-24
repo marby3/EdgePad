@@ -10,8 +10,10 @@ mod common;
 
 use std::os::windows::io::AsRawHandle;
 use std::ptr::{null, null_mut};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+use windows_sys::Win32::Graphics::Dwm::DwmFlush;
 use windows_sys::Win32::System::Threading::{GR_GDIOBJECTS, GetGuiResources};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use common::*;
@@ -104,6 +106,27 @@ fn points(app: &Running) -> Vec<String> {
     test_events(app).into_iter().filter(|e| e.starts_with("pie: point")).collect()
 }
 
+/// Wait for the menu of `app` to be on screen, composed: a debug build
+/// takes a while to work out a big ring pixel by pixel.
+fn shown(app: &Running) {
+    let end = Instant::now() + Duration::from_secs(3);
+    while !pie_window(app).is_some_and(|w| unsafe { IsWindowVisible(w) } != 0) && Instant::now() < end {
+        pump(20);
+    }
+    assert_eq!(unsafe { DwmFlush() }, 0, "DwmFlush failed");
+}
+
+/// Wait for the menu of `app` to point at `want` (a test event line) and be
+/// redrawn so on screen.
+fn pointed(app: &Running, want: &str) {
+    let end = Instant::now() + Duration::from_secs(3);
+    let at = |app: &Running| points(app).last().cloned().unwrap_or_else(|| "pie: point none".into());
+    while at(app) != want && Instant::now() < end {
+        pump(20);
+    }
+    assert_eq!(unsafe { DwmFlush() }, 0, "DwmFlush failed");
+}
+
 fn gdi_objects(app: &Running) -> u32 {
     unsafe { GetGuiResources(app.0.as_raw_handle(), GR_GDIOBJECTS) }
 }
@@ -145,6 +168,9 @@ fn a_pie_key_opens_a_layered_menu_that_takes_no_focus_and_goes_away_on_release()
 #[test]
 fn the_menu_is_a_half_ring_of_sectors_one_per_item_with_a_hole_in_the_middle() {
     let _desktop = desktop();
+    // White under the menu, so a gap or the outside cannot pass for a face.
+    let backdrop = backdrop();
+    set_backdrop(backdrop.0, 0x00FF_FFFF);
     for n in [2, 4, 8] {
         let app = launch_with(Some(&settings("opacity = 100\ntheme = dark\naccent = #FF0000", n, "W")), None);
         let panel = left_panel(&app);
@@ -153,6 +179,7 @@ fn the_menu_is_a_half_ring_of_sectors_one_per_item_with_a_hole_in_the_middle() {
         let k = key_px() as f64;
         let (hole, rim) = (inner(k), outer(n, k));
         touch.down(1, p);
+        shown(&app);
         for i in 0..n {
             let c = colour_at(on_item(p, i, n));
             assert!(near(c, FACE), "{n} items: sector {i} toward {} degrees is a key face, got {c:?}", angle(i, n));
@@ -191,23 +218,29 @@ fn the_item_pointed_at_is_lit_like_a_held_key_and_follows_the_finger() {
     let lit = || (0..n).filter(|&i| near(colour_at(on_item(p, i, n)), RED)).collect::<Vec<_>>();
 
     touch.down(1, p);
+    shown(&app);
     assert_eq!(lit(), [], "nothing lit at first: the finger is in the middle");
     touch.move_to(1, toward(p, angle(2, n), 2.0 * k));
+    pointed(&app, "pie: point 2");
     assert_eq!(lit(), [2], "toward item 2");
     touch.move_to(1, toward(p, angle(0, n), 2.0 * k));
+    pointed(&app, "pie: point 0");
     assert_eq!(lit(), [0], "the light follows to item 0");
     touch.move_to(1, toward(p, angle(1, n), k / 4.0));
+    pointed(&app, "pie: point none");
     assert_eq!(lit(), [], "back in the middle");
     touch.move_to(1, POINT { x: p.x - (k / 4.0) as i32, y: p.y - k as i32 });
+    pointed(&app, "pie: point none");
     assert_eq!(lit(), [], "on the edge's side");
     touch.up(1);
 }
 
-/// A topmost backdrop down the left of the primary monitor, five keys wide.
-/// Made before EdgePad starts, so the panel and the menu go above it.
+/// A topmost backdrop down the left of the primary monitor, wide enough for
+/// a menu of eight items. Made before EdgePad starts, so the panel and the
+/// menu go above it.
 fn backdrop() -> TestWindow {
     let m = primary_monitor();
-    let under = RECT { left: m.left, top: m.top, right: m.left + key_px() * 5, bottom: m.bottom };
+    let under = RECT { left: m.left, top: m.top, right: m.left + key_px() * 7, bottom: m.bottom };
     test_window("EdgePadTestPieBackdrop", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, under)
 }
 
@@ -262,7 +295,9 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
         let log = KeyLog::start();
         let mut touch = Touch::new();
         touch.down(1, p);
+        shown(&app);
         touch.move_to(1, toward(p, angle(1, n), 2.0 * k));
+        pointed(&app, "pie: point 1");
         let (face, lit) = (colour_at(on_item(p, 0, n)), colour_at(on_item(p, 1, n)));
         assert!(near(face, [0xFA, 0xFA, 0xFA]), "a light key face, got {face:?}");
         assert!(near(lit, [0, 0xFF, 0]), "the accent where it points, got {lit:?}");
@@ -275,6 +310,7 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     let mut touch = Touch::new();
     let p = key_centre(left_panel(&app), 0);
     touch.down(1, p);
+    shown(&app);
     let o = opacity(&backdrop, on_item(p, 0, n));
     assert!((o - 70).abs() <= 4, "at the panel's opacity, 70%, not {o}%");
     // The gap between the sectors and the outside show what is under.
@@ -288,10 +324,12 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     show_dimmed(&app);
     let p = key_centre(left_panel(&app), 0);
     touch.down(1, p);
+    shown(&app);
     let o = opacity(&backdrop, on_item(p, 0, n));
     assert!((o - 40).abs() <= 4, "opened from the dimmed panel: at 40%, not {o}%");
     // Sliding in to an item is no flick that undims the panel.
     touch.move_to(1, toward(p, angle(1, n), 2.0 * k));
+    pointed(&app, "pie: point 1");
     assert!(pie_window(&app).is_some(), "the menu stays open as the finger slides in");
     assert_eq!(points(&app).last().map(String::as_str), Some("pie: point 1"));
     touch.up(1);
@@ -316,6 +354,7 @@ fn a_menu_running_off_the_screen_keeps_its_middle_where_it_was_pressed() {
     let mut touch = Touch::new();
 
     touch.down(1, p);
+    shown(&app);
     let c = colour_at(on_item(p, 1, n));
     assert!(near(c, FACE), "item 1 is where it would be, not moved down: got {c:?}");
     // The menu runs off the top as far as its ring reaches above the press.
@@ -324,6 +363,7 @@ fn a_menu_running_off_the_screen_keeps_its_middle_where_it_was_pressed() {
     assert!(r.top <= p.y - outer(n, key_px() as f64) as i32, "not moved onto the screen: {} .. {}", r.top, r.bottom);
     // Up and in, toward item 0, staying on the screen.
     touch.move_to(1, toward(p, angle(0, n), 0.6 * key_px() as f64));
+    pointed(&app, "pie: point 0");
     assert_eq!(points(&app).last().map(String::as_str), Some("pie: point 0"), "item 0 is pointed at, off the screen as it is");
     touch.up(1);
     assert_eq!(log.keys(), [], "let go on an item, nothing is sent yet");
