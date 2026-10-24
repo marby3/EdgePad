@@ -210,10 +210,7 @@ fn backdrop() -> TestWindow {
 fn a_tap_leaves_the_menu_open_for_an_item_to_be_tapped() {
     let _desktop = desktop();
     let backdrop = backdrop();
-    // DIAGNOSIS: with the log, printed should it fail on CI.
-    let app = launch_with_args(Some(SETTINGS), None, &["--debug"]);
-    let p = key_centre(left_panel(&app), PIE_KEY);
-    let log_text = || std::fs::read_to_string(exe_dir(&app).join("edgepad-debug.log")).unwrap_or_default();
+    let (app, p) = launch_pad();
     let k = key_px() as f64;
     let log = KeyLog::start();
     let mut touch = Touch::new();
@@ -231,23 +228,7 @@ fn a_tap_leaves_the_menu_open_for_an_item_to_be_tapped() {
     assert_eq!(log.keys().len(), 2, "and runs nothing");
 
     tap(&mut touch, 1, p);
-    let pie = opened(&app).unwrap_or_else(|| {
-        let under = unsafe { WindowFromPoint(p) };
-        let mut class = [0u16; 64];
-        let n = unsafe { GetClassNameW(under, class.as_mut_ptr(), 64) };
-        let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
-        let mut pid = 0;
-        unsafe { GetWindowThreadProcessId(under, &mut pid) };
-        panic!(
-            "open again; p = ({}, {}); under p: {class} of pid {pid} (EdgePad {}); panels {:?}; log:
-{}",
-            p.x,
-            p.y,
-            app.0.id(),
-            panels_now(&app).iter().map(|r| (r.left, r.top, r.right, r.bottom)).collect::<Vec<_>>(),
-            log_text()
-        )
-    });
+    let pie = opened(&app).expect("open again");
     let gap = toward(p, -90.0 + 180.0 / ITEMS as f64, 2.0 * k);
     let outside = toward(p, angle(2), 4.0 * k);
     for (spot, name) in [(gap, "the gap between items"), (outside, "outside the ring")] {
