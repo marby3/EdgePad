@@ -5,6 +5,7 @@
 //! layer (Windows today) drives it and performs the actual input and drawing.
 
 pub mod config;
+pub mod document;
 pub mod gesture;
 pub mod keys;
 pub mod layout;
