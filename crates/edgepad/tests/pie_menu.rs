@@ -1,6 +1,6 @@
 //! Acceptance tests for Issue #70: the pie menu on screen while a pie key is
-//! held (spec 4.6, 5.3 and 5.6). Its items are rounded buttons on an arc
-//! around where the key was pressed, and the one pointed at is lit.
+//! held (spec 4.6, 5.3 and 5.6): a half ring around where the key was
+//! pressed, split into a sector per item, the one pointed at lit.
 //!
 //! Colours and opacity are read off the screen. Which item is pointed at is
 //! also in the test events (`pie: point <item>` / `pie: point none`), for
@@ -50,30 +50,35 @@ fn angle(i: usize, n: usize) -> f64 {
     -90.0 + (i as f64 + 0.5) * 180.0 / n as f64
 }
 
-/// The radius of the arc: the least at which no two neighbouring buttons,
-/// squares a key across, overlap, and at least one and a half keys.
-fn radius(n: usize, key: f64) -> f64 {
-    let at = |i| angle(i, n).to_radians();
-    let mut r = 1.5 * key;
-    for i in 0..n - 1 {
-        let (a, b) = (at(i), at(i + 1));
-        let apart = (a.cos() - b.cos()).abs().max((a.sin() - b.sin()).abs());
-        r = r.max(key / apart);
-    }
-    r
+/// The ring's hole: the middle, where letting go cancels.
+fn inner(key: f64) -> f64 {
+    key / 2.0
 }
 
-/// The middle of button `i` of `n` on a pie opened at `p` on the left edge.
-fn button(p: POINT, i: usize, n: usize) -> (f64, f64) {
-    let key = key_px() as f64;
-    let (a, r) = (angle(i, n).to_radians(), radius(n, key));
-    (p.x as f64 + r * a.cos(), p.y as f64 + r * a.sin())
+/// The ring's outer radius: two keys, or more for many items, until the
+/// sectors are a key wide where their labels go, half way out.
+fn outer(n: usize, key: f64) -> f64 {
+    // A sector `key` wide along its arc at radius r: r * pi / n >= key.
+    let label = key * n as f64 / std::f64::consts::PI;
+    (2.0 * key).max(2.0 * label - inner(key))
 }
 
-/// A point inside button `i`, above its label.
-fn on_button(p: POINT, i: usize, n: usize) -> POINT {
-    let (x, y) = button(p, i, n);
-    POINT { x: x.round() as i32, y: (y - key_px() as f64 / 3.0).round() as i32 }
+/// The point `r` out from `p` toward the middle of item `i` of `n`.
+fn out(p: POINT, i: usize, n: usize, r: f64) -> POINT {
+    let a = angle(i, n).to_radians();
+    POINT { x: (p.x as f64 + r * a.cos()).round() as i32, y: (p.y as f64 + r * a.sin()).round() as i32 }
+}
+
+/// Where item `i`'s label goes: half way between the hole and the outside.
+fn label_at(p: POINT, i: usize, n: usize) -> POINT {
+    let k = key_px() as f64;
+    out(p, i, n, (inner(k) + outer(n, k)) / 2.0)
+}
+
+/// A point inside item `i`'s sector, out past its label.
+fn on_item(p: POINT, i: usize, n: usize) -> POINT {
+    let k = key_px() as f64;
+    out(p, i, n, ((inner(k) + outer(n, k)) / 2.0 + outer(n, k)) / 2.0)
 }
 
 fn colour_at(p: POINT) -> [i32; 3] {
@@ -138,24 +143,37 @@ fn a_pie_key_opens_a_layered_menu_that_takes_no_focus_and_goes_away_on_release()
 
 // AC2
 #[test]
-fn the_items_are_buttons_on_an_arc_around_the_press_each_toward_its_own_direction() {
+fn the_menu_is_a_half_ring_of_sectors_one_per_item_with_a_hole_in_the_middle() {
     let _desktop = desktop();
     for n in [2, 4, 8] {
         let app = launch_with(Some(&settings("opacity = 100\ntheme = dark\naccent = #FF0000", n, "W")), None);
         let panel = left_panel(&app);
         let mut touch = Touch::new();
         let p = key_centre(panel, 0);
+        let k = key_px() as f64;
+        let (hole, rim) = (inner(k), outer(n, k));
         touch.down(1, p);
         for i in 0..n {
-            let c = colour_at(on_button(p, i, n));
-            assert!(near(c, FACE), "{n} items: button {i} toward {}°, {:.0} px out, is a key face, got {c:?}", angle(i, n), radius(n, key_px() as f64));
-            // Its label: ink in the middle of the button.
-            let (x, y) = button(p, i, n);
-            let k = key_px() / 4;
-            let (x, y) = (x.round() as i32, y.round() as i32);
-            let middle = capture(RECT { left: x - k, top: y - k, right: x + k, bottom: y + k });
-            assert!(middle.iter().any(|&px| !near(channels(px), FACE)), "{n} items: button {i} has its label drawn");
+            let c = colour_at(on_item(p, i, n));
+            assert!(near(c, FACE), "{n} items: sector {i} toward {} degrees is a key face, got {c:?}", angle(i, n));
+            // Inward, next to the hole, it is still the sector.
+            let c = colour_at(out(p, i, n, hole + 4.0));
+            assert!(near(c, FACE), "{n} items: sector {i} reaches in to the hole, got {c:?}");
+            let l = label_at(p, i, n);
+            let q = key_px() / 4;
+            let ink = capture(RECT { left: l.x - q, top: l.y - q, right: l.x + q, bottom: l.y + q });
+            assert!(ink.iter().any(|&px| !near(channels(px), FACE)), "{n} items: sector {i} has its label half way out");
+            let c = colour_at(out(p, i, n, rim + 4.0));
+            assert!(!near(c, FACE), "{n} items: nothing past {rim:.0} px out, got {c:?}");
         }
+        // Between neighbours, a gap down the boundary.
+        for i in 1..n {
+            let between = -90.0 + i as f64 * 180.0 / n as f64;
+            let c = colour_at(toward(p, between, (hole + rim) / 2.0 + k / 4.0));
+            assert!(!near(c, FACE), "{n} items: a gap between sectors {} and {i}, got {c:?}", i - 1);
+        }
+        let c = colour_at(toward(p, 0.0, hole / 2.0));
+        assert!(!near(c, FACE), "{n} items: the middle is a hole, got {c:?}");
         touch.up(1);
     }
 }
@@ -170,7 +188,7 @@ fn the_item_pointed_at_is_lit_like_a_held_key_and_follows_the_finger() {
     let mut touch = Touch::new();
     let p = key_centre(panel, 0);
     let k = key_px() as f64;
-    let lit = || (0..n).filter(|&i| near(colour_at(on_button(p, i, n)), RED)).collect::<Vec<_>>();
+    let lit = || (0..n).filter(|&i| near(colour_at(on_item(p, i, n)), RED)).collect::<Vec<_>>();
 
     touch.down(1, p);
     assert_eq!(lit(), [], "nothing lit at first: the finger is in the middle");
@@ -245,7 +263,7 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
         let mut touch = Touch::new();
         touch.down(1, p);
         touch.move_to(1, toward(p, angle(1, n), 2.0 * k));
-        let (face, lit) = (colour_at(on_button(p, 0, n)), colour_at(on_button(p, 1, n)));
+        let (face, lit) = (colour_at(on_item(p, 0, n)), colour_at(on_item(p, 1, n)));
         assert!(near(face, [0xFA, 0xFA, 0xFA]), "a light key face, got {face:?}");
         assert!(near(lit, [0, 0xFF, 0]), "the accent where it points, got {lit:?}");
         touch.up(1);
@@ -257,14 +275,14 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     let mut touch = Touch::new();
     let p = key_centre(left_panel(&app), 0);
     touch.down(1, p);
-    let o = opacity(&backdrop, on_button(p, 0, n));
+    let o = opacity(&backdrop, on_item(p, 0, n));
     assert!((o - 70).abs() <= 4, "at the panel's opacity, 70%, not {o}%");
     touch.up(1);
 
     show_dimmed(&app);
     let p = key_centre(left_panel(&app), 0);
     touch.down(1, p);
-    let o = opacity(&backdrop, on_button(p, 0, n));
+    let o = opacity(&backdrop, on_item(p, 0, n));
     assert!((o - 40).abs() <= 4, "opened from the dimmed panel: at 40%, not {o}%");
     // Sliding in to an item is no flick that undims the panel.
     touch.move_to(1, toward(p, angle(1, n), 2.0 * k));
@@ -287,12 +305,12 @@ fn a_menu_running_off_the_screen_keeps_its_middle_where_it_was_pressed() {
     let app = launch_with(Some(&text), None);
     let panel = left_panel(&app);
     let p = key_centre(panel, 0);
-    assert!(button(p, 0, n).1 < (m.top + key_px() / 2) as f64, "precondition: item 0 runs off the top of the screen");
+    assert!(label_at(p, 0, n).y < m.top, "precondition: item 0 runs off the top of the screen");
     let log = KeyLog::start();
     let mut touch = Touch::new();
 
     touch.down(1, p);
-    let c = colour_at(on_button(p, 1, n));
+    let c = colour_at(on_item(p, 1, n));
     assert!(near(c, FACE), "item 1 is where it would be, not moved down: got {c:?}");
     // Up and in, toward item 0, staying on the screen.
     touch.move_to(1, toward(p, angle(0, n), 0.6 * key_px() as f64));
