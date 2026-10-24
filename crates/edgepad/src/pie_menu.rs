@@ -8,7 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 
-use edgepad_core::config::Edge;
+use edgepad_core::config::{Edge, PIE_ITEMS};
 use edgepad_core::pie;
 use edgepad_core::theme::Palette;
 use windows_sys::Win32::Foundation::{
@@ -20,6 +20,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::colors::colorref;
+use crate::panel::{key_font, key_gap};
 use crate::log::debug_log;
 use crate::tray;
 
@@ -64,6 +65,12 @@ pub struct Opening<'a> {
 pub unsafe fn open(o: Opening) {
     unsafe {
         close_all();
+        // The parser allows nothing else; drawn, any other count would not
+        // make a menu.
+        if !PIE_ITEMS.contains(&o.labels.len()) {
+            debug_log!("パイメニューの項目が {} 個: 開かない", o.labels.len());
+            return;
+        }
         let instance = GetModuleHandleW(null());
         if !REGISTERED.get() {
             let mut wc: WNDCLASSW = zeroed();
@@ -188,7 +195,7 @@ unsafe fn draw(m: &Menu) -> bool {
     };
     let (w, h) = (right - left, bottom - top);
     // As far apart as the keys of a panel.
-    let gap = f64::from((m.key / 16).max(2));
+    let gap = f64::from(key_gap(m.key));
     let cover = |x: i32, y: i32| {
         let (dx, dy) = (f64::from(x + left) + 0.5, f64::from(y + top) + 0.5);
         m.ring.cover(m.edge, n, gap, dx, dy)
@@ -226,22 +233,7 @@ unsafe fn draw(m: &Menu) -> bool {
         }
 
         // The labels, as the panel writes its keys'.
-        let font = CreateFontW(
-            -(m.key * 2 / 7),
-            0,
-            0,
-            0,
-            FW_SEMIBOLD as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            0,
-            0,
-            CLEARTYPE_QUALITY as u32,
-            0,
-            w!("Segoe UI"),
-        );
+        let font = key_font(m.key);
         let old_font = SelectObject(mem, font);
         SetBkMode(mem, TRANSPARENT as i32);
         let half_width = ((m.ring.label_width(n) - 2.0 * gap) / 2.0).max(f64::from(m.key) / 2.0) as i32;

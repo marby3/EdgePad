@@ -25,18 +25,12 @@ pub fn item(edge: Edge, dx: i32, dy: i32, key: i32, items: usize) -> Option<usiz
     if 4 * (dx * dx + dy * dy) < key * key {
         return None;
     }
-    // Movement into the screen, and along the edge in reading order.
-    let (inward, along) = match edge {
-        Edge::Left => (dx, dy),
-        Edge::Right => (-dx, dy),
-        Edge::Top => (dy, dx),
-        Edge::Bottom => (-dy, dx),
-    };
-    if inward < 0 {
+    let (inward, along) = frame(edge, dx as f64, dy as f64);
+    if inward < 0.0 {
         return None;
     }
     // From -90° (the first item) to +90° (the last), as a share of the half.
-    let share = ((along as f64).atan2(inward as f64) + FRAC_PI_2) / PI;
+    let share = (along.atan2(inward) + FRAC_PI_2) / PI;
     Some(((share * items as f64) as usize).min(items - 1))
 }
 

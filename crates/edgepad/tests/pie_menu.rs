@@ -277,6 +277,12 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     touch.down(1, p);
     let o = opacity(&backdrop, on_item(p, 0, n));
     assert!((o - 70).abs() <= 4, "at the panel's opacity, 70%, not {o}%");
+    // The gap between the sectors and the outside show what is under.
+    let (hole, rim) = (inner(k), outer(n, k));
+    let o = opacity(&backdrop, toward(p, 0.0, (hole + rim) / 2.0 + k / 4.0));
+    assert!(o <= 4, "the gap between sectors is see-through, not {o}% opaque");
+    let o = opacity(&backdrop, out(p, 0, n, rim + 6.0));
+    assert!(o <= 4, "outside the ring is see-through, not {o}% opaque");
     touch.up(1);
 
     show_dimmed(&app);
@@ -312,6 +318,10 @@ fn a_menu_running_off_the_screen_keeps_its_middle_where_it_was_pressed() {
     touch.down(1, p);
     let c = colour_at(on_item(p, 1, n));
     assert!(near(c, FACE), "item 1 is where it would be, not moved down: got {c:?}");
+    // The menu runs off the top as far as its ring reaches above the press.
+    let pie = pie_window(&app).expect("the menu is open");
+    let r = window_rect(pie);
+    assert!(r.top <= p.y - outer(n, key_px() as f64) as i32, "not moved onto the screen: {} .. {}", r.top, r.bottom);
     // Up and in, toward item 0, staying on the screen.
     touch.move_to(1, toward(p, angle(0, n), 0.6 * key_px() as f64));
     assert_eq!(points(&app).last().map(String::as_str), Some("pie: point 0"), "item 0 is pointed at, off the screen as it is");

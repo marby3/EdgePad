@@ -1678,6 +1678,19 @@ pub unsafe fn redock_all() {
     });
 }
 
+/// The space between a key's face and its cell, keys `key` pixels across:
+/// half the gap between neighbouring keys.
+pub fn key_gap(key: i32) -> i32 {
+    (key / 16).max(2)
+}
+
+/// The font key labels are written in, keys `key` pixels across. The
+/// caller deletes it.
+pub unsafe fn key_font(key: i32) -> HFONT {
+    let (bold, charset, quality) = (FW_SEMIBOLD as i32, DEFAULT_CHARSET as u32, CLEARTYPE_QUALITY as u32);
+    unsafe { CreateFontW(-(key * 2 / 7), 0, 0, 0, bold, 0, 0, 0, charset, 0, 0, quality, 0, w!("Segoe UI")) }
+}
+
 /// Paint the keys into a 32-bit DIB and hand it to the window with
 /// UpdateLayeredWindow. The DIB is freed right after; the window keeps its
 /// own copy, so nothing is held between redraws. Returns false on failure.
@@ -1710,28 +1723,13 @@ unsafe fn draw(panel: &Panel) -> bool {
         let face = CreateSolidBrush(colorref(colours.face));
         let held = CreateSolidBrush(colorref(colours.held));
         let latched_face = CreateSolidBrush(colorref(colours.latched));
-        let font = CreateFontW(
-            -(key * 2 / 7),
-            0,
-            0,
-            0,
-            FW_SEMIBOLD as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            0,
-            0,
-            CLEARTYPE_QUALITY as u32,
-            0,
-            w!("Segoe UI"),
-        );
+        let font = key_font(key);
         let old_brush = SelectObject(mem, face);
         let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
         let old_font = SelectObject(mem, font);
         SetBkMode(mem, TRANSPARENT as i32);
 
-        let gap = (key / 16).max(2);
+        let gap = key_gap(key);
         let corner = key / 6;
         for (i, k) in panel.keys.iter().enumerate() {
             let Some(at) = k.rect else { continue };
