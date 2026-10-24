@@ -31,7 +31,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::log::debug_log;
 use crate::settings::{self, Panels};
-use crate::{panel, send, tray};
+use crate::{panel, pie_menu, send, tray};
 
 /// Test builds only: treat every app coming to the front as out of reach.
 #[cfg(feature = "fault-injection")]
@@ -119,6 +119,9 @@ pub unsafe fn toggle_pin() {
     }
     let pin = !PINNED.get();
     PINNED.set(pin);
+    // Pinning from the tray is taken as a profile switch (spec 4.6): an
+    // open pie menu closes, though the panels may stay as they are.
+    unsafe { pie_menu::close_all() };
     debug_log!("プロファイル {}: {}", ACTIVE.with_borrow(String::clone), if pin { "固定" } else { "固定を解除" });
     if !pin {
         unsafe { follow() };
