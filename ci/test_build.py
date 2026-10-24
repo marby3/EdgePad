@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXE = ROOT / "target" / "release" / "edgepad.exe"
-MAX_EXE_BYTES = 500 * 1024  # 500 KiB
+MAX_EXE_BYTES = 1024 * 1024  # 1 MiB: room for the settings window (spec, chapter 8)
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
 FORBIDDEN_DLL_PREFIXES = ("vcruntime", "ucrtbase", "api-ms-win-crt-")
 IMAGE_SUBSYSTEM_WINDOWS_GUI = 2
@@ -96,7 +96,7 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(bin_deps, {"edgepad-core", "windows-sys"})
 
     # AC2
-    def test_release_exe_is_at_most_500kb(self):
+    def test_release_exe_is_at_most_1mib(self):
         self.assertTrue(EXE.is_file(), f"{EXE} was not built")
         machine, _, _ = read_pe(EXE)
         self.assertEqual(machine, IMAGE_FILE_MACHINE_AMD64)
