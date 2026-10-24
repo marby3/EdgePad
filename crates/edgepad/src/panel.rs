@@ -1118,8 +1118,11 @@ unsafe fn hold(vk: u16, down: bool) {
 unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     unsafe {
         let id = pointer_id(wp);
-        let Some(kind) = finger_or_mouse(id) else { return };
         let (sx, sy) = pointer_at(lp);
+        let Some(kind) = finger_or_mouse(id) else {
+            debug_log!("ポインタ {id} ({sx}, {sy}): ペンか種類が分からない");
+            return;
+        };
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
             // Its keys are on the move, not where they will be.
@@ -1139,6 +1142,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             }
             let (x, y) = (sx - panel.rect.x, sy - panel.rect.y);
             let key = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y)));
+            debug_log!("ポインタ {id} ({sx}, {sy}) が押す: キー {key:?}");
             // A menu left open by a tap closes on a tap in its middle or on
             // a pie key, and that press goes no further.
             if pie_menu::is_left_open(hwnd) {
