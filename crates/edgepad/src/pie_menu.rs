@@ -54,7 +54,14 @@ thread_local! {
     // One finger opens one menu; the UI thread owns it.
     static MENU: RefCell<Option<Menu>> = const { RefCell::new(None) };
     static REGISTERED: Cell<bool> = const { Cell::new(false) };
+    // A menu closed by a tap on it, still on screen until the finger that
+    // tapped is done with it (see `linger`), and that pointer.
+    static LINGERING: Cell<Option<(HWND, u32)>> = const { Cell::new(None) };
 }
+
+/// The longest a closed menu lingers for a pointer that never says it left.
+const LINGER_MS: u32 = 300;
+const LINGER_TIMER: usize = 1;
 
 /// What a pie key opens its menu with.
 pub struct Opening<'a> {
@@ -243,6 +250,26 @@ pub unsafe fn close_all() {
     if let Some(m) = MENU.take() {
         unsafe { DestroyWindow(m.hwnd) };
     }
+    unsafe { end_linger() };
+}
+
+/// Keep the window of a menu just closed by a tap on it until that pointer
+/// has left it. Gone at once, the rest of the tap (its leaving, or the mouse
+/// input Windows makes of it) would land on whatever window is under the
+/// menu: a click on the app below.
+unsafe fn linger(hwnd: HWND, pointer: u32) {
+    unsafe {
+        end_linger();
+        LINGERING.set(Some((hwnd, pointer)));
+        SetTimer(hwnd, LINGER_TIMER, LINGER_MS, None);
+    }
+}
+
+/// Destroy the window of a menu closed by a tap, if one lingers.
+unsafe fn end_linger() {
+    if let Some((hwnd, _)) = LINGERING.take() {
+        unsafe { DestroyWindow(hwnd) };
+    }
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -262,6 +289,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_POINTERCAPTURECHANGED => {
                 tap_up(pointer_id(wp), (0, 0), true);
+                0
+            }
+            // The tap that closed it is over.
+            WM_POINTERLEAVE if LINGERING.get() == Some((hwnd, pointer_id(wp))) => {
+                end_linger();
+                0
+            }
+            WM_TIMER if wp == LINGER_TIMER => {
+                KillTimer(hwnd, LINGER_TIMER);
+                if LINGERING.get().is_some_and(|(h, _)| h == hwnd) {
+                    end_linger();
+                }
                 0
             }
             WM_POINTERUPDATE | WM_POINTERENTER | WM_POINTERLEAVE => 0,
@@ -303,7 +342,7 @@ unsafe fn tap_up(id: u32, at: (i32, i32), cancelled: bool) {
     let Some(m) = MENU.take() else { return };
     debug_log!("パイメニューを閉じる");
     unsafe {
-        DestroyWindow(m.hwnd);
+        linger(m.hwnd, id);
         panel::run_pie_item(m.panel, &m.set, item);
     }
 }
