@@ -119,8 +119,8 @@ pub unsafe fn toggle_pin() {
     }
     let pin = !PINNED.get();
     PINNED.set(pin);
-    // Pinning or unpinning changes the profile as a switch does: an open
-    // pie menu closes, whether the panels are built anew or not.
+    // Pinning from the tray is taken as a profile switch (spec 4.6): an
+    // open pie menu closes, though the panels may stay as they are.
     unsafe { pie_menu::close_all() };
     debug_log!("プロファイル {}: {}", ACTIVE.with_borrow(String::clone), if pin { "固定" } else { "固定を解除" });
     if !pin {

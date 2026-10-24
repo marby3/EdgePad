@@ -25,7 +25,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::log::debug_log;
-use crate::{autostart, panel, profile, send, settings, watch};
+use crate::{autostart, panel, pie_menu, profile, send, settings, watch};
 
 // The class name, TRAY_ID, TRAY_CALLBACK, the menu texts and the test
 // messages are the contract the tests drive the tray through: change them
@@ -291,10 +291,13 @@ unsafe fn open_settings(hwnd: HWND) {
     let _ = hwnd;
 }
 
-/// Leave: let go of every held key first, then take the icon down and quit.
+/// Leave: close any pie menu and let go of every held key first, then take
+/// the icon down and quit. Closed now, a menu runs nothing on a finger that
+/// lifts before the quit comes through.
 unsafe fn exit(hwnd: HWND) {
     unsafe {
         debug_log!("全キー解放: 終了");
+        pie_menu::close_all();
         send::release_all();
         panel::undock_all();
         WTSUnRegisterSessionNotification(hwnd);

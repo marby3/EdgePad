@@ -74,7 +74,7 @@ fn my_window() -> TestWindow {
 /// is in front, the default otherwise. The pie opens B and C.
 fn settings() -> String {
     format!(
-        "[general]\nhotkey = Ctrl+Alt+E\n[set.pad]\nkey = 変形 | pie | menu\nkey = A | shortcut | A\n\
+        "[general]\nhotkey = Ctrl+Alt+F13\n[set.pad]\nkey = 変形 | pie | menu\nkey = A | shortcut | A\n\
          [set.menu]\nkey = B | shortcut | B\nkey = C | shortcut | C\n\
          [profile.default]\nleft = pad\n[profile.me]\nprocess = {}\nleft = pad\n",
         me()
@@ -124,7 +124,9 @@ fn pie_key(app: &Running) -> POINT {
     key_centre(left_panel(app), 0)
 }
 
-/// Toward item 0 (B), two keys out from `p`: up and in on the left edge.
+/// Toward item 0 (B), two keys out from `p`: up and in on the left edge,
+/// at -45 degrees, the middle of the first of two items. Two keys out is the
+/// outside of a two-item ring, and direction alone picks the item.
 fn on_b(p: POINT) -> POINT {
     let k = key_px() as f64;
     let a = (-45.0f64).to_radians();
@@ -147,7 +149,6 @@ fn closes_on(app: &Running, how: &str, mut close: impl FnMut()) {
     touch.up(1);
     pump(300);
     assert_eq!(log.keys(), [], "{how}: lifting the finger afterwards runs nothing");
-    drop(touch);
 }
 
 /// As `closes_on`, for a menu a tap left open.
@@ -164,12 +165,22 @@ fn tapped_closes_on(app: &Running, how: &str, mut close: impl FnMut()) {
     assert_eq!(log.keys(), [], "{how}: and runs nothing");
 }
 
-/// Press and release Ctrl+Alt+E as a physical keyboard would.
+/// Press and release Ctrl+Alt+F13 as a physical keyboard would: a key no
+/// real keyboard has, so nothing else answers to it (see tests/hotkey.rs).
 fn hotkey() {
-    for (vk, down) in [(VK_LCONTROL, true), (VK_LMENU, true), (b'E' as u16, true), (b'E' as u16, false), (VK_LMENU, false), (VK_LCONTROL, false)] {
+    for (vk, down) in [(VK_LCONTROL, true), (VK_LMENU, true), (VK_F13, true), (VK_F13, false), (VK_LMENU, false), (VK_LCONTROL, false)] {
         keyboard(vk, down);
     }
     pump(200);
+}
+
+/// Choose the tray item `id` of `app` without opening the tray menu: its
+/// popup would take the capture from a finger on the panel, and close the
+/// menu itself.
+fn command(app: &Running, id: u32) {
+    let tray = find_window(app, TRAY_CLASS, false);
+    unsafe { PostMessageW(tray, WM_COMMAND, id as usize, 0) };
+    pump(300);
 }
 
 fn shown(app: &Running) -> bool {
@@ -182,11 +193,12 @@ fn hiding_the_panel_closes_the_menu() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings()), None);
     for (how, toggle) in [("the tray's edge item", "左辺"), ("pause", "一時停止")] {
-        closes_on(&app, how, || choose(&app, toggle));
-        choose(&app, toggle);
+        let id = menu_item(&app, toggle).id;
+        closes_on(&app, how, || command(&app, id));
+        command(&app, id);
         assert!(shown(&app), "{how}: shown again");
-        tapped_closes_on(&app, how, || choose(&app, toggle));
-        choose(&app, toggle);
+        tapped_closes_on(&app, how, || command(&app, id));
+        command(&app, id);
         assert!(shown(&app), "{how}: shown again");
     }
     closes_on(&app, "the hotkey", hotkey);
@@ -207,17 +219,22 @@ fn building_the_panels_anew_closes_the_menu() {
     closes_on(&app, "reloading the settings", || save(1));
     tapped_closes_on(&app, "reloading the settings", || save(2));
 
-    closes_on(&app, "pinning the profile", || choose(&app, "固定"));
-    choose(&app, "固定");
-    tapped_closes_on(&app, "pinning the profile", || choose(&app, "固定"));
-    choose(&app, "固定");
+    let pin = menu_item(&app, "固定").id;
+    closes_on(&app, "pinning the profile", || command(&app, pin));
+    command(&app, pin);
+    tapped_closes_on(&app, "pinning the profile", || command(&app, pin));
+    command(&app, pin);
 
     // This process in front: profile "me". Another app: the default.
-    let mut keep = vec![];
-    let _mine = my_window();
-    closes_on(&app, "another app in front", || keep.push(other_app_window()));
-    let _mine = my_window();
-    tapped_closes_on(&app, "another app in front", || keep.push(other_app_window()));
+    let mut others = vec![];
+    {
+        let _mine = my_window();
+        closes_on(&app, "another app in front", || others.push(other_app_window()));
+    }
+    {
+        let _mine = my_window();
+        tapped_closes_on(&app, "another app in front", || others.push(other_app_window()));
+    }
 }
 
 // AC3
@@ -260,10 +277,11 @@ fn ending_edgepad_with_a_menu_open_runs_nothing() {
     let mut app = launch_with(Some(&settings()), None);
     let mut touch = Touch::new();
     let p = pie_key(&app);
+    let exit = menu_item(&app, "終了").id;
     touch.down(1, p);
     touch.move_to(1, on_b(p));
     assert!(opened(&app), "precondition: held open on B");
-    choose(&app, "終了");
+    command(&app, exit);
     wait_exit(&mut app);
     touch.up(1);
     pump(300);
