@@ -1,4 +1,5 @@
-//! Which item of a pie menu a pointer points at (spec 4.6).
+//! Which item of a pie menu a pointer points at, and where its buttons go
+//! (spec 4.6 and 5.6).
 //!
 //! The menu is a half circle around where the pie key was pressed, opening
 //! into the screen and split evenly among its items. They run in the order
@@ -37,4 +38,35 @@ pub fn item(edge: Edge, dx: i32, dy: i32, key: i32, items: usize) -> Option<usiz
     // From -90° (the first item) to +90° (the last), as a share of the half.
     let share = ((along as f64).atan2(inward as f64) + FRAC_PI_2) / PI;
     Some(((share * items as f64) as usize).min(items - 1))
+}
+
+/// Where the buttons of a pie menu of `items` opened from `edge` go, keys
+/// `key` pixels across: the middle of each, in order, as an offset from the
+/// middle of the menu. They sit on an arc, each in the middle of the
+/// direction that points at it, as close in as they go without two
+/// neighbours, squares a key across, overlapping, and at least one and a
+/// half keys out.
+pub fn buttons(edge: Edge, items: usize, key: i32) -> Vec<(i32, i32)> {
+    debug_assert!(PIE_ITEMS.contains(&items) && key > 0, "{items} items, key {key}");
+    let key = f64::from(key);
+    let angle = |i: usize| -FRAC_PI_2 + (i as f64 + 0.5) * PI / items as f64;
+    let mut radius = 1.5 * key;
+    for i in 1..items {
+        let (a, b) = (angle(i - 1), angle(i));
+        // Squares apart when far enough apart across or along.
+        let apart = (a.cos() - b.cos()).abs().max((a.sin() - b.sin()).abs());
+        radius = radius.max(key / apart);
+    }
+    (0..items)
+        .map(|i| {
+            let (inward, along) = (radius * angle(i).cos(), radius * angle(i).sin());
+            let (dx, dy) = match edge {
+                Edge::Left => (inward, along),
+                Edge::Right => (-inward, along),
+                Edge::Top => (along, inward),
+                Edge::Bottom => (along, -inward),
+            };
+            (dx.round() as i32, dy.round() as i32)
+        })
+        .collect()
 }

@@ -31,7 +31,7 @@ use windows_sys::w;
 
 use crate::colors::{self, colorref};
 use crate::log::debug_log;
-use crate::{launch, send};
+use crate::{launch, pie_menu, send};
 use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
@@ -77,8 +77,9 @@ enum Sends {
     Run(String),
     /// Turns the page, or switches to another key set, on release.
     Page(Page),
-    /// Nothing yet: the pie menu is still to come (spec 4.6).
-    Nothing,
+    /// Opens a pie menu of the key set it names while pressed (spec 4.6).
+    /// Nothing is sent yet.
+    Pie(String),
 }
 
 impl Sends {
@@ -109,7 +110,7 @@ impl Sends {
             Action::Text(text) => Sends::Text(text.clone()),
             Action::Run(command) => Sends::Run(command.clone()),
             Action::Page(page) => Sends::Page(page.clone()),
-            Action::Pie(_) => Sends::Nothing,
+            Action::Pie(set) => Sends::Pie(set.clone()),
         }
     }
 }
@@ -537,6 +538,7 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
         HOVERED.set(hovered);
         // Taken out first: messages sent while a window is destroyed (capture
         // lost, for one) then find no panel and change nothing.
+        pie_menu::close_all();
         for mut panel in PANELS.take() {
             undock(&mut panel);
             DestroyWindow(panel.hwnd);
@@ -706,6 +708,7 @@ unsafe fn let_go(panel: &mut Panel) {
         if panel.captured.take().is_some() {
             ReleaseCapture();
         }
+        pie_menu::close(panel.hwnd, None);
         draw(panel);
     }
 }
@@ -936,6 +939,7 @@ unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
 /// contact taken away: a gesture, not a key press.
 unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
+    unsafe { pie_menu::point(id, (x, y)) };
     let mut flick = None;
     with_panel(hwnd, |panel| {
         if let Some(s) = panel.starts.iter().find(|s| s.id == id && s.at.elapsed() <= FLICK_TIME) {
@@ -1164,6 +1168,21 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
                 hold(vk, true);
             }
             draw(panel);
+            // Over the panel, drawn with the key held.
+            if let Sends::Pie(set) = &panel.keys[key].sends {
+                let items = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(set));
+                let labels: Vec<&str> = items.into_iter().flat_map(|s| &s.keys).map(|k| k.label.as_str()).collect();
+                pie_menu::open(pie_menu::Opening {
+                    panel: hwnd,
+                    pointer: id,
+                    edge: panel.edge,
+                    at: (sx, sy),
+                    key: panel.key,
+                    labels: &labels,
+                    palette: palette(),
+                    alpha: panel.current_alpha(),
+                });
+            }
         });
     }
 }
@@ -1174,6 +1193,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
 unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
     unsafe {
         let id = pointer_id(wp);
+        pie_menu::close(hwnd, Some(id));
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
             panel.starts.retain(|s| s.id != id);
@@ -1220,7 +1240,7 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                     Sends::Text(text) => send::text(text),
                     Sends::Run(command) => launch::run(command),
                     Sends::Page(page) => turned = Some(page.clone()),
-                    Sends::Nothing => {}
+                    Sends::Pie(_) => {}
                 }
                 if matches!(panel.running, Some((k, 0)) if k == key) {
                     run_macro(panel);

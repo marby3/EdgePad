@@ -113,9 +113,13 @@ fn a_pie_key_opens_a_layered_menu_that_takes_no_focus_and_goes_away_on_release()
     let panel = left_panel(&app);
     wait_in_front(front.0);
     assert!(pie_window(&app).is_none(), "no menu before the pie key is pressed");
-    let gdi_before = gdi_objects(&app);
     let log = KeyLog::start();
     let mut touch = Touch::new();
+    // Windows sets aside one GDI object for good the first time a menu is
+    // drawn: count from after that, so what is left of each menu shows.
+    touch.down(1, key_centre(panel, 0));
+    touch.up(1);
+    let gdi_before = gdi_objects(&app);
 
     touch.down(1, key_centre(panel, 0));
     let pie = pie_window(&app).expect("the menu opened on the press");
