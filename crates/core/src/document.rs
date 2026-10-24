@@ -10,9 +10,15 @@
 //! `general`, `edge.left`, `set.pad`, `profile.csp`. Names match in any
 //! case, as the parser reads them. An edit on a section or line that is not
 //! there does nothing.
+//!
+//! A document does not check what it writes: the settings window reads the
+//! text back with the parser before saving (spec 7.1). A key set removed
+//! while keys or profiles still name it, for one, is an error there, for
+//! the user to settle, rather than something to guess at here.
 
 use crate::config::{self, Error, strip_comment};
 
+#[derive(Clone, Debug)]
 pub struct Document {
     bom: bool,
     /// Each line with its ending, `\n` or `\r\n`; the last may have none.
@@ -30,6 +36,12 @@ fn header(line: &str) -> Option<String> {
     let content = strip_comment(body(line)).trim();
     let name = content.strip_prefix('[')?.strip_suffix(']')?;
     Some(name.trim().to_ascii_lowercase())
+}
+
+/// Whether `line` starts a section as the parser reads it: any line that
+/// opens with `[`, a header left unclosed too.
+fn starts_section(line: &str) -> bool {
+    strip_comment(body(line)).trim().starts_with('[')
 }
 
 /// The lower-case name of the setting on `line`, if it is one.
@@ -121,7 +133,7 @@ impl Document {
     fn section(&self, name: &str) -> Option<(usize, usize)> {
         let name = name.to_ascii_lowercase();
         let start = self.lines.iter().position(|l| header(l).as_deref() == Some(&name))?;
-        let end = (start + 1..self.lines.len()).find(|&i| header(&self.lines[i]).is_some()).unwrap_or(self.lines.len());
+        let end = (start + 1..self.lines.len()).find(|&i| starts_section(&self.lines[i])).unwrap_or(self.lines.len());
         Some((start, end))
     }
 
@@ -169,7 +181,9 @@ impl Document {
         }
     }
 
-    /// The keys of key set `set`, as written after `key =`.
+    /// The keys of key set `set`, as written after `key =`: the fields
+    /// with the spaces between them as written, for the caller to split on
+    /// `|` and trim as the parser does.
     pub fn keys(&self, set: &str) -> Vec<String> {
         self.settings(set, "key").into_iter().filter_map(|i| value(&self.lines[i]).map(String::from)).collect()
     }
@@ -182,15 +196,16 @@ impl Document {
     }
 
     /// Put `key` in as key `index` of `set`: before the key there now, or
-    /// after the last.
-    pub fn insert_key(&mut self, set: &str, index: usize, key: &str) {
-        let Some((start, end)) = self.section(set) else { return };
+    /// after the last. False, and nothing done, without such a set.
+    pub fn insert_key(&mut self, set: &str, index: usize, key: &str) -> bool {
+        let Some((start, end)) = self.section(set) else { return false };
         let keys = self.settings(set, "key");
         let at = match keys.get(index) {
             Some(&i) => i,
             None => keys.last().map_or_else(|| self.after_last_setting(start, end), |&i| i + 1),
         };
         self.insert_line(at, &format!("key = {key}"));
+        true
     }
 
     /// Take key `index` out of `set`.
@@ -200,8 +215,9 @@ impl Document {
         }
     }
 
-    /// Move key `from` of `set` to be key `to`. Key lines trade places,
-    /// each with its comment; the lines between them stay.
+    /// Move key `from` of `set` to be key `to`, the keys between shifting
+    /// over to make room. Each key line moves with its comment; the lines
+    /// between the keys stay where they are.
     pub fn move_key(&mut self, set: &str, from: usize, to: usize) {
         let slots = self.settings(set, "key");
         if from >= slots.len() || to >= slots.len() || from == to {
@@ -239,19 +255,25 @@ impl Document {
         }
     }
 
-    /// Call section `old` `new`, unless `new` is taken. A key set renamed
-    /// takes its name along to the page and pie keys that open it and the
-    /// edges of profiles that show it.
-    pub fn rename_section(&mut self, old: &str, new: &str) {
-        let Some((start, _)) = self.section(old) else { return };
-        if old.eq_ignore_ascii_case(new) || self.section(new).is_some() {
-            return;
+    /// Call section `old` `new`, unless another section is called that
+    /// already; false, and nothing done, then or without `old`. A key set
+    /// renamed takes its name along to the page and pie keys that open it
+    /// and the edges of profiles that show it.
+    pub fn rename_section(&mut self, old: &str, new: &str) -> bool {
+        let Some((start, _)) = self.section(old) else { return false };
+        if self.section(new).is_some_and(|(other, _)| other != start) {
+            return false;
         }
+        // Within the header, before any comment: one may hold a `]` too.
         let line = &self.lines[start];
-        let (Some(open), Some(close)) = (line.find('['), line.rfind(']')) else { return };
+        let end = strip_comment(body(line)).len();
+        let (Some(open), Some(close)) = (line[..end].find('['), line[..end].rfind(']')) else { return false };
         self.lines[start] = format!("{}{new}{}", &line[..=open], &line[close..]);
 
-        let (Some(("set", old)), Some(("set", new))) = (old.split_once('.'), new.split_once('.')) else { return };
+        let (old, new) = (old.to_ascii_lowercase(), new.to_ascii_lowercase());
+        let (Some(("set", old_set)), Some(("set", new_set))) = (old.split_once('.'), new.split_once('.')) else { return true };
+        // A profile's `none` hides its edge, whatever set is called so.
+        let edge_ref = |value: &str| value.eq_ignore_ascii_case(old_set) && !value.eq_ignore_ascii_case("none");
         let headers: Vec<String> = self.lines.iter().filter_map(|l| header(l)).collect();
         for section in headers {
             let Some(("set" | "profile", _)) = section.split_once('.') else { continue };
@@ -262,19 +284,20 @@ impl Document {
                 let Some(name) = setting(line) else { continue };
                 let Some(value) = value(line) else { continue };
                 if profile {
-                    if ["left", "right", "top", "bottom"].contains(&name.as_str()) && value.eq_ignore_ascii_case(old) {
-                        self.lines[i] = with_value(line, new);
+                    if ["left", "right", "top", "bottom"].contains(&name.as_str()) && edge_ref(value) {
+                        self.lines[i] = with_value(line, new_set);
                     }
                     continue;
                 }
                 let fields: Vec<&str> = value.split('|').map(str::trim).collect();
                 let refers = name == "key"
                     && fields.get(1).is_some_and(|k| k.eq_ignore_ascii_case("page") || k.eq_ignore_ascii_case("pie"))
-                    && fields.get(2).is_some_and(|c| c.eq_ignore_ascii_case(old));
+                    && fields.get(2).is_some_and(|c| c.eq_ignore_ascii_case(old_set));
                 if refers {
-                    self.lines[i] = with_content(line, new);
+                    self.lines[i] = with_content(line, new_set);
                 }
             }
         }
+        true
     }
 }

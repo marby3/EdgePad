@@ -116,6 +116,13 @@ fn sections_come_and_go_and_a_renamed_set_takes_its_references_along() {
     let t = text(&d);
     assert!(!t.contains("[set.pad]") && !t.contains("Ctrl+Z") && !t.contains("おまけ"), "the header to the next header, comments and all: {t}");
     assert!(t.contains("theme=dark\r\n\r\n[set.extra]\r\n"), "{t}");
+
+    // A header's comment stays, `]` in it or not; a name in other case
+    // still takes its references along.
+    let mut d = doc("[set.a] ; see [b]\nkey = x | page | a\n[profile.default]\nleft = a\n");
+    assert!(d.rename_section("Set.A", "set.c"));
+    assert_eq!(text(&d), "[set.c] ; see [b]\nkey = x | page | c\n[profile.default]\nleft = c\n");
+    assert!(!d.rename_section("set.c", "profile.default"), "a name taken is refused");
 }
 
 // AC5
