@@ -22,14 +22,23 @@ use windows_sys::w;
 use crate::colors::colorref;
 use crate::panel::{key_font, key_gap};
 use crate::log::debug_log;
+use crate::panel::{self, finger_or_mouse, pointer_at, pointer_id};
 use crate::tray;
 
 /// The menu open now.
 struct Menu {
     hwnd: HWND,
-    /// The panel whose pie key opened it, and the pointer holding that key.
+    /// The panel whose pie key opened it, and the pointer holding that key:
+    /// none once a tap has left the menu open.
     panel: HWND,
-    pointer: u32,
+    pointer: Option<u32>,
+    /// The key set whose keys are its items.
+    set: String,
+    /// Whether the pointer holding the key has been out of the middle: let
+    /// go without, it was a tap.
+    left_middle: bool,
+    /// A pointer down on the menu left open, which runs the item it lifts on.
+    tap: Option<u32>,
     edge: Edge,
     /// Where the key was pressed, in screen pixels: the middle of the menu.
     at: (i32, i32),
@@ -55,6 +64,7 @@ pub struct Opening<'a> {
     pub at: (i32, i32),
     /// Side of a key in pixels at the panel's DPI.
     pub key: i32,
+    pub set: &'a str,
     pub labels: &'a [&'a str],
     pub palette: Palette,
     /// The constant alpha the panel is drawn with now.
@@ -105,7 +115,10 @@ pub unsafe fn open(o: Opening) {
         let menu = Menu {
             hwnd,
             panel: o.panel,
-            pointer: o.pointer,
+            pointer: Some(o.pointer),
+            set: o.set.into(),
+            left_middle: false,
+            tap: None,
             edge: o.edge,
             at: o.at,
             key: o.key,
@@ -125,37 +138,101 @@ pub unsafe fn open(o: Opening) {
     }
 }
 
-/// `pointer` moved to `(x, y)`: light the item it points at now.
-pub unsafe fn point(pointer: u32, (x, y): (i32, i32)) {
-    MENU.with_borrow_mut(|menu| {
-        let Some(m) = menu.as_mut().filter(|m| m.pointer == pointer) else { return };
-        let pointing = pie::item(m.edge, x - m.at.0, y - m.at.1, m.key, m.labels.len());
-        if pointing == m.pointing {
+impl Menu {
+    /// The item `(x, y)` on screen points at.
+    fn item_at(&self, (x, y): (i32, i32)) -> Option<usize> {
+        pie::item(self.edge, x - self.at.0, y - self.at.1, self.key, self.labels.len())
+    }
+
+    /// Whether `(x, y)` on screen is in the middle, where letting go cancels.
+    fn in_middle(&self, (x, y): (i32, i32)) -> bool {
+        let (dx, dy, key) = (i64::from(x - self.at.0), i64::from(y - self.at.1), i64::from(self.key));
+        4 * (dx * dx + dy * dy) < key * key
+    }
+
+    /// Light `pointing` instead of the item lit now.
+    unsafe fn light(&mut self, pointing: Option<usize>) {
+        if pointing == self.pointing {
             return;
         }
-        let was = std::mem::replace(&mut m.pointing, pointing);
+        let was = std::mem::replace(&mut self.pointing, pointing);
         // Not drawn, it stays as it was: the next move tries again.
-        if !unsafe { draw(m) } {
+        if !unsafe { draw(self) } {
             debug_log!("パイメニューを描けない");
-            m.pointing = was;
+            self.pointing = was;
             return;
         }
         tray::test_event(&match pointing {
             Some(i) => format!("pie: point {i}"),
             None => "pie: point none".into(),
         });
+    }
+}
+
+/// `pointer` moved to `(x, y)`: light the item it points at now.
+pub unsafe fn point(pointer: u32, at: (i32, i32)) {
+    MENU.with_borrow_mut(|menu| {
+        let Some(m) = menu.as_mut().filter(|m| m.pointer == Some(pointer)) else { return };
+        if !m.in_middle(at) {
+            m.left_middle = true;
+        }
+        let pointing = m.item_at(at);
+        unsafe { m.light(pointing) };
     });
 }
 
 /// Whether `pointer` holds the menu open.
 pub fn is_held_by(pointer: u32) -> bool {
-    MENU.with_borrow(|menu| menu.as_ref().is_some_and(|m| m.pointer == pointer))
+    MENU.with_borrow(|menu| menu.as_ref().is_some_and(|m| m.pointer == Some(pointer)))
 }
 
-/// Close the menu opened from `panel` by `pointer`, or by any pointer when
-/// `pointer` is none.
+/// Whether a tap left a menu from `panel` open.
+pub fn is_left_open(panel: HWND) -> bool {
+    MENU.with_borrow(|menu| menu.as_ref().is_some_and(|m| m.panel == panel && m.pointer.is_none()))
+}
+
+/// Whether `(x, y)` on screen is in the middle of a menu from `panel`.
+pub fn in_middle(panel: HWND, at: (i32, i32)) -> bool {
+    MENU.with_borrow(|menu| menu.as_ref().is_some_and(|m| m.panel == panel && m.in_middle(at)))
+}
+
+/// What letting go of a pie key comes to.
+pub enum Release {
+    /// Run item `item` of key set `set`.
+    Run { set: String, item: usize },
+    Nothing,
+}
+
+/// `pointer` holding the pie key of `panel` lifted, or was taken away
+/// (`cancelled`). On an item, it runs; in the middle or toward the edge,
+/// nothing does; either way the menu closes. A tap, never out of the
+/// middle, leaves it open. None when `pointer` held no menu.
+pub unsafe fn release(panel: HWND, pointer: u32, cancelled: bool) -> Option<Release> {
+    let tapped = MENU.with_borrow_mut(|menu| {
+        let m = menu.as_mut().filter(|m| m.panel == panel && m.pointer == Some(pointer))?;
+        let tapped = !cancelled && !m.left_middle;
+        if tapped {
+            m.pointer = None;
+        }
+        Some(tapped)
+    })?;
+    if tapped {
+        debug_log!("パイメニューを開いたままにする");
+        return Some(Release::Nothing);
+    }
+    let m = MENU.take()?;
+    debug_log!("パイメニューを閉じる");
+    unsafe { DestroyWindow(m.hwnd) };
+    Some(match m.pointing.filter(|_| !cancelled) {
+        Some(item) => Release::Run { set: m.set, item },
+        None => Release::Nothing,
+    })
+}
+
+/// Close the menu opened from `panel` by `pointer`, or whatever menu from
+/// `panel` is open when `pointer` is none.
 pub unsafe fn close(panel: HWND, pointer: Option<u32>) {
-    let menu = MENU.with_borrow_mut(|menu| menu.take_if(|m| m.panel == panel && pointer.is_none_or(|p| p == m.pointer)));
+    let menu = MENU.with_borrow_mut(|menu| menu.take_if(|m| m.panel == panel && pointer.is_none_or(|p| m.pointer == Some(p))));
     if let Some(m) = menu {
         debug_log!("パイメニューを閉じる");
         unsafe { DestroyWindow(m.hwnd) };
@@ -173,8 +250,59 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     unsafe {
         match msg {
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+            // Pointer messages are handled here and never passed on, so touch
+            // is not promoted to mouse input. Only a menu left open by a tap
+            // gets any: the finger holding a pie key is the panel's.
+            WM_POINTERDOWN => {
+                tap_down(pointer_id(wp), pointer_at(lp));
+                0
+            }
+            WM_POINTERUP => {
+                tap_up(pointer_id(wp), pointer_at(lp), (wp >> 16) as u32 & POINTER_MESSAGE_FLAG_CANCELED != 0);
+                0
+            }
+            WM_POINTERCAPTURECHANGED => {
+                tap_up(pointer_id(wp), (0, 0), true);
+                0
+            }
+            WM_POINTERUPDATE | WM_POINTERENTER | WM_POINTERLEAVE => 0,
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
+    }
+}
+
+/// A finger or the mouse went down on a menu left open: light the item it
+/// is on. Pens tap nothing.
+unsafe fn tap_down(id: u32, at: (i32, i32)) {
+    if unsafe { finger_or_mouse(id) }.is_none() {
+        return;
+    }
+    MENU.with_borrow_mut(|menu| {
+        let Some(m) = menu.as_mut().filter(|m| m.pointer.is_none()) else { return };
+        m.tap = Some(id);
+        let pointing = m.item_at(at);
+        unsafe { m.light(pointing) };
+    });
+}
+
+/// The pointer that went down on a menu left open lifted at `at`, or was
+/// taken away (`cancelled`): on an item, run it and close the menu.
+unsafe fn tap_up(id: u32, at: (i32, i32), cancelled: bool) {
+    let item = MENU.with_borrow_mut(|menu| {
+        let m = menu.as_mut().filter(|m| m.tap == Some(id))?;
+        m.tap = None;
+        let item = m.item_at(at).filter(|_| !cancelled);
+        if item.is_none() {
+            unsafe { m.light(None) };
+        }
+        item
+    });
+    let Some(item) = item else { return };
+    let Some(m) = MENU.take() else { return };
+    debug_log!("パイメニューを閉じる");
+    unsafe {
+        DestroyWindow(m.hwnd);
+        panel::run_pie_item(m.panel, &m.set, item);
     }
 }
 
