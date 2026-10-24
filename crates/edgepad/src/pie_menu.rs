@@ -273,6 +273,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 /// A finger or the mouse went down on a menu left open: light the item it
 /// is on. Pens tap nothing.
 unsafe fn tap_down(id: u32, at: (i32, i32)) {
+    debug_log!("パイメニューをポインタ {id} {at:?} が押す");
     if unsafe { finger_or_mouse(id) }.is_none() {
         return;
     }
@@ -288,6 +289,7 @@ unsafe fn tap_down(id: u32, at: (i32, i32)) {
 /// taken away (`cancelled`): on the item it went down on, run it and close
 /// the menu.
 unsafe fn tap_up(id: u32, at: (i32, i32), cancelled: bool) {
+    debug_log!("パイメニューからポインタ {id} {at:?} が離れる（取消 {cancelled}）");
     let item = MENU.with_borrow_mut(|menu| {
         let m = menu.as_mut().filter(|m| m.tap == Some(id))?;
         m.tap = None;
