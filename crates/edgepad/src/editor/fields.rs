@@ -50,13 +50,15 @@ const NOTE_W: i32 = 140;
 const RESET_W: i32 = 96;
 /// A drop-down list's height with its list open.
 const LIST_H: i32 = 160;
-const FIGURE_W: i32 = 170;
+const FIGURE_W: i32 = 160;
 /// The figure's screen, inset from its edges; and each edge's band.
 const INSET: i32 = 8;
 const BAND: i32 = 12;
-/// What the rows of the edges page take above the figure: the display rows
-/// and a gap.
+/// The rows of the edges page: the display rows, beside the figure, and the
+/// edge's, under it. A row is PITCH apart, or as little as MIN_PITCH.
+const DISPLAY_ROWS: i32 = 6;
 const EDGE_ROWS: i32 = 8;
+const MIN_PITCH: i32 = 22;
 
 const EDGES: [(Edge, &str); 4] = [(Edge::Left, "left"), (Edge::Right, "right"), (Edge::Top, "top"), (Edge::Bottom, "bottom")];
 
@@ -325,35 +327,39 @@ fn page_of(spec: &Spec) -> usize {
     }
 }
 
-/// Place the rows and the figure from `top`, `left` on: the edges page's
-/// display rows, then the figure with the edge's rows beside it; the
-/// operation rows from the top again.
-pub(super) unsafe fn place(e: &Editor, left: i32, top: i32) {
+/// Place the rows and the figure in `left`, `top` to `bottom`: on the
+/// edges page, the figure at the top, the display rows beside it, and the
+/// edge's rows under it; the operation rows from the top. Rows come closer,
+/// and lower, where the window has less room than they ask for.
+pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, bottom: i32) {
     let s = |v| scale(v, e.dpi);
     let m = s(MARGIN) / 2;
+    let gap = s(MARGIN);
+    let pitch = ((bottom - top - gap) / (DISPLAY_ROWS + EDGE_ROWS)).clamp(s(MIN_PITCH), s(PITCH));
+    let h = (pitch - s(PITCH - ROW_H)).max(s(MIN_PITCH - 4));
     let (mut display, mut edge, mut operation) = (0, 0, 0);
-    let edge_left = left + s(FIGURE_W) + s(MARGIN);
-    let edge_top = top + s(PITCH) * 6 + s(MARGIN);
+    let display_left = left + s(FIGURE_W) + s(MARGIN);
+    let edge_top = top + pitch * DISPLAY_ROWS + gap;
     for (spec, row) in ROWS.iter().zip(&e.rows) {
         let (x, y) = match spec.group {
-            D => (left, top + s(PITCH) * post(&mut display)),
-            E => (edge_left, edge_top + s(PITCH) * post(&mut edge)),
-            O => (left, top + s(PITCH) * post(&mut operation)),
+            D => (display_left, top + pitch * post(&mut display)),
+            E => (left, edge_top + pitch * post(&mut edge)),
+            O => (left, top + pitch * post(&mut operation)),
         };
         unsafe {
-            MoveWindow(row.label, x, y, s(LABEL_W), s(ROW_H), 1);
+            MoveWindow(row.label, x, y, s(LABEL_W), h, 1);
             let fx = x + s(LABEL_W) + m;
-            let h = if matches!(spec.kind, Choice(_)) { s(LIST_H) } else { s(ROW_H) };
-            let w = if matches!(spec.kind, Check | Handle) { s(ROW_H) } else { s(FIELD_W) };
-            MoveWindow(row.field, fx, y, w, h, 1);
+            let list = if matches!(spec.kind, Choice(_)) { s(LIST_H) } else { h };
+            let w = if matches!(spec.kind, Check | Handle) { h } else { s(FIELD_W) };
+            MoveWindow(row.field, fx, y, w, list, 1);
             let nx = fx + s(FIELD_W) + m;
-            MoveWindow(row.note, nx, y, s(NOTE_W), s(ROW_H), 1);
+            MoveWindow(row.note, nx, y, s(NOTE_W), h, 1);
             for part in [row.reset, row.mark] {
-                MoveWindow(part, nx + s(NOTE_W) + m, y, s(RESET_W), s(ROW_H), 1);
+                MoveWindow(part, nx + s(NOTE_W) + m, y, s(RESET_W), h, 1);
             }
         }
     }
-    unsafe { MoveWindow(e.figure, left, edge_top, s(FIGURE_W), s(PITCH) * EDGE_ROWS - s(PITCH - ROW_H), 1) };
+    unsafe { MoveWindow(e.figure, left, top, s(FIGURE_W), pitch * DISPLAY_ROWS - (pitch - h), 1) };
 }
 
 /// `n`, and one more for next time.

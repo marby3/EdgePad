@@ -288,6 +288,8 @@ fn the_figure_shows_the_four_edges_and_chooses_one() {
     let editor = open_page(&app, EDGES_PAGE);
     let figure = part(editor, DIAGRAM);
     assert!(visible(figure), "a figure of the screen");
+    let top = window_rect(figure).top;
+    assert!(top <= window_rect(field(editor, "key_size")).top, "at the top of the page");
     // Neither chosen: left is, the window opens on it.
     select_edge(&app, editor, "right");
     // Enabled bottom filled, disabled top only outlined: their middles differ.
@@ -301,8 +303,10 @@ fn the_figure_shows_the_four_edges_and_chooses_one() {
     let (on, off) = (band_at(editor, "left", 0.25), band_at(editor, "left", 0.75));
     assert!(differs(on, off), "the handle on the left edge: {on:?} {off:?}");
 
-    // By keyboard, with the figure focused: ← chooses left.
+    // By keyboard, with the figure focused: → chooses right, ← left.
     click_on(editor, figure);
+    press(VK_RIGHT);
+    assert!(within_3s(|| test_events(&app).last().map(String::as_str) == Some("settings: edge right")), "→ chose right");
     press(VK_LEFT);
     assert!(within_3s(|| test_events(&app).last().map(String::as_str) == Some("settings: edge left")), "← chose left");
     press(VK_UP);
@@ -333,7 +337,7 @@ fn the_chosen_edge_has_its_fields_under_the_figure() {
     }
     // Under the figure.
     let figure = window_rect(part(editor, DIAGRAM));
-    assert!(window_rect(field(editor, "enabled")).top >= figure.top, "beside or under the figure");
+    assert!(window_rect(field(editor, "enabled")).top >= figure.bottom, "under the figure");
 
     select_edge(&app, editor, "top");
     assert!(row_of(editor, "rows").is_some() && row_of(editor, "columns").is_none(), "top and bottom have rows");
@@ -577,6 +581,20 @@ fn a_save_that_fails_leads_to_the_line_at_fault() {
     click_link(editor, part(editor, STATUS));
     assert!(within_3s(|| heading(editor) == "キー配置"), "a key set's line: キー配置, not {:?}", heading(editor));
     assert!(status(editor).contains("行目"), "the reason stays");
+
+    // An edge's value: that edge chosen, its field focused, the line kept.
+    drop(app);
+    let bad = settings("").replace("enabled = false", "enabled = maybe");
+    let app = launch_with(Some(&bad), None);
+    let editor = open_page(&app, OPERATION_PAGE);
+    change(editor, 90);
+    save(editor);
+    assert!(within_3s(|| status(editor).contains("行目")), "the line and reason: {:?}", status(editor));
+    click_link(editor, part(editor, STATUS));
+    assert!(within_3s(|| heading(editor) == "辺と表示"), "its page");
+    assert!(within_3s(|| focus_of(editor) == field(editor, "enabled")), "the top edge's enabled has the focus");
+    assert!(test_events(&app).iter().any(|e| e == "settings: edge top"), "the top edge chosen");
+    assert!(status(editor).contains("行目"), "the line stays: {:?}", status(editor));
 }
 
 const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";

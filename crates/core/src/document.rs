@@ -194,7 +194,13 @@ impl Document {
     /// is in, and the setting on it, by their lower-case names.
     pub fn place(&self, line: usize) -> (Option<String>, Option<String>) {
         let Some(i) = line.checked_sub(1).filter(|&i| i < self.lines.len()) else { return (None, None) };
-        let section = (0..=i).rev().find_map(|j| header(&self.lines[j]));
+        // A header left unclosed starts a section too, as the parser reads it.
+        let opened = |line: &str| {
+            let content = strip_comment(body(line)).trim();
+            let name = content.strip_prefix('[')?;
+            Some(name.trim_end_matches(']').trim().to_ascii_lowercase())
+        };
+        let section = (0..=i).rev().find_map(|j| opened(&self.lines[j]));
         (section, setting(&self.lines[i]))
     }
 

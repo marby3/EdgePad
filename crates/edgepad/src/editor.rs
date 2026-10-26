@@ -80,7 +80,7 @@ const CANCEL: usize = 304;
 const CLIENT_W: i32 = 900;
 const CLIENT_H: i32 = 660;
 /// The least the client area may be: the sidebar, and room beside it for
-/// the rows of 辺と表示, the figure beside the edge's.
+/// the rows of 辺と表示, the display rows beside the figure.
 const MIN_W: i32 = 900;
 const MIN_H: i32 = 640;
 const MARGIN: i32 = 12;
@@ -578,7 +578,11 @@ unsafe fn open() -> bool {
             let list = LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT;
             let sidebar = part(hwnd, w!("ListBox"), "", SIDEBAR, WS_TABSTOP | list as u32);
             let heading = part(hwnd, w!("Static"), PAGES[0], HEADING, SS_NOPREFIX);
-            let status = part(hwnd, w!("SysLink"), "", STATUS, 0);
+            // A link, of comctl32 v6; plain text without it.
+            let mut status = part(hwnd, w!("SysLink"), "", STATUS, 0);
+            if status.is_null() {
+                status = part(hwnd, w!("Static"), "", STATUS, SS_NOPREFIX);
+            }
             let shown = path.display().to_string();
             let path_part = part(hwnd, w!("Static"), &shown, PATH, SS_NOPREFIX | SS_CENTERIMAGE | SS_PATHELLIPSIS);
             // The rows, between the sidebar and the bottom row, for the Tab
@@ -724,8 +728,10 @@ unsafe fn lay_out() {
         let left = m + s(SIDEBAR_W) + 2 * m;
         let width = (client.right - m - left).max(0);
         MoveWindow(heading, left, m, width, s(HEADING_H), 1);
+        // The rows, down to the status line, a row of answers left room for.
+        let rows_bottom = side_bottom - bh - m - s(STATUS_H) - m;
         with_editor(|e| {
-            fields::place(e, left, m + s(HEADING_H) + m);
+            fields::place(e, left, m + s(HEADING_H) + m, rows_bottom);
             fields::show(e);
         });
 
@@ -778,9 +784,11 @@ fn set_status(e: &Editor, text: &str) {
 /// Put `text` in the status line, `link` (its start) as a link: one the
 /// Tab key stops at then.
 fn show_status(e: &Editor, text: &str, link: Option<&str>) {
+    // Text from the file must not read as the link's markup.
+    let plain = |t: &str| t.replace('<', "＜").replace('>', "＞");
     let text = match link {
-        Some(link) => format!("<a>{link}</a>{text}"),
-        None => text.into(),
+        Some(link) => format!("<a>{}</a>{}", plain(link), plain(text)),
+        None => plain(text),
     };
     let text = wide(&text);
     unsafe {
@@ -814,6 +822,15 @@ unsafe fn go_to_fault() {
     .flatten() else {
         return;
     };
+    // Showing the edge's rows may tell of a value they cannot read: the
+    // status line still leads to the line at fault, as it did.
+    let Some((status, kept, line)) = with_editor(|e| {
+        let mut text = [0u16; 1024];
+        let n = unsafe { GetWindowTextW(e.status, text.as_mut_ptr(), 1024) };
+        (e.status, text[..n.max(0) as usize].to_vec(), e.fault.get())
+    }) else {
+        return;
+    };
     unsafe {
         show_page(page);
         if let Some(edge) = edge.filter(|_| row.is_some()) {
@@ -822,6 +839,10 @@ unsafe fn go_to_fault() {
         if let Some(field) = row.and_then(|i| with_editor(|e| fields::field(e, i))) {
             SetFocus(field);
         }
+        let kept: Vec<u16> = kept.into_iter().chain([0]).collect();
+        SetWindowTextW(status, kept.as_ptr());
+        SetWindowLongW(status, GWL_STYLE, (GetWindowLongW(status, GWL_STYLE) as u32 | WS_TABSTOP) as i32);
+        with_editor(|e| e.fault.set(line));
     }
 }
 
@@ -1344,8 +1365,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 PostQuitMessage(0);
                 DPI.set(0);
                 if let Some(p) = PAINT.take() {
-                    DeleteObject(p.background);
-                    DeleteObject(p.sidebar);
+                    p.delete();
                 }
                 TAPPED.set((0, null_mut()));
                 if let Some(e) = EDITOR.take() {
@@ -1404,8 +1424,13 @@ unsafe fn wheel(hwnd: HWND, msg: &MSG) -> bool {
         if IsChild(hwnd, under) == 0 {
             return false;
         }
+        // Over the window, the wheel steps only a number under the cursor:
+        // nothing else, the focused part's choice not either.
         let notches = (msg.wParam >> 16 & 0xFFFF) as i16 as i32 / WHEEL_DELTA as i32;
-        notches != 0 && fields::step(under, notches, shift())
+        if notches != 0 {
+            fields::step(under, notches, shift());
+        }
+        true
     }
 }
 
