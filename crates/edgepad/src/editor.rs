@@ -42,7 +42,8 @@ use windows_sys::Win32::System::ApplicationInstallationAndServicing::{
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_RETURN, VK_SHIFT, VK_TAB,
+    GetAsyncKeyState, GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LBUTTON, VK_RETURN, VK_SHIFT,
+    VK_TAB, VK_UP,
 };
 use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -52,6 +53,8 @@ use crate::colors::{self, colorref};
 use crate::log::debug_log;
 use crate::panel::{pointer_at, pointer_id};
 use crate::{settings, tray, watch};
+
+mod fields;
 
 /// The window's class: also how the running EdgePad and the tests find it.
 pub const CLASS: *const u16 = w!("EdgePadSettings");
@@ -74,12 +77,12 @@ const DISCARD: usize = 303;
 const CANCEL: usize = 304;
 
 /// Sizes in logical pixels (96 DPI).
-const CLIENT_W: i32 = 760;
-const CLIENT_H: i32 = 520;
+const CLIENT_W: i32 = 900;
+const CLIENT_H: i32 = 660;
 /// The least the client area may be: the sidebar, and room beside it for
-/// three answers in a row.
-const MIN_W: i32 = 680;
-const MIN_H: i32 = 400;
+/// the rows of 辺と表示, the display rows beside the figure.
+const MIN_W: i32 = 900;
+const MIN_H: i32 = 640;
 const MARGIN: i32 = 12;
 const SIDEBAR_W: i32 = 168;
 const ITEM_H: i32 = 36;
@@ -92,14 +95,29 @@ const BUTTON_H: i32 = 30;
 const BUTTON_W: i32 = 120;
 const ANSWER_W: i32 = 136;
 
-/// Styles of Win32_System_SystemServices and Win32_UI_Controls, features
-/// taken for these alone otherwise.
+/// The figure asks for edge wParam to be chosen; a field, id wParam, to be
+/// taken once the window is free.
+const WM_CHOOSE_EDGE: u32 = WM_APP + 1;
+const WM_COMMIT: u32 = WM_APP + 2;
+
+/// Styles, messages and notices of Win32_System_SystemServices and
+/// Win32_UI_Controls, features taken for these alone otherwise.
 const SS_NOPREFIX: u32 = 0x80;
 const SS_CENTERIMAGE: u32 = 0x200;
 const SS_PATHELLIPSIS: u32 = 0x8000;
 const ODS_SELECTED: u32 = 0x1;
 const ODS_FOCUS: u32 = 0x10;
 const ODS_NOFOCUSRECT: u32 = 0x200;
+const NM_CLICK: u32 = -2i32 as u32;
+const NM_RETURN: u32 = -4i32 as u32;
+
+/// NMHDR, of Win32_UI_Controls.
+#[repr(C)]
+struct NotifyHeader {
+    from: HWND,
+    id: usize,
+    code: u32,
+}
 
 /// DRAWITEMSTRUCT, of Win32_UI_Controls.
 #[repr(C)]
@@ -152,16 +170,20 @@ struct Look {
     /// The page chosen in the sidebar: Windows's accent.
     accent: Rgb,
     accent_text: Rgb,
+    /// Inside a field, and inside one showing a value turned away.
+    field: Rgb,
+    wrong: Rgb,
 }
 
 fn look() -> Look {
     let dark = colors::apps_dark();
-    let (background, sidebar, text) = match dark {
-        true => ([0x20, 0x20, 0x20], [0x2B, 0x2B, 0x2B], [0xF0, 0xF0, 0xF0]),
-        false => ([0xF3, 0xF3, 0xF3], [0xE6, 0xE6, 0xE6], [0x1A, 0x1A, 0x1A]),
+    let (background, sidebar, text, field, wrong) = match dark {
+        true => ([0x20, 0x20, 0x20], [0x2B, 0x2B, 0x2B], [0xF0, 0xF0, 0xF0], [0x2D, 0x2D, 0x2D], [0x5C, 0x24, 0x24]),
+        false => ([0xF3, 0xF3, 0xF3], [0xE6, 0xE6, 0xE6], [0x1A, 0x1A, 0x1A], [0xFF, 0xFF, 0xFF], [0xF8, 0xC8, 0xC8]),
     };
     let accent = colors::palette(Theme::Auto, Accent::Auto);
-    Look { dark, background, sidebar, text, dim: mix(text, background, 96), accent: accent.held, accent_text: accent.held_text }
+    let dim = mix(text, background, 96);
+    Look { dark, background, sidebar, text, dim, accent: accent.held, accent_text: accent.held_text, field, wrong }
 }
 
 /// `a` mixed with `b`, `part` of 256 of `b`.
@@ -190,6 +212,15 @@ struct Editor {
     open_text: HWND,
     save: HWND,
     answers: Vec<HWND>,
+    /// The page shown, of PAGES.
+    page: usize,
+    rows: Vec<fields::Row>,
+    figure: HWND,
+    /// The edge the figure has chosen, of `fields::EDGES`.
+    edge: usize,
+    /// The line of the file the last save failed on, while the status line
+    /// leads to it.
+    fault: Cell<Option<usize>>,
     /// The part that had the focus when the window was last left, to have
     /// it again on coming back.
     focus: HWND,
@@ -209,8 +240,31 @@ struct Paint {
     look: Look,
     background: HBRUSH,
     sidebar: HBRUSH,
+    field: HBRUSH,
+    wrong: HBRUSH,
     font: HFONT,
     path: HWND,
+}
+
+impl Paint {
+    fn new(look: Look, font: HFONT, path: HWND) -> Paint {
+        let brush = |c| unsafe { CreateSolidBrush(colorref(c)) };
+        Paint {
+            look,
+            background: brush(look.background),
+            sidebar: brush(look.sidebar),
+            field: brush(look.field),
+            wrong: brush(look.wrong),
+            font,
+            path,
+        }
+    }
+
+    fn delete(&self) {
+        for b in [self.background, self.sidebar, self.field, self.wrong] {
+            unsafe { DeleteObject(b) };
+        }
+    }
 }
 
 thread_local! {
@@ -332,6 +386,21 @@ unsafe fn button_theme(buttons: &[HWND], dark: bool) {
     }
 }
 
+/// Draw edit controls and drop-down lists dark or light: dark, in the
+/// theme of the common file dialog's ("DarkMode_CFD", not documented).
+unsafe fn field_theme(fields: &[HWND], dark: bool) {
+    type SetTheme = unsafe extern "system" fn(HWND, *const u16, *const u16) -> i32;
+    unsafe {
+        let Some((uxtheme, f)) = system_proc(w!("uxtheme.dll"), b"SetWindowTheme\0") else { return };
+        let set: SetTheme = std::mem::transmute(f);
+        let name = if dark { w!("DarkMode_CFD") } else { null() };
+        for &field in fields {
+            set(field, name, null());
+        }
+        FreeLibrary(uxtheme);
+    }
+}
+
 /// The activation context of the manifest embedded as resource 2 (see
 /// build.rs), which asks for comctl32 v6.
 unsafe fn make_context() -> HANDLE {
@@ -378,6 +447,13 @@ unsafe fn register() -> bool {
             debug_log!("設定画面の窓クラスを登録できない");
             return false;
         }
+        wc.lpfnWndProc = Some(fields::figure_proc);
+        wc.hCursor = LoadCursorW(null_mut(), IDC_HAND);
+        wc.lpszClassName = w!("EdgePadSettingsEdges");
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            debug_log!("設定画面の図の窓クラスを登録できない");
+            return false;
+        }
     }
     REGISTERED.set(true);
     true
@@ -408,21 +484,23 @@ fn read_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 unsafe fn restyle() {
     let now = look();
     let Some(old) = PAINT.get().filter(|p| p.look != now) else { return };
-    let Some((hwnd, buttons)) = with_editor(|e| {
-        let buttons: Vec<HWND> = [e.open_text, e.save].into_iter().chain(e.answers.iter().copied()).collect();
-        (e.hwnd, buttons)
+    let Some((hwnd, buttons, typed)) = with_editor(|e| {
+        let (typed, theirs) = fields::themed(e);
+        let buttons: Vec<HWND> = [e.open_text, e.save].into_iter().chain(e.answers.iter().copied()).chain(theirs).collect();
+        (e.hwnd, buttons, typed)
     }) else {
         return;
     };
     debug_log!("設定画面: 配色の変更");
     unsafe {
-        let background = CreateSolidBrush(colorref(now.background));
-        let sidebar = CreateSolidBrush(colorref(now.sidebar));
-        PAINT.set(Some(Paint { look: now, background, sidebar, ..old }));
-        DeleteObject(old.background);
-        DeleteObject(old.sidebar);
+        PAINT.set(Some(Paint::new(now, old.font, old.path)));
+        old.delete();
         title_bar(hwnd, now.dark);
         button_theme(&buttons, now.dark);
+        field_theme(&typed, now.dark);
+        for part in typed {
+            RedrawWindow(part, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+        }
         RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
     }
 }
@@ -500,14 +578,22 @@ unsafe fn open() -> bool {
             let list = LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT;
             let sidebar = part(hwnd, w!("ListBox"), "", SIDEBAR, WS_TABSTOP | list as u32);
             let heading = part(hwnd, w!("Static"), PAGES[0], HEADING, SS_NOPREFIX);
-            let status = part(hwnd, w!("Static"), "", STATUS, SS_NOPREFIX);
+            // A link, of comctl32 v6; plain text without it.
+            let mut status = part(hwnd, w!("SysLink"), "", STATUS, 0);
+            if status.is_null() {
+                status = part(hwnd, w!("Static"), "", STATUS, SS_NOPREFIX);
+            }
             let shown = path.display().to_string();
             let path_part = part(hwnd, w!("Static"), &shown, PATH, SS_NOPREFIX | SS_CENTERIMAGE | SS_PATHELLIPSIS);
+            // The rows, between the sidebar and the bottom row, for the Tab
+            // key's order.
+            let rows = fields::make(hwnd);
             let open_text = button(hwnd, "テキストで開く", OPEN_TEXT);
             let save = button(hwnd, "保存", SAVE);
-            [sidebar, heading, status, path_part, open_text, save]
+            ([sidebar, heading, status, path_part, open_text, save], rows)
         });
-        if parts.iter().any(|p| p.is_null()) {
+        let (parts, rows) = parts;
+        let Some((rows, figure)) = rows.filter(|_| !parts.iter().any(|p| p.is_null())) else {
             debug_log!("設定画面の部品を作れない");
             DestroyWindow(hwnd);
             if context != INVALID_HANDLE_VALUE {
@@ -515,7 +601,7 @@ unsafe fn open() -> bool {
             }
             DPI.set(0);
             return false;
-        }
+        };
         let [sidebar, heading, status, path_part, open_text, save] = parts;
         for page in PAGES {
             let text = wide(page);
@@ -539,6 +625,11 @@ unsafe fn open() -> bool {
             open_text,
             save,
             answers: Vec::new(),
+            page: 0,
+            rows,
+            figure,
+            edge: 0,
+            fault: Cell::new(None),
             focus: sidebar,
             marked: false,
             font,
@@ -546,17 +637,14 @@ unsafe fn open() -> bool {
             dpi,
             context,
         };
-        PAINT.set(Some(Paint {
-            look,
-            background: CreateSolidBrush(colorref(look.background)),
-            sidebar: CreateSolidBrush(colorref(look.sidebar)),
-            font,
-            path: path_part,
-        }));
+        PAINT.set(Some(Paint::new(look, font, path_part)));
         set_fonts(&editor);
+        let (typed, buttons) = fields::themed(&editor);
         EDITOR.set(Some(editor));
+        with_editor(|e| fields::refresh(e));
         title_bar(hwnd, look.dark);
-        button_theme(&[open_text, save], look.dark);
+        button_theme(&[open_text, save].into_iter().chain(buttons).collect::<Vec<_>>(), look.dark);
+        field_theme(&typed, look.dark);
         // The focus shows from the start, not only once a key is pressed.
         SendMessageW(hwnd, WM_CHANGEUISTATE, (UIS_CLEAR | UISF_HIDEFOCUS << 16) as usize, 0);
         debug_log!("設定画面を開く");
@@ -572,8 +660,9 @@ unsafe fn open() -> bool {
 /// Give the parts the window's fonts, and the sidebar's items their height.
 unsafe fn set_fonts(e: &Editor) {
     unsafe {
-        for p in [e.sidebar, e.status, e.path_part, e.open_text, e.save].iter().chain(&e.answers) {
-            SendMessageW(*p, WM_SETFONT, e.font as WPARAM, 1);
+        let all = [e.sidebar, e.status, e.path_part, e.open_text, e.save].into_iter().chain(e.answers.iter().copied());
+        for p in all.chain(fields::parts(e)) {
+            SendMessageW(p, WM_SETFONT, e.font as WPARAM, 1);
         }
         SendMessageW(e.heading, WM_SETFONT, e.heading_font as WPARAM, 1);
         SendMessageW(e.sidebar, LB_SETITEMHEIGHT, 0, scale(ITEM_H, e.dpi) as LPARAM);
@@ -639,6 +728,12 @@ unsafe fn lay_out() {
         let left = m + s(SIDEBAR_W) + 2 * m;
         let width = (client.right - m - left).max(0);
         MoveWindow(heading, left, m, width, s(HEADING_H), 1);
+        // The rows, down to the status line, a row of answers left room for.
+        let rows_bottom = side_bottom - bh - m - s(STATUS_H) - m;
+        with_editor(|e| {
+            fields::place(e, left, m + s(HEADING_H) + m, rows_bottom);
+            fields::show(e);
+        });
 
         // The answers right aligned in their row; the status line above.
         let mut above = side_bottom;
@@ -663,7 +758,13 @@ unsafe fn lay_out() {
 
 /// Show page `index`, under its heading, and choose it in the sidebar.
 unsafe fn show_page(index: usize) {
-    let Some((sidebar, heading)) = with_editor(|e| (e.sidebar, e.heading)) else { return };
+    let Some((sidebar, heading)) = with_editor(|e| {
+        e.page = index;
+        unsafe { fields::show(e) };
+        (e.sidebar, e.heading)
+    }) else {
+        return;
+    };
     unsafe {
         if SendMessageW(sidebar, LB_GETCURSEL, 0, 0) != index as LRESULT {
             SendMessageW(sidebar, LB_SETCURSEL, index, 0);
@@ -674,9 +775,87 @@ unsafe fn show_page(index: usize) {
     tray::test_event(&format!("settings: page {}", PAGES[index]));
 }
 
+/// Say `text` in the status line.
 fn set_status(e: &Editor, text: &str) {
-    let text = wide(text);
-    unsafe { SetWindowTextW(e.status, text.as_ptr()) };
+    e.fault.set(None);
+    show_status(e, text, None);
+}
+
+/// Put `text` in the status line, `link` (its start) as a link: one the
+/// Tab key stops at then.
+fn show_status(e: &Editor, text: &str, link: Option<&str>) {
+    // Text from the file must not read as the link's markup.
+    let plain = |t: &str| t.replace('<', "＜").replace('>', "＞");
+    let text = match link {
+        Some(link) => format!("<a>{}</a>{}", plain(link), plain(text)),
+        None => plain(text),
+    };
+    let text = wide(&text);
+    unsafe {
+        SetWindowTextW(e.status, text.as_ptr());
+        let style = GetWindowLongW(e.status, GWL_STYLE) as u32;
+        let style = if link.is_some() { style | WS_TABSTOP } else { style & !WS_TABSTOP };
+        SetWindowLongW(e.status, GWL_STYLE, style as i32);
+    }
+}
+
+/// The status line says only the question asked now, if any.
+fn ask_reason(e: &Editor) {
+    set_status(e, e.asked.map_or("", |a| question(e, a)));
+}
+
+/// Say why a save failed on line `line`: as a link to it, the question
+/// asked now, if any, on the line below.
+fn tell_fault(e: &Editor, reason: &str, line: usize) {
+    let rest = e.asked.map_or_else(String::new, |a| format!("\n{}", question(e, a)));
+    show_status(e, &rest, Some(reason));
+    e.fault.set(Some(line));
+}
+
+/// The status line leading to the line a save failed on was pressed: show
+/// the page of that line, and the field of its setting, if it has one.
+unsafe fn go_to_fault() {
+    let Some((page, row, edge)) = with_editor(|e| {
+        let (section, name) = e.doc.place(e.fault.get()?);
+        Some(fields::locate(section.as_deref(), name.as_deref()))
+    })
+    .flatten() else {
+        return;
+    };
+    // Showing the edge's rows may tell of a value they cannot read: the
+    // status line still leads to the line at fault, as it did.
+    let Some((status, kept, line)) = with_editor(|e| {
+        let mut text = [0u16; 1024];
+        let n = unsafe { GetWindowTextW(e.status, text.as_mut_ptr(), 1024) };
+        (e.status, text[..n.max(0) as usize].to_vec(), e.fault.get())
+    }) else {
+        return;
+    };
+    unsafe {
+        show_page(page);
+        if let Some(edge) = edge.filter(|_| row.is_some()) {
+            fields::choose_edge(edge);
+        }
+        if let Some(field) = row.and_then(|i| with_editor(|e| fields::field(e, i))) {
+            SetFocus(field);
+        }
+        let kept: Vec<u16> = kept.into_iter().chain([0]).collect();
+        SetWindowTextW(status, kept.as_ptr());
+        SetWindowLongW(status, GWL_STYLE, (GetWindowLongW(status, GWL_STYLE) as u32 | WS_TABSTOP) as i32);
+        with_editor(|e| e.fault.set(line));
+    }
+}
+
+/// Enter what is typed in the field with the focus, if any: before
+/// saving, or closing.
+unsafe fn enter_focused() {
+    unsafe {
+        let focus = GetFocus();
+        let id = GetDlgCtrlID(focus) as usize;
+        if with_editor(|e| fields::is_typed(e, focus)) == Some(true) {
+            fields::commit(id, false);
+        }
+    }
 }
 
 /// Show whether the window holds changes it has not saved: a ● before the
@@ -755,11 +934,12 @@ fn first_error(errors: &[config::Error]) -> String {
 }
 
 /// Save the window's file if the parser reads it; else, writing nothing,
-/// the reason why.
-fn save(e: &mut Editor) -> Result<(), String> {
+/// the reason why, and the line at fault if the parser named one.
+fn save(e: &mut Editor) -> Result<(), (String, Option<usize>)> {
     let bytes = e.doc.to_bytes();
     if let Err(errors) = config::parse(&bytes) {
-        return Err(format!("保存できません: {}", first_error(&errors)));
+        let line = errors.first().map(|e| e.line).filter(|&l| l > 0);
+        return Err((format!("保存できません: {}", first_error(&errors)), line));
     }
     // Written beside it, in a file of its own made for this, and then put
     // in its place: a write that fails part way leaves the file as it was,
@@ -780,7 +960,7 @@ fn save(e: &mut Editor) -> Result<(), String> {
         moved
     })();
     if let Err(why) = written {
-        return Err(format!("保存できません: {why}"));
+        return Err((format!("保存できません: {why}"), None));
     }
     debug_log!("設定画面から保存");
     e.base = bytes.clone();
@@ -828,6 +1008,8 @@ unsafe fn may_exit() -> bool {
     if !is_open() {
         return true;
     }
+    // What is typed and not yet entered counts too.
+    unsafe { enter_focused() };
     // Open but in use: not now, rather than past changes.
     let Some((hwnd, unsaved)) = with_editor(|e| (e.hwnd, unsaved(e))) else { return false };
     if !unsaved {
@@ -841,9 +1023,20 @@ unsafe fn may_exit() -> bool {
     false
 }
 
+/// Say why a save failed: leading to its line, if it has one.
+fn tell_failed(e: &Editor, reason: &str, line: Option<usize>) {
+    match line {
+        Some(line) => tell_fault(e, reason, line),
+        None => tell(e, reason),
+    }
+}
+
 /// A button was pressed.
 unsafe fn command(id: usize) {
     unsafe {
+        if matches!(id, SAVE | SAVE_AND_CLOSE) {
+            enter_focused();
+        }
         if id == OPEN_TEXT {
             if let Some((hwnd, path)) = with_editor(|e| (e.hwnd, e.path.clone())) {
                 tray::open_file(hwnd, &path);
@@ -867,8 +1060,8 @@ unsafe fn command(id: usize) {
                         said = if over { "外の変更を上書きして保存しました" } else { "保存しました" };
                         true
                     }
-                    Err(reason) => {
-                        tell(e, &reason);
+                    Err((reason, line)) => {
+                        tell_failed(e, &reason, line);
                         false
                     }
                 }
@@ -890,6 +1083,7 @@ unsafe fn command(id: usize) {
                         e.base = bytes.clone();
                         e.known = bytes;
                         mark_unsaved(e);
+                        fields::refresh(e);
                         said = "読み直しました";
                         true
                     }
@@ -913,7 +1107,7 @@ unsafe fn command(id: usize) {
             SAVE_AND_CLOSE => {
                 match save(e) {
                     Ok(()) => close = true,
-                    Err(reason) => tell(e, &reason),
+                    Err((reason, line)) => tell_failed(e, &reason, line),
                 }
                 false
             }
@@ -935,7 +1129,12 @@ unsafe fn command(id: usize) {
             if ask_again {
                 ask(Some(Ask::Changed));
             } else {
-                with_editor(|e| set_status(e, said));
+                // Saved with a field's value turned away: that value is not
+                // in the file, which the status line goes on saying.
+                with_editor(|e| match fields::standing_reason(e).filter(|_| id == SAVE) {
+                    Some(reason) => set_status(e, &format!("{said}\n保存していない値があります: {reason}")),
+                    None => set_status(e, said),
+                });
             }
         }
     }
@@ -980,7 +1179,10 @@ unsafe fn part_colours(dc: HDC, part: HWND) -> LRESULT {
         let n = GetClassNameW(part, name.as_mut_ptr(), 16);
         String::from_utf16_lossy(&name[..n.max(0) as usize])
     };
+    let paint = PAINT.get();
     let (ink, fill, brush) = match class.as_str() {
+        "Edit" | "ComboLBox" if fields::is_wrong(part) => (look.text, look.wrong, paint.map_or(brush, |p| p.wrong)),
+        "Edit" | "ComboLBox" => (look.text, look.field, paint.map_or(brush, |p| p.field)),
         "ListBox" => (look.text, look.sidebar, side),
         _ if part == path => (look.dim, look.background, brush),
         _ => (look.text, look.background, brush),
@@ -1008,7 +1210,26 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 1
             }
-            WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLORLISTBOX => part_colours(wp as HDC, lp as HWND),
+            WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLORLISTBOX | WM_CTLCOLOREDIT => part_colours(wp as HDC, lp as HWND),
+            WM_NOTIFY => {
+                let header = &*(lp as *const NotifyHeader);
+                if header.id == STATUS && matches!(header.code, NM_CLICK | NM_RETURN) {
+                    go_to_fault();
+                }
+                0
+            }
+            WM_CHOOSE_EDGE => {
+                if wp < 4 {
+                    fields::choose_edge(wp);
+                }
+                0
+            }
+            WM_COMMIT => {
+                if fields::is_field(wp) {
+                    fields::commit(wp, false);
+                }
+                0
+            }
             WM_DRAWITEM if wp == SIDEBAR => {
                 draw_item(&*(lp as *const DrawItem));
                 1
@@ -1072,6 +1293,29 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 0
             }
+            WM_COMMAND if fields::is_field(wp & 0xFFFF) => {
+                let id = wp & 0xFFFF;
+                match (wp >> 16 & 0xFFFF) as u32 {
+                    // Left: what was typed is entered, once the window is
+                    // free if it is not now.
+                    EN_KILLFOCUS => {
+                        if !fields::commit(id, false) {
+                            PostMessageW(hwnd, WM_COMMIT, id, 0);
+                        }
+                    }
+                    CBN_SELCHANGE | BN_CLICKED => {
+                        fields::commit(id, true);
+                    }
+                    _ => {}
+                }
+                0
+            }
+            WM_COMMAND if fields::is_reset(wp & 0xFFFF) => {
+                if (wp >> 16 & 0xFFFF) as u32 == BN_CLICKED {
+                    fields::reset(wp & 0xFFFF);
+                }
+                0
+            }
             WM_COMMAND if (wp >> 16 & 0xFFFF) as u32 == BN_CLICKED => {
                 command(wp & 0xFFFF);
                 0
@@ -1101,6 +1345,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // outside gives way: the answer to this one settles it too).
             // Nothing of the window's to lose, it just closes.
             WM_CLOSE => {
+                enter_focused();
                 match with_editor(|e| unsaved(e)) {
                     Some(true) => ask(Some(Ask::Closing)),
                     Some(false) => {
@@ -1120,8 +1365,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 PostQuitMessage(0);
                 DPI.set(0);
                 if let Some(p) = PAINT.take() {
-                    DeleteObject(p.background);
-                    DeleteObject(p.sidebar);
+                    p.delete();
                 }
                 TAPPED.set((0, null_mut()));
                 if let Some(e) = EDITOR.take() {
@@ -1139,6 +1383,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             _ if msg == test_set() => {
                 with_editor(|e| {
                     e.doc.set_value("general", "opacity", Some(&wp.to_string()));
+                    fields::refresh(e);
                     mark_unsaved(e);
                 });
                 0
@@ -1153,7 +1398,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 pub unsafe fn take(msg: &MSG) -> bool {
     let keyed = (WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message);
     let pointed = matches!(msg.message, WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP);
-    if !keyed && !pointed {
+    if !keyed && !pointed && msg.message != WM_MOUSEWHEEL {
         return false;
     }
     let Some(hwnd) = EDITOR.with(|e| e.try_borrow().ok().and_then(|e| e.as_ref().map(|e| e.hwnd))) else {
@@ -1163,7 +1408,29 @@ pub unsafe fn take(msg: &MSG) -> bool {
         if msg.hwnd != hwnd && IsChild(hwnd, msg.hwnd) == 0 {
             return false;
         }
+        if msg.message == WM_MOUSEWHEEL {
+            return wheel(hwnd, msg);
+        }
         if keyed { key(hwnd, msg) } else { finger(hwnd, msg) }
+    }
+}
+
+/// The wheel turned: it steps the number in the field under the cursor,
+/// focused or not. Whether it did.
+unsafe fn wheel(hwnd: HWND, msg: &MSG) -> bool {
+    unsafe {
+        let at = POINT { x: (msg.lParam & 0xFFFF) as i16 as i32, y: (msg.lParam >> 16 & 0xFFFF) as i16 as i32 };
+        let under = WindowFromPoint(at);
+        if IsChild(hwnd, under) == 0 {
+            return false;
+        }
+        // Over the window, the wheel steps only a number under the cursor:
+        // nothing else, the focused part's choice not either.
+        let notches = (msg.wParam >> 16 & 0xFFFF) as i16 as i32 / WHEEL_DELTA as i32;
+        if notches != 0 {
+            fields::step(under, notches, shift());
+        }
+        true
     }
 }
 
@@ -1232,21 +1499,37 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
         if msg.message == WM_KEYDOWN {
             let focus = GetFocus();
             let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
+            let typed = with_editor(|e| fields::is_typed(e, focus)) == Some(true);
             let took = match msg.wParam as u16 {
                 VK_TAB if !ctrl => {
                     let from = if IsChild(hwnd, focus) != 0 { focus } else { null_mut() };
-                    let next = GetNextDlgTabItem(hwnd, from, (GetKeyState(VK_SHIFT as i32) < 0).into());
+                    let next = GetNextDlgTabItem(hwnd, from, (shift()).into());
                     if !next.is_null() {
                         SetFocus(next);
                     }
                     true
                 }
-                VK_ESCAPE => {
+                // An open drop-down closes on Esc, as its own.
+                VK_ESCAPE if SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) == 0 => {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
                     true
                 }
                 k if k == b'S' as u16 && ctrl => {
+                    enter_focused();
                     PostMessageW(hwnd, WM_COMMAND, SAVE, 0);
+                    true
+                }
+                k if k == b'A' as u16 && ctrl && typed => {
+                    SendMessageW(focus, fields::EM_SETSEL, 0, -1);
+                    true
+                }
+                VK_RETURN if typed => {
+                    fields::commit(GetDlgCtrlID(focus) as usize, false);
+                    true
+                }
+                VK_UP | VK_DOWN if typed => {
+                    let delta = if msg.wParam as u16 == VK_UP { 1 } else { -1 };
+                    fields::step(focus, delta, shift());
                     true
                 }
                 VK_RETURN if GetParent(focus) == hwnd && is_button(focus) => {
@@ -1262,6 +1545,11 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
         TranslateMessage(msg);
     }
     false
+}
+
+/// Whether Shift is held, as the message being handled saw it.
+fn shift() -> bool {
+    unsafe { GetKeyState(VK_SHIFT as i32) < 0 }
 }
 
 /// Whether `hwnd` is a button.
