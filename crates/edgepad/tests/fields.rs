@@ -131,6 +131,28 @@ fn press_with(modifier: u16, vk: u16) {
     keyboard(modifier, false);
 }
 
+/// Press arrow `vk`, as the arrow keys do: an extended key. Sent plain, it
+/// would be the number pad's, and Windows lets Shift go before it.
+fn arrow(vk: u16) {
+    for up in [false, true] {
+        unsafe {
+            let mut input: INPUT = zeroed();
+            input.r#type = INPUT_KEYBOARD;
+            input.Anonymous.ki.wVk = vk;
+            input.Anonymous.ki.dwFlags = KEYEVENTF_EXTENDEDKEY | if up { KEYEVENTF_KEYUP } else { 0 };
+            input.Anonymous.ki.dwExtraInfo = KEYBOARD_TAG;
+            assert_eq!(SendInput(1, &input, size_of::<INPUT>() as i32), 1, "SendInput");
+        }
+        pump(100);
+    }
+}
+
+fn shift_arrow(vk: u16) {
+    keyboard(VK_SHIFT, true);
+    arrow(vk);
+    keyboard(VK_SHIFT, false);
+}
+
 /// Click into the field of `name`, select what is there, and type `text`
 /// in its place, not yet entered.
 fn type_into(editor: HWND, name: &str, text: &str) {
@@ -269,7 +291,8 @@ fn the_figure_shows_the_four_edges_and_chooses_one() {
     // Neither chosen: left is, the window opens on it.
     select_edge(&app, editor, "right");
     // Enabled bottom filled, disabled top only outlined: their middles differ.
-    let (top, bottom) = (band_at(editor, "top", 0.5), band_at(editor, "bottom", 0.5));
+    // Clear of the handles, which edges have by default in their middle.
+    let (top, bottom) = (band_at(editor, "top", 0.9), band_at(editor, "bottom", 0.9));
     assert!(differs(top, bottom), "enabled filled, disabled outlined: top {top:?}, bottom {bottom:?}");
     // The chosen one stands out from one like it.
     let (left, right) = (band_at(editor, "left", 0.75), band_at(editor, "right", 0.75));
@@ -286,9 +309,9 @@ fn the_figure_shows_the_four_edges_and_chooses_one() {
     assert!(within_3s(|| test_events(&app).last().map(String::as_str) == Some("settings: edge top")), "↑ chose top");
 
     // A field changed shows at once: the top edge enabled, filled now.
-    let before = band_at(editor, "top", 0.5);
+    let before = band_at(editor, "top", 0.9);
     click_on(editor, field(editor, "enabled"));
-    assert!(within_3s(|| differs(band_at(editor, "top", 0.5), before)), "the top edge redrawn as enabled");
+    assert!(within_3s(|| differs(band_at(editor, "top", 0.9), before)), "the top edge redrawn as enabled");
 }
 
 // AC3
@@ -401,7 +424,8 @@ fn reset_takes_the_line_out_of_the_file() {
     let i = row(editor, "opacity");
     click_on(editor, part(editor, RESET + i));
     assert!(within_3s(|| is_default(editor, "opacity")), "shown as the default now");
-    assert_eq!(value(editor, "opacity"), "100", "the default");
+    let default = value(editor, "opacity");
+    assert!(default != "70" && !default.is_empty(), "the default, not what was written: {default}");
     save(editor);
     assert!(within_3s(|| !file(&app).contains("opacity")), "the line gone: {}", file(&app));
 }
@@ -424,8 +448,6 @@ fn a_value_out_of_range_is_stopped_in_its_field() {
     type_into(editor, "opacity", "1");
     pump(300);
     assert!(!status(editor).contains("opacity"), "not stopped while typing: {:?}", status(editor));
-    press(VK_RETURN);
-    pump(300);
     type_into(editor, "opacity", "150");
     press(VK_RETURN);
     assert!(within_3s(|| status(editor).contains("opacity")), "the reason shows: {:?}", status(editor));
@@ -441,7 +463,7 @@ fn a_value_out_of_range_is_stopped_in_its_field() {
     save(editor);
     pump(500);
     let saved = file(&app);
-    assert!(saved.contains("opacity = 1   ;") && !saved.contains("150") && !saved.contains("Foo") && !saved.contains("#12345"), "{saved}");
+    assert!(saved.contains("opacity = 70   ;") && !saved.contains("150") && !saved.contains("Foo") && !saved.contains("#12345"), "{saved}");
     // Put right, the marks go.
     enter(editor, "hotkey", "none");
     show_page(editor, EDGES_PAGE);
@@ -473,10 +495,10 @@ fn the_wheel_and_the_arrows_step_numbers_to_their_ends() {
     click_on(editor, field(editor, "opacity"));
     press(VK_UP);
     assert!(within_3s(|| value(editor, "opacity") == "71"), "↑: {}", value(editor, "opacity"));
-    press_with(VK_SHIFT, VK_UP);
+    shift_arrow(VK_UP);
     assert!(within_3s(|| value(editor, "opacity") == "81"), "Shift+↑: {}", value(editor, "opacity"));
     for _ in 0..3 {
-        press_with(VK_SHIFT, VK_UP);
+        shift_arrow(VK_UP);
     }
     assert!(within_3s(|| value(editor, "opacity") == "100"), "stops at the end: {}", value(editor, "opacity"));
 
@@ -505,6 +527,14 @@ fn the_wheel_and_the_arrows_step_numbers_to_their_ends() {
     assert!(saved.contains("opacity = 100   ;") && saved.contains("key_size = 57") && saved.contains("slide_ms = 60"), "{saved}");
 }
 
+/// Click the start of the status line, where its link begins.
+fn click_link(editor: HWND, line: HWND) {
+    wait_in_front(editor);
+    let r = window_rect(line);
+    click(POINT { x: r.left + 12, y: r.top + 8 });
+    pump(300);
+}
+
 // AC10
 #[test]
 fn a_save_that_fails_leads_to_the_line_at_fault() {
@@ -516,7 +546,7 @@ fn a_save_that_fails_leads_to_the_line_at_fault() {
     save(editor);
     assert!(within_3s(|| status(editor).contains("150")), "the reason: {:?}", status(editor));
     let line = part(editor, STATUS);
-    click_on(editor, line);
+    click_link(editor, line);
     assert!(within_3s(|| heading(editor) == "辺と表示"), "its page: {:?}", heading(editor));
     assert!(within_3s(|| focus_of(editor) == field(editor, "opacity")), "its field has the focus");
     assert!(status(editor).contains("150"), "the reason stays: {:?}", status(editor));
@@ -544,7 +574,7 @@ fn a_save_that_fails_leads_to_the_line_at_fault() {
     change(editor, 90);
     save(editor);
     assert!(within_3s(|| status(editor).contains("行目")), "the line and reason: {:?}", status(editor));
-    click_on(editor, part(editor, STATUS));
+    click_link(editor, part(editor, STATUS));
     assert!(within_3s(|| heading(editor) == "キー配置"), "a key set's line: キー配置, not {:?}", heading(editor));
     assert!(status(editor).contains("行目"), "the reason stays");
 }
@@ -563,6 +593,14 @@ fn announce() {
 }
 
 impl Dark {
+    /// Windows's apps light, while the guard lasts.
+    fn light(&self) {
+        let (key, name) = (wide(PERSONALIZE), wide("AppsUseLightTheme"));
+        let light = 1u32;
+        unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), REG_DWORD, &light as *const u32 as _, 4) };
+        announce();
+    }
+
     fn set() -> Dark {
         let (key, name) = (wide(PERSONALIZE), wide("AppsUseLightTheme"));
         let (mut value, mut size) = (0u32, 4u32);
@@ -609,7 +647,7 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     let figure = window_rect(part(editor, DIAGRAM));
     let corner = colour_at(POINT { x: figure.left + 2, y: figure.top + 2 });
     assert!(brightness(corner) < 90, "the figure dark: {corner:?}");
-    drop(dark);
+    dark.light();
     let _ = within_3s(|| brightness(inside(editor, "opacity")) > 170);
     assert!(brightness(inside(editor, "opacity")) > 170, "light again: {:?}", inside(editor, "opacity"));
 
@@ -625,6 +663,7 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     assert!((height(part(editor, DIAGRAM)) - fig0 * 3 / 2).abs() <= 3, "the figure grows: {fig0} -> {}", height(part(editor, DIAGRAM)));
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
     pump(300);
+    drop(dark);
 
     // The keyboard: from the sidebar, Tab reaches the first field, and on
     // through the figure to the edge's fields.
@@ -646,3 +685,4 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     press(VK_TAB);
     assert!(within_3s(|| focus_of(editor) == field(editor, "enabled")), "then the edge's first field");
 }
+

@@ -190,6 +190,14 @@ impl Document {
         (start + 1..end).rev().find(|&i| setting(&self.lines[i]).is_some()).map_or(start + 1, |i| i + 1)
     }
 
+    /// Where line `line` (from 1, as the parser counts) is: the section it
+    /// is in, and the setting on it, by their lower-case names.
+    pub fn place(&self, line: usize) -> (Option<String>, Option<String>) {
+        let Some(i) = line.checked_sub(1).filter(|&i| i < self.lines.len()) else { return (None, None) };
+        let section = (0..=i).rev().find_map(|j| header(&self.lines[j]));
+        (section, setting(&self.lines[i]))
+    }
+
     /// The value of setting `name` in `section`, as written, if it is there.
     pub fn get(&self, section: &str, name: &str) -> Option<&str> {
         let i = *self.settings(section, name).first()?;

@@ -166,7 +166,10 @@ fn its_parts_are_windows_own_controls_of_comctl32_v6_asking_as_before() {
     );
     for c in children(editor) {
         let class = class_of(c);
-        assert!(["Button", "ListBox", "Static"].contains(&class.as_str()), "a part of Windows's own, not {class:?}");
+        // Since Issue #83 the fields too, and the figure of the edges, drawn
+        // as the spec has the window's own drawings.
+        let own = ["Button", "ListBox", "Static", "SysLink", "Edit", "ComboBox"].contains(&class.as_str());
+        assert!(own || class == "EdgePadSettingsEdges", "a part of Windows's own, not {class:?}");
     }
 
     // The questions, with Windows's buttons, as before.
@@ -437,6 +440,10 @@ fn the_keyboard_alone_moves_along_its_parts_and_the_focus_shows() {
     assert!(within_3s(|| heading(editor) == "操作"), "down twice more: 操作");
     press(VK_UP);
     assert!(within_3s(|| heading(editor) == "辺と表示"), "up: 辺と表示");
+    // Back to キー配置, which has no fields yet: Tab goes on to the bottom row.
+    press(VK_UP);
+    press(VK_UP);
+    assert!(within_3s(|| heading(editor) == "キー配置"), "up twice: キー配置");
 
     let open_text = child(editor, "Button", "テキストで開く").expect("テキストで開く");
     let save = child(editor, "Button", "保存").expect("保存");
