@@ -8,8 +8,8 @@
 //!
 //! Sections are named as their headers are, without the brackets:
 //! `general`, `edge.left`, `set.pad`, `profile.csp`. Names match in any
-//! case, as the parser reads them; of two sections of one name, which the
-//! parser turns away, edits reach the first. Every edit says whether it was
+//! case, as the parser reads them; of two sections, or two settings in a
+//! section, of one name, which the parser turns away, edits reach the first. Every edit says whether it was
 //! made: on a section or line that is not there, or with a value the file
 //! cannot hold, it does nothing and says false.
 //!
@@ -63,10 +63,10 @@ fn setting(line: &str) -> Option<String> {
 /// the comment (or the end), and within that, the value without the spaces
 /// around it. Byte ranges of `line`.
 fn value_spans(line: &str) -> Option<((usize, usize), (usize, usize))> {
-    let body = body(line);
-    let end = strip_comment(body).len();
-    let start = body[..end].find('=')? + 1;
-    let region = &body[start..end];
+    let text = body(line);
+    let end = strip_comment(text).len();
+    let start = text[..end].find('=')? + 1;
+    let region = &text[start..end];
     let from = start + (region.len() - region.trim_start().len());
     Some(((start, end), (from, from + region.trim().len())))
 }
@@ -86,6 +86,22 @@ fn writable(value: &str) -> bool {
 /// Names a page key or a profile's edge reads as something else than a key
 /// set: the next and previous page, and no set at all.
 const RESERVED: [&str; 3] = ["next", "prev", "none"];
+
+/// Whether `name` can head a section the document reads back as one: on
+/// one line, no brackets of its own, and no key set called by a name page
+/// keys or edges read as no set.
+fn section_name_ok(name: &str) -> bool {
+    let reserved = name
+        .split_once('.')
+        .is_some_and(|(kind, set)| kind.eq_ignore_ascii_case("set") && RESERVED.iter().any(|r| set.eq_ignore_ascii_case(r)));
+    writable(name) && !name.contains(['[', ']']) && !reserved
+}
+
+/// Whether `name` can stand before the `=` of a setting the document reads
+/// back as one.
+fn setting_name_ok(name: &str) -> bool {
+    writable(name) && !name.trim().is_empty() && !name.contains(['[', ']', '='])
+}
 
 /// `line` with the value of its setting replaced by `value`.
 fn with_value(line: &str, value: &str) -> String {
@@ -178,7 +194,7 @@ impl Document {
     /// setting goes after the section's last one, as `name = value`; a new
     /// section goes at the end.
     pub fn set_value(&mut self, section: &str, name: &str, value: Option<&str>) -> bool {
-        if value.is_some_and(|v| !writable(v)) || !writable(name) {
+        if value.is_some_and(|v| !writable(v)) || !setting_name_ok(name) || !section_name_ok(section) {
             return false;
         }
         let found = self.settings(section, name).first().copied();
@@ -240,6 +256,9 @@ impl Document {
         if from >= slots.len() || to >= slots.len() {
             return false;
         }
+        if from == to {
+            return true;
+        }
         // A key on the last line, moved, may no longer be last.
         if slots.last() == Some(&(self.lines.len() - 1)) {
             self.end_last_line();
@@ -256,7 +275,7 @@ impl Document {
     /// Add an empty section `name` at the end, after a blank line; false if
     /// there is one already.
     pub fn add_section(&mut self, name: &str) -> bool {
-        if self.section(name).is_some() || !writable(name) || name.contains(['[', ']']) {
+        if self.section(name).is_some() || !section_name_ok(name) {
             return false;
         }
         self.end_last_line();
@@ -288,7 +307,7 @@ impl Document {
         if !matches!(kind.as_str(), "set" | "profile") || !new_kind.eq_ignore_ascii_case(&kind) {
             return false;
         }
-        if !writable(new) || new.contains(['[', ']']) || (kind == "set" && RESERVED.iter().any(|r| new_name.eq_ignore_ascii_case(r))) {
+        if !section_name_ok(new) {
             return false;
         }
         let Some((start, _)) = self.section(old) else { return false };
