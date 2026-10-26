@@ -1,6 +1,8 @@
 //! The --debug log: one timestamped line per event, in edgepad-debug.log
-//! (the settings window's process: edgepad-settings-debug.log) beside the exe (or under %APPDATA%\EdgePad when that folder is not
-//! writable). Without --debug nothing is opened and every call returns at once.
+//! beside the exe, or under %APPDATA%\EdgePad when that folder is not
+//! writable. The settings window's process writes a log of its own there,
+//! edgepad-settings-debug.log. Without --debug nothing is opened and every
+//! call returns at once.
 //!
 //! Lines are written straight to the file, unbuffered, so the last ones
 //! survive a crash. Writing allocates nothing and never waits for the lock:

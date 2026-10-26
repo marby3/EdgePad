@@ -173,6 +173,8 @@ pub unsafe fn run_settings(open: impl FnOnce() -> bool) -> bool {
         close(&watches);
         return false;
     }
+    // The window may have made the settings file, in a folder of its own.
+    watch_folders(&mut watched, &mut watches);
     let mut due: Option<Instant> = None;
     loop {
         let n = watches.len() as u32;

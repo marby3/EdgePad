@@ -134,7 +134,8 @@ fn modules_of(pid: u32) -> Vec<String> {
         let mut handles = vec![null_mut(); 1024];
         let mut needed = 0;
         let size = (handles.len() * size_of::<usize>()) as u32;
-        EnumProcessModulesEx(process, handles.as_mut_ptr(), size, &mut needed, LIST_MODULES_ALL);
+        let listed = EnumProcessModulesEx(process, handles.as_mut_ptr(), size, &mut needed, LIST_MODULES_ALL);
+        assert!(listed != 0, "list the modules of process {pid}");
         handles.truncate(needed as usize / size_of::<usize>());
         let names = handles
             .iter()

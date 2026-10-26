@@ -116,7 +116,8 @@ fn modules(pid: u32) -> Vec<String> {
         let mut handles = vec![null_mut(); 1024];
         let mut needed = 0;
         let size = (handles.len() * size_of::<usize>()) as u32;
-        EnumProcessModulesEx(process, handles.as_mut_ptr(), size, &mut needed, LIST_MODULES_ALL);
+        let listed = EnumProcessModulesEx(process, handles.as_mut_ptr(), size, &mut needed, LIST_MODULES_ALL);
+        assert!(listed != 0, "list the modules of process {pid}");
         handles.truncate(needed as usize / size_of::<usize>());
         let names = handles
             .iter()
@@ -222,7 +223,7 @@ fn exit_asks_in_the_window_about_changes_and_otherwise_ends_both() {
     assert!(app_alive(&app), "EdgePad goes on");
     assert!(test_events(&app).iter().any(|e| e.contains("保存していない変更")), "and says why: {:?}", test_events(&app));
     click_button(editor, "保存せずに閉じる");
-    assert!(ends(pid_of(editor)) || editors(&app).is_empty(), "closed without saving");
+    assert!(ends(pid_of(editor)), "closed without saving");
 
     let editor = open(&app, id);
     let pid = pid_of(editor);

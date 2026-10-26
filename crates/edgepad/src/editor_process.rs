@@ -21,7 +21,6 @@ use windows_sys::Win32::System::JobObjects::{
     JobObjectExtendedLimitInformation, SetInformationJobObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
-use windows_sys::w;
 
 use crate::log::{self, debug_log};
 use crate::{editor, tray, watch};
@@ -63,11 +62,11 @@ fn running() -> Option<u32> {
     })
 }
 
-/// Whether the settings window's process ends within half a second.
+/// Whether the settings window's process ends within 0.2 s.
 fn ends_soon() -> bool {
     CHILD.with_borrow_mut(|child| {
         let Some(c) = child.as_ref() else { return true };
-        let ended = unsafe { WaitForSingleObject(c.as_raw_handle(), 500) } == WAIT_OBJECT_0;
+        let ended = unsafe { WaitForSingleObject(c.as_raw_handle(), 200) } == WAIT_OBJECT_0;
         if ended {
             *child = None;
         }
@@ -85,7 +84,7 @@ pub fn is_settings(pid: u32) -> bool {
 fn window(pid: u32) -> Option<HWND> {
     let mut hwnd = null_mut();
     loop {
-        hwnd = unsafe { FindWindowExW(null_mut(), hwnd, w!("EdgePadSettings"), null()) };
+        hwnd = unsafe { FindWindowExW(null_mut(), hwnd, editor::CLASS, null()) };
         if hwnd.is_null() {
             return None;
         }
@@ -147,10 +146,19 @@ pub unsafe fn open() {
 
 /// EdgePad is to end from the tray: unless the settings window holds
 /// changes not saved, in which case it asks about them there and EdgePad
-/// goes on. A window that does not answer is not waited on.
+/// goes on. A window that gives no answer may still hold changes: EdgePad
+/// goes on then too; one gone meanwhile has none.
 pub unsafe fn may_exit() -> bool {
     let Some(hwnd) = running().and_then(window) else { return true };
     let mut answer = 0;
-    let sent = unsafe { SendMessageTimeoutW(hwnd, editor::may_exit_message(), 0, 0, SMTO_ABORTIFHUNG, 3000, &mut answer) };
-    sent == 0 || answer != 0
+    unsafe {
+        // This process, chosen from the tray, may bring it to the front,
+        // where its question is seen; the window's own process may not.
+        SetForegroundWindow(hwnd);
+        let sent = SendMessageTimeoutW(hwnd, editor::may_exit_message(), 0, 0, SMTO_ABORTIFHUNG, 3000, &mut answer);
+        if sent == 0 {
+            return IsWindow(hwnd) == 0;
+        }
+    }
+    answer != 0
 }

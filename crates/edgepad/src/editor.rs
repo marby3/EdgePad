@@ -53,6 +53,9 @@ use crate::log::debug_log;
 use crate::panel::{pointer_at, pointer_id};
 use crate::{settings, tray, watch};
 
+/// The window's class: also how the running EdgePad and the tests find it.
+pub const CLASS: *const u16 = w!("EdgePadSettings");
+
 const PAGES: [&str; 4] = ["キー配置", "アプリ別", "辺と表示", "操作"];
 
 /// Control ids: the sidebar, the page's heading, the status line, the
@@ -370,7 +373,7 @@ unsafe fn register() -> bool {
         wc.lpfnWndProc = Some(wnd_proc);
         wc.hInstance = GetModuleHandleW(null());
         wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
-        wc.lpszClassName = w!("EdgePadSettings");
+        wc.lpszClassName = CLASS;
         if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
             debug_log!("設定画面の窓クラスを登録できない");
             return false;
@@ -474,7 +477,7 @@ unsafe fn open() -> bool {
         let title = wide(TITLE);
         let hwnd = CreateWindowExW(
             EX_STYLE,
-            w!("EdgePadSettings"),
+            CLASS,
             title.as_ptr(),
             STYLE,
             CW_USEDEFAULT,
@@ -1165,7 +1168,8 @@ pub unsafe fn take(msg: &MSG) -> bool {
 }
 
 /// A finger on a part of the settings window while the mouse is held down
-/// (on a panel, for a key it presses): taken as a tap here, not passed on.
+/// (on a panel, for a key it presses, or anywhere else): taken as a tap
+/// here, not passed on.
 /// Passed on, Windows would make mouse input of it, and the mouse's own
 /// press would end there, the panel's key left held with no lift to come.
 unsafe fn finger(hwnd: HWND, msg: &MSG) -> bool {
