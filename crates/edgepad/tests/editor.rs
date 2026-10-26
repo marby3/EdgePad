@@ -4,8 +4,9 @@
 //!
 //! The window's parts are found by class and text, and clicked as a user
 //! would. Until the tabs have fields, a change is made with a message only
-//! the test build has (`EDITOR_TEST_SET`): it sets `[general] opacity` in
-//! the window's copy of the file.
+//! the test build has ("EdgePadTestEditorSet"): it sets `[general] opacity`
+//! in the window's copy of the file. A debug build is slow to draw and to
+//! act on a click: what a test checks, it waits for.
 
 mod common;
 
@@ -14,18 +15,23 @@ use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+use windows_sys::Win32::Graphics::Dwm::DwmFlush;
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+use windows_sys::w;
 use common::*;
 
 const EDITOR_CLASS: &str = "EdgePadSettings";
 const TAB_CLASS: &str = "EdgePadSettingsTab";
 const BUTTON_CLASS: &str = "EdgePadSettingsButton";
 const STATUS_CLASS: &str = "EdgePadSettingsStatus";
-/// WM_APP + 0x20: set `[general] opacity` to wParam (test build only).
-const EDITOR_TEST_SET: u32 = WM_APP + 0x20;
+
+/// Sets `[general] opacity` to wParam (test build only).
+fn test_set() -> u32 {
+    unsafe { RegisterWindowMessageW(w!("EdgePadTestEditorSet")) }
+}
 
 /// Two hold keys on the left by default; three for this process, in front.
 fn settings(general: &str) -> String {
@@ -126,7 +132,7 @@ fn file(app: &Running) -> String {
 }
 
 fn change(editor: HWND, opacity: usize) {
-    unsafe { PostMessageW(editor, EDITOR_TEST_SET, opacity, 0) };
+    unsafe { PostMessageW(editor, test_set(), opacity, 0) };
     pump(200);
 }
 
@@ -177,13 +183,16 @@ fn saving_checks_with_the_parser_and_writes_only_what_reads() {
 
     change(editor, 150);
     click_child(editor, BUTTON_CLASS, "保存");
+    within_3s(|| !status(editor).is_empty());
     let said = status(editor);
     assert!(said.contains('3') && said.contains("150"), "the line and the reason: {said:?}");
     assert_eq!(file(&app), before, "nothing written");
 
     change(editor, 70);
     click_child(editor, BUTTON_CLASS, "保存");
-    assert_eq!(file(&app), before.replace("opacity = 90   ;", "opacity = 70   ;"), "written, the rest as it was");
+    let want = before.replace("opacity = 90   ;", "opacity = 70   ;");
+    within_3s(|| file(&app) == want);
+    assert_eq!(file(&app), want, "written, the rest as it was");
 }
 
 // AC4
@@ -248,6 +257,19 @@ fn closing_with_changes_asks_whether_to_save_them() {
     click_child(editor, BUTTON_CLASS, "保存する");
     assert!(within_3s(|| editors(&app).is_empty()), "saved, then closed");
     assert!(file(&app).contains("opacity = 40"), "{}", file(&app));
+
+    // Saving what the parser cannot read: the reason shows, and the
+    // question and the window stay.
+    let editor = open(&app, id);
+    change(editor, 150);
+    unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
+    assert!(within_3s(|| child(editor, BUTTON_CLASS, "保存する").is_some()));
+    click_child(editor, BUTTON_CLASS, "保存する");
+    within_3s(|| status(editor).contains("150"));
+    assert!(status(editor).contains("150"), "the reason shows: {:?}", status(editor));
+    assert!(unsafe { IsWindow(editor) } != 0 && child(editor, BUTTON_CLASS, "保存せずに閉じる").is_some(), "still asked");
+    click_child(editor, BUTTON_CLASS, "保存せずに閉じる");
+    assert!(within_3s(|| editors(&app).is_empty()));
 
     // Nothing changed: it closes without asking.
     let editor = open(&app, id);
@@ -315,7 +337,10 @@ fn it_follows_the_dpi_of_its_monitor_and_the_theme() {
         let app = launch_with(Some(&settings(&format!("theme = {theme}"))), None);
         let editor = open(&app, open_id(&app));
         force_foreground(editor);
-        pump(300);
+        within_3s(|| {
+            unsafe { DwmFlush() };
+            near(middle(editor), want)
+        });
         let c = middle(editor);
         assert!(near(c, want), "{theme}: the background is {want:?}, not {c:?}");
         let tab = child(editor, TAB_CLASS, "一般").expect("a tab");
@@ -356,10 +381,12 @@ fn closed_it_gives_its_memory_back() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
     let id = open_id(&app);
-    // Twice, and given time: Windows finishes loading in its own time,
-    // later still on a machine busy with other tests.
+    // Twice, as the measured ones go (in front, a tab clicked: it is taking
+    // the focus that loads the text input), and given time: Windows
+    // finishes loading in its own time, later still on a busy machine.
     for _ in 0..2 {
         let editor = open(&app, id);
+        click_child(editor, TAB_CLASS, "辺");
         unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
         assert!(within_3s(|| editors(&app).is_empty()), "closed");
     }

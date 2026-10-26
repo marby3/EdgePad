@@ -31,7 +31,7 @@ use windows_sys::w;
 
 use crate::colors::{self, colorref};
 use crate::log::debug_log;
-use crate::{launch, pie_menu, send};
+use crate::{editor, launch, pie_menu, send};
 use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
@@ -309,6 +309,7 @@ pub unsafe fn restyle() -> bool {
                 }
             }
         }
+        unsafe { editor::restyle() };
         true
     })
 }

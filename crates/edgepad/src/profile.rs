@@ -83,9 +83,7 @@ fn panels_for(process: Option<&str>) -> Panels {
 /// windows, the settings window and the tray menu, are no app to follow
 /// (spec 7.1): the profile stays that of the app in front before.
 pub unsafe fn foreground_changed(hwnd: HWND) {
-    let mut pid = 0;
-    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-    if pid == std::process::id() {
+    if unsafe { is_own(hwnd) } {
         return;
     }
     LAST.set(unsafe { process_name(hwnd) });

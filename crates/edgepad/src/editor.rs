@@ -9,7 +9,8 @@
 //! when it closes.
 
 use std::cell::{Cell, RefCell};
-use std::mem::zeroed;
+use std::io::Read;
+use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 
@@ -20,6 +21,7 @@ use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWin
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
@@ -29,7 +31,7 @@ use crate::{panel, settings, tray};
 
 const TABS: [&str; 4] = ["一般", "辺", "キーセット", "プロファイル"];
 
-/// Control ids: the tabs from TAB on, then the buttons.
+/// Control ids: the tabs from TAB on, 保存, and the answers to questions.
 const TAB: usize = 100;
 const SAVE: usize = 200;
 const RELOAD: usize = 300;
@@ -53,10 +55,14 @@ const TAB_PART: isize = 1;
 const TAB_SHOWN: isize = 2;
 const STATUS: isize = 3;
 
-/// Sets `[general] opacity` to wParam in the window's copy of the file: a
-/// change for the tests to save until the tabs have fields of their own.
+/// "EdgePadTestEditorSet": sets `[general] opacity` to wParam in the
+/// window's copy of the file, a change for the tests to save until the tabs
+/// have fields of their own. Registered by name, as the tray's test
+/// messages are: the name is the contract with the tests.
 #[cfg(feature = "fault-injection")]
-const TEST_SET: u32 = WM_APP + 0x20;
+fn test_set() -> u32 {
+    unsafe { RegisterWindowMessageW(w!("EdgePadTestEditorSet")) }
+}
 
 const STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
 const EX_STYLE: WINDOW_EX_STYLE = WS_EX_APPWINDOW;
@@ -83,7 +89,6 @@ struct Editor {
     tabs: [HWND; 4],
     save: HWND,
     status: HWND,
-    ask: Option<Ask>,
     answers: Vec<HWND>,
     font: HFONT,
     dpi: u32,
@@ -92,6 +97,8 @@ struct Editor {
 thread_local! {
     static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
     static REGISTERED: Cell<bool> = const { Cell::new(false) };
+    // The part a pointer went down on: only it answers that pointer's lift.
+    static PRESSED: Cell<HWND> = const { Cell::new(null_mut()) };
 }
 
 /// Run `f` on the window, if it is open and not in use further up the stack.
@@ -163,6 +170,30 @@ unsafe fn part(parent: HWND, class: *const u16, text: &str, id: usize, kind: isi
     }
 }
 
+/// The settings file, read no further than one byte past what the parser
+/// takes: a file any bigger is turned away whole anyway.
+fn read_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(config::MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Make the title bar dark with a dark palette, light with a light one.
+unsafe fn title_bar(hwnd: HWND) {
+    let c = panel::palette().background;
+    let dark: i32 = ((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000 < 128).into();
+    unsafe { DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, &dark as *const i32 as _, 4) };
+}
+
+/// The panels' colours changed: draw the window again in them.
+pub unsafe fn restyle() {
+    let Some(hwnd) = with_editor(|e| e.hwnd) else { return };
+    unsafe {
+        title_bar(hwnd);
+        RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+    }
+}
+
 /// Open the settings window from the tray, or bring it back if it is open.
 pub unsafe fn open() {
     unsafe {
@@ -177,7 +208,7 @@ pub unsafe fn open() {
             tray::notify("設定ファイルを作れませんでした");
             return;
         };
-        let read = std::fs::read(&path).map_err(|e| e.to_string());
+        let read = read_file(&path).map_err(|e| e.to_string());
         let (doc, known) = match read.and_then(|b| Document::new(&b).map(|d| (d, b)).map_err(|e| e.to_string())) {
             Ok(opened) => opened,
             Err(why) => {
@@ -216,7 +247,6 @@ pub unsafe fn open() {
             tabs,
             save: null_mut(),
             status: null_mut(),
-            ask: None,
             answers: Vec::new(),
             font: null_mut(),
             dpi: GetDpiForWindow(hwnd).max(96),
@@ -229,10 +259,7 @@ pub unsafe fn open() {
         editor.font = font_for(editor.dpi);
         let dpi = editor.dpi;
         EDITOR.set(Some(editor));
-        // The title bar as dark as the window, in the dark theme.
-        let c = panel::palette().background;
-        let dark: i32 = ((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000 < 128).into();
-        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, &dark as *const i32 as _, 4);
+        title_bar(hwnd);
         debug_log!("設定画面を開く");
         size_for(hwnd, dpi, true);
         show_tab(0);
@@ -250,7 +277,7 @@ unsafe fn size_for(hwnd: HWND, dpi: u32, centre: bool) {
         let (w, h) = (r.right - r.left, r.bottom - r.top);
         if centre {
             let mut info: MONITORINFO = zeroed();
-            info.cbSize = size_of_monitor_info();
+            info.cbSize = size_of::<MONITORINFO>() as u32;
             GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mut info);
             let a = info.rcWork;
             let (x, y) = (a.left + (a.right - a.left - w) / 2, a.top + (a.bottom - a.top - h) / 2);
@@ -259,10 +286,6 @@ unsafe fn size_for(hwnd: HWND, dpi: u32, centre: bool) {
             SetWindowPos(hwnd, null_mut(), 0, 0, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
         }
     }
-}
-
-fn size_of_monitor_info() -> u32 {
-    std::mem::size_of::<MONITORINFO>() as u32
 }
 
 /// Place the parts in the window as large as it is now.
@@ -315,10 +338,10 @@ fn set_status(e: &Editor, text: &str) {
 /// take a question away.
 unsafe fn ask(ask: Option<Ask>) {
     let made = with_editor(|e| unsafe {
+        let asked = !e.answers.is_empty();
         for answer in e.answers.drain(..) {
             DestroyWindow(answer);
         }
-        e.ask = ask;
         let (text, answers): (&str, &[(&str, usize)]) = match ask {
             Some(Ask::Changed) => ("設定ファイルが外で書き換わりました", &[("読み直す", RELOAD), ("画面の内容を保つ", KEEP)]),
             Some(Ask::Closing) => (
@@ -327,7 +350,11 @@ unsafe fn ask(ask: Option<Ask>) {
             ),
             None => ("", &[]),
         };
-        set_status(e, text);
+        // Taken away, a question leaves whatever the status line says now
+        // in place: an error from answering it, for one.
+        if ask.is_some() || !asked {
+            set_status(e, text);
+        }
         for &(label, id) in answers {
             e.answers.push(part(e.hwnd, w!("EdgePadSettingsButton"), label, id, BUTTON));
         }
@@ -365,7 +392,7 @@ fn unsaved(e: &Editor) -> bool {
 /// as the window last read or wrote it, it changed outside; ask.
 pub unsafe fn file_changed() {
     let changed = with_editor(|e| {
-        let Ok(now) = std::fs::read(&e.path) else { return false };
+        let Ok(now) = read_file(&e.path) else { return false };
         if now == e.known || e.outside.as_ref() == Some(&now) {
             return false;
         }
@@ -393,16 +420,20 @@ unsafe fn command(id: usize) {
                 false
             }
             RELOAD => {
-                if let Some(bytes) = e.outside.take() {
-                    match Document::new(&bytes) {
-                        Ok(doc) => {
-                            e.doc = doc;
-                            e.known = bytes;
-                        }
-                        Err(why) => set_status(e, &format!("読み直せません: {why}")),
+                let Some(bytes) = e.outside.take() else { return true };
+                match Document::new(&bytes) {
+                    Ok(doc) => {
+                        e.doc = doc;
+                        e.known = bytes;
+                        true
+                    }
+                    // The question stays, the reason beside it.
+                    Err(why) => {
+                        set_status(e, &format!("読み直せません: {why}"));
+                        e.outside = Some(bytes);
+                        false
                     }
                 }
-                true
             }
             KEEP => {
                 // The window's stays; saving it overwrites the change.
@@ -411,9 +442,10 @@ unsafe fn command(id: usize) {
                 }
                 true
             }
+            // Not saved, the question stays, the reason beside it.
             SAVE_AND_CLOSE => {
                 close = save(e);
-                !close
+                false
             }
             DISCARD => {
                 close = true;
@@ -447,8 +479,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             // The scale of the window's monitor changed: the window and its
-            // parts grow or shrink to it where they are. The suggested
-            // rectangle is not read: the window works its size out itself.
+            // parts grow or shrink to it. Windows sends it from this thread
+            // with the place to take, as the window is dragged across; any
+            // other sender's lParam is not this process's to read, and the
+            // window works out its new size where it is itself.
             WM_DPICHANGED => {
                 let dpi = (wp & 0xFFFF) as u32;
                 if dpi == 0 {
@@ -460,7 +494,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     e.dpi = dpi;
                 });
                 if resized.is_some() {
-                    size_for(hwnd, dpi, false);
+                    if InSendMessage() == 0 && lp != 0 {
+                        let r = *(lp as *const RECT);
+                        SetWindowPos(hwnd, null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+                    } else {
+                        size_for(hwnd, dpi, false);
+                    }
                     lay_out();
                 }
                 0
@@ -469,9 +508,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 command(wp & 0xFFFF);
                 0
             }
+            // With changes not saved, ask first; asked already about a
+            // change outside, that answer comes first.
             WM_CLOSE => {
-                match with_editor(|e| unsaved(e)) {
-                    Some(true) => ask(Some(Ask::Closing)),
+                match with_editor(|e| (unsaved(e), e.outside.is_some())) {
+                    Some((_, true)) => {}
+                    Some((true, false)) => ask(Some(Ask::Closing)),
                     _ => {
                         DestroyWindow(hwnd);
                     }
@@ -486,7 +528,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             #[cfg(feature = "fault-injection")]
-            TEST_SET => {
+            _ if msg == test_set() => {
                 with_editor(|e| e.doc.set_value("general", "opacity", Some(&wp.to_string())));
                 0
             }
@@ -536,9 +578,23 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 InvalidateRect(hwnd, null(), 1);
                 r
             }
+            WM_POINTERDOWN if kind != STATUS => {
+                PRESSED.set(hwnd);
+                // A mouse let go off the part still tells it.
+                SetCapture(hwnd);
+                0
+            }
             WM_POINTERUP if kind != STATUS => {
-                let id = GetDlgCtrlID(hwnd) as usize;
-                PostMessageW(GetParent(hwnd), WM_COMMAND, id, 0);
+                let pressed = PRESSED.replace(null_mut()) == hwnd;
+                ReleaseCapture();
+                let mut r: RECT = zeroed();
+                GetWindowRect(hwnd, &mut r);
+                let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
+                let over = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+                if pressed && over {
+                    let id = GetDlgCtrlID(hwnd) as usize;
+                    PostMessageW(GetParent(hwnd), WM_COMMAND, id, 0);
+                }
                 0
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),

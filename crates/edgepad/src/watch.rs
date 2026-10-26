@@ -52,7 +52,11 @@ pub unsafe fn reload(force: bool) {
             UNREADABLE.set(None);
             let panels = unsafe { profile::use_config(Some(config)) };
             let built = unsafe { panel::rebuild(&panels) };
-            unsafe { tray::set_hotkey(panels.hotkey) };
+            unsafe {
+                tray::set_hotkey(panels.hotkey);
+                // The theme may have changed with the file.
+                editor::restyle();
+            }
             match built {
                 true => debug_log!("再読込: パネル {} 枚", panels.edges.len()),
                 false => debug_log!("再読込: パネルを作れないものがあった"),
