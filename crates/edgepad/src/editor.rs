@@ -5,8 +5,9 @@
 //! Its parts are small windows of its own, drawn in the panels' colours:
 //! tabs, buttons and a status line. A question (the file changed outside,
 //! or changes not saved on closing) shows in the status line, its answers
-//! as buttons in the row below, beside 保存. Everything is made when the window opens and goes
-//! when it closes.
+//! as buttons in the row below, beside 保存.
+//!
+//! Everything is made when the window opens, and goes when it closes.
 
 use std::cell::{Cell, RefCell};
 use std::io::Read;
@@ -16,10 +17,9 @@ use std::ptr::{null, null_mut};
 
 use edgepad_core::config;
 use edgepad_core::document::Document;
-use windows_sys::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+use windows_sys::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, FreeLibrary, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -28,7 +28,7 @@ use windows_sys::w;
 use crate::colors::colorref;
 use crate::log::debug_log;
 use crate::panel::{self, pointer_id};
-use crate::{settings, tray};
+use crate::{settings, tray, watch};
 
 const TABS: [&str; 4] = ["一般", "辺", "キーセット", "プロファイル"];
 
@@ -72,7 +72,7 @@ const STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
 const EX_STYLE: WINDOW_EX_STYLE = WS_EX_APPWINDOW;
 
 /// A question the window asks.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 enum Ask {
     /// The file changed outside: read it again, or keep the window's.
     Changed,
@@ -84,12 +84,16 @@ struct Editor {
     hwnd: HWND,
     path: PathBuf,
     doc: Document,
-    /// The file as the window last read or wrote it: unsaved changes are
-    /// what the document says otherwise, and a file still so is no change
-    /// outside.
+    /// What the window last read or saved: changes not saved are what the
+    /// document says otherwise.
+    base: Vec<u8>,
+    /// The file as the window last saw it: a file still so is no change
+    /// outside. It differs from `base` once a change outside is kept off.
     known: Vec<u8>,
     /// The file as changed outside, until the question is answered.
     outside: Option<Vec<u8>>,
+    /// The question asked now, if any.
+    asked: Option<Ask>,
     tabs: [HWND; 4],
     save: HWND,
     status: HWND,
@@ -103,7 +107,8 @@ thread_local! {
     static REGISTERED: Cell<bool> = const { Cell::new(false) };
     // The pointer that went down on a part, and the part: only it answers
     // that pointer's lift. No part takes the capture, which the panels on
-    // this thread hold for a mouse pressing a key.
+    // this thread hold for a mouse pressing a key. One at a time: a second
+    // finger on another part takes over from the first.
     static PRESSED: Cell<(u32, HWND)> = const { Cell::new((0, null_mut())) };
 }
 
@@ -192,11 +197,27 @@ fn read_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 }
 
 /// Make the title bar dark with a dark palette, light with a light one.
+///
+/// dwmapi.dll is loaded here, not imported: imported, it would sit in every
+/// EdgePad from the start, settings opened or not, its pages counted
+/// against the idle memory target (spec 8).
 unsafe fn title_bar(hwnd: HWND) {
+    type SetAttribute = unsafe extern "system" fn(HWND, u32, *const core::ffi::c_void, u32) -> i32;
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     let c = panel::palette().background;
     // Dark as theme::text_on judges a colour dark.
     let dark: i32 = ((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000 < 150).into();
-    unsafe { DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, &dark as *const i32 as _, 4) };
+    unsafe {
+        let dwm = LoadLibraryExW(w!("dwmapi.dll"), null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if dwm.is_null() {
+            return;
+        }
+        if let Some(f) = GetProcAddress(dwm, b"DwmSetWindowAttribute\0".as_ptr()) {
+            let set: SetAttribute = std::mem::transmute(f);
+            set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const i32 as _, 4);
+        }
+        FreeLibrary(dwm);
+    }
 }
 
 /// The panels' colours changed: draw the window again in them.
@@ -211,10 +232,8 @@ pub unsafe fn restyle() {
 /// Open the settings window from the tray, or bring it back if it is open.
 pub unsafe fn open() {
     unsafe {
-        if let Some(hwnd) = EDITOR.with_borrow(|e| e.as_ref().map(|e| e.hwnd)) {
-            if IsIconic(hwnd) != 0 {
-                ShowWindow(hwnd, SW_RESTORE);
-            }
+        if let Some(hwnd) = with_editor(|e| e.hwnd) {
+            ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
             SetForegroundWindow(hwnd);
             return;
         }
@@ -222,6 +241,8 @@ pub unsafe fn open() {
             tray::notify("設定ファイルを作れませんでした");
             return;
         };
+        // The file may be new, in a folder made just now: watched from now.
+        watch::rescan();
         let read = read_file(&path).map_err(|e| e.to_string());
         let (doc, known) = match read.and_then(|b| Document::new(&b).map(|d| (d, b)).map_err(|e| e.to_string())) {
             Ok(opened) => opened,
@@ -256,8 +277,10 @@ pub unsafe fn open() {
             hwnd,
             path,
             doc,
+            base: known.clone(),
             known,
             outside: None,
+            asked: None,
             tabs,
             save: null_mut(),
             status: null_mut(),
@@ -360,6 +383,25 @@ fn set_status(e: &Editor, text: &str) {
     unsafe { SetWindowTextW(e.status, text.as_ptr()) };
 }
 
+/// Question `ask`, as the status line puts it.
+fn question(e: &Editor, ask: Ask) -> &'static str {
+    match ask {
+        Ask::Changed => "設定ファイルが外で書き換わりました",
+        Ask::Closing if e.outside.is_some() || e.known != e.base => {
+            "保存していない変更があります（設定ファイルは外でも書き換わっています。保存するとその変更を上書きします）"
+        }
+        Ask::Closing => "保存していない変更があります",
+    }
+}
+
+/// Say `reason`: beside the question asked now, which stays, or alone.
+fn tell(e: &Editor, reason: &str) {
+    match e.asked {
+        Some(ask) => set_status(e, &format!("{}（{reason}）", question(e, ask))),
+        None => set_status(e, reason),
+    }
+}
+
 /// Ask `ask` in the status line, its answers as buttons; or, with none,
 /// take a question away.
 unsafe fn ask(ask: Option<Ask>) {
@@ -367,18 +409,13 @@ unsafe fn ask(ask: Option<Ask>) {
         for answer in e.answers.drain(..) {
             DestroyWindow(answer);
         }
-        let (text, answers): (&str, &[(&str, usize)]) = match ask {
-            Some(Ask::Changed) => ("設定ファイルが外で書き換わりました", &[("読み直す", RELOAD), ("画面の内容を保つ", KEEP)]),
-            Some(Ask::Closing) => (
-                match e.outside.is_some() {
-                    true => "保存していない変更があります（設定ファイルは外でも書き換わっています。保存するとその変更を上書きします）",
-                    false => "保存していない変更があります",
-                },
-                &[("保存する", SAVE_AND_CLOSE), ("保存せずに閉じる", DISCARD), ("キャンセル", CANCEL)],
-            ),
-            None => ("", &[]),
+        e.asked = ask;
+        let answers: &[(&str, usize)] = match ask {
+            Some(Ask::Changed) => &[("読み直す", RELOAD), ("画面の内容を保つ", KEEP)],
+            Some(Ask::Closing) => &[("保存する", SAVE_AND_CLOSE), ("保存せずに閉じる", DISCARD), ("キャンセル", CANCEL)],
+            None => &[],
         };
-        set_status(e, text);
+        set_status(e, ask.map_or("", |a| question(e, a)));
         for &(label, id) in answers {
             let answer = part(e.hwnd, w!("EdgePadSettingsButton"), label, id, BUTTON);
             if answer.is_null() {
@@ -393,45 +430,65 @@ unsafe fn ask(ask: Option<Ask>) {
     }
 }
 
-/// Save the window's file if the parser reads it; else say why, writing
-/// nothing. True once saved.
-fn save(e: &mut Editor) -> bool {
+/// The first of `errors` the parser found, and how many more.
+fn first_error(errors: &[config::Error]) -> String {
+    let first = errors.first().map_or_else(String::new, ToString::to_string);
+    match errors.len() {
+        0 | 1 => first,
+        n => format!("{first}（ほか {} 件）", n - 1),
+    }
+}
+
+/// Save the window's file if the parser reads it; else, writing nothing,
+/// the reason why.
+fn save(e: &mut Editor) -> Result<(), String> {
     let bytes = e.doc.to_bytes();
     if let Err(errors) = config::parse(&bytes) {
-        let first = errors.first().map_or_else(String::new, ToString::to_string);
-        let more = match errors.len() {
-            0 | 1 => String::new(),
-            n => format!("（ほか {} 件）", n - 1),
-        };
-        set_status(e, &format!("保存できません: {first}{more}"));
-        return false;
+        return Err(format!("保存できません: {}", first_error(&errors)));
     }
-    // Written beside it and then put in its place: a write that fails part
-    // way leaves the file as it was, not cut short.
-    let fresh = e.path.with_extension("ini.new");
-    if let Err(why) = std::fs::write(&fresh, &bytes).and_then(|()| std::fs::rename(&fresh, &e.path)) {
-        let _ = std::fs::remove_file(&fresh);
-        set_status(e, &format!("保存できません: {why}"));
-        return false;
+    // Written beside it, in a file of its own made for this, and then put
+    // in its place: a write that fails part way leaves the file as it was,
+    // not cut short.
+    let fresh = e.path.with_extension(format!("ini.{}.new", std::process::id()));
+    let written = (|| -> std::io::Result<()> {
+        // Made new by this, it is this's to take away if what follows fails;
+        // a file of that name already there is left alone.
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&fresh)?;
+        let wrote = std::io::Write::write_all(&mut f, &bytes).and_then(|()| f.sync_all());
+        drop(f);
+        let moved = wrote.and_then(|()| std::fs::rename(&fresh, &e.path));
+        if moved.is_err() {
+            let _ = std::fs::remove_file(&fresh);
+        }
+        moved
+    })();
+    if let Err(why) = written {
+        return Err(format!("保存できません: {why}"));
     }
     debug_log!("設定画面から保存");
+    e.base = bytes.clone();
     e.known = bytes;
     // Saved, the window's is the file: a change outside is answered.
     e.outside = None;
-    set_status(e, "保存しました");
-    true
+    Ok(())
 }
 
-/// Whether the window holds changes the file does not.
+/// Whether the window holds changes it has not saved.
 fn unsaved(e: &Editor) -> bool {
-    e.doc.to_bytes() != e.known
+    e.doc.to_bytes() != e.base
 }
 
 /// The settings folder was written to and has settled: if the file is not
-/// as the window last read or wrote it, it changed outside; ask.
+/// as the window last saw it, it changed outside; ask.
 pub unsafe fn file_changed() {
     let changed = with_editor(|e| {
-        let Ok(now) = read_file(&e.path) else { return false };
+        let now = match read_file(&e.path) {
+            Ok(now) => now,
+            Err(why) => {
+                debug_log!("設定画面: 設定ファイルを読めない: {why}");
+                return false;
+            }
+        };
         if now == e.known || e.outside.as_ref() == Some(&now) {
             return false;
         }
@@ -444,6 +501,19 @@ pub unsafe fn file_changed() {
     }
 }
 
+/// EdgePad is to end from the tray: unless the window holds changes not
+/// saved, in which case it asks about them and EdgePad goes on.
+pub unsafe fn may_exit() -> bool {
+    let Some((hwnd, true)) = with_editor(|e| (e.hwnd, unsaved(e))) else { return true };
+    unsafe {
+        ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
+        SetForegroundWindow(hwnd);
+        ask(Some(Ask::Closing));
+    }
+    tray::notify("設定画面に保存していない変更があります。保存するか閉じてから終了してください");
+    false
+}
+
 /// A part was clicked.
 unsafe fn command(id: usize) {
     unsafe {
@@ -451,39 +521,53 @@ unsafe fn command(id: usize) {
             return show_tab(id - TAB);
         }
         // What is left to do once the window is let go: close it, or take
-        // the question away.
+        // the question away and say what was done in its place.
         let mut close = false;
-        // Answered: the question goes, and the status line says what was
-        // done, in place of the question.
         let mut said = "";
+        // Cancelling a close while a change outside is still unanswered
+        // asks about the change again.
+        let mut ask_again = false;
         let answered = with_editor(|e| match id {
             // Saved, nothing is left to ask about; over a change outside,
             // the window's won, which it says.
             SAVE => {
-                let over = e.outside.is_some();
-                let saved = save(e);
-                said = if over { "外の変更を上書きして保存しました" } else { "保存しました" };
-                saved && !e.answers.is_empty()
-            }
-            RELOAD => {
-                let Some(bytes) = e.outside.take() else { return true };
-                match Document::new(&bytes) {
-                    Ok(doc) => {
-                        e.doc = doc;
-                        e.known = bytes;
-                        said = "読み直しました";
+                let over = e.outside.is_some() || e.known != e.base;
+                match save(e) {
+                    Ok(()) => {
+                        said = if over { "外の変更を上書きして保存しました" } else { "保存しました" };
                         true
                     }
-                    // The question stays, the reason beside it.
-                    Err(why) => {
-                        set_status(e, &format!("読み直せません: {why}"));
-                        e.outside = Some(bytes);
+                    Err(reason) => {
+                        tell(e, &reason);
                         false
                     }
                 }
             }
+            // Read again only what the parser reads: else the question
+            // stays, the reason beside it.
+            RELOAD => {
+                let Some(bytes) = e.outside.take() else { return true };
+                let read = config::parse(&bytes)
+                    .map_err(|errors| first_error(&errors))
+                    .and_then(|_| Document::new(&bytes).map_err(|e| e.to_string()));
+                match read {
+                    Ok(doc) => {
+                        e.doc = doc;
+                        e.base = bytes.clone();
+                        e.known = bytes;
+                        said = "読み直しました";
+                        true
+                    }
+                    Err(why) => {
+                        e.outside = Some(bytes);
+                        tell(e, &format!("読み直せません: {why}"));
+                        false
+                    }
+                }
+            }
+            // The window's stays: what it holds is unchanged, and saving it
+            // overwrites the change.
             KEEP => {
-                // The window's stays; saving it overwrites the change.
                 if let Some(bytes) = e.outside.take() {
                     e.known = bytes;
                 }
@@ -492,14 +576,20 @@ unsafe fn command(id: usize) {
             }
             // Not saved, the question stays, the reason beside it.
             SAVE_AND_CLOSE => {
-                close = save(e);
+                match save(e) {
+                    Ok(()) => close = true,
+                    Err(reason) => tell(e, &reason),
+                }
                 false
             }
             DISCARD => {
                 close = true;
                 false
             }
-            CANCEL => true,
+            CANCEL => {
+                ask_again = e.outside.is_some();
+                true
+            }
             _ => false,
         });
         let Some(hwnd) = with_editor(|e| e.hwnd) else { return };
@@ -507,7 +597,11 @@ unsafe fn command(id: usize) {
             DestroyWindow(hwnd);
         } else if answered == Some(true) {
             ask(None);
-            with_editor(|e| set_status(e, said));
+            if ask_again {
+                ask(Some(Ask::Changed));
+            } else {
+                with_editor(|e| set_status(e, said));
+            }
         }
     }
 }
@@ -533,9 +627,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // a pointer from it is nothing to follow.
             WM_DPICHANGED => {
                 let dpi = (wp & 0xFFFF) as u32;
-                // Windows's scales run from 100% to 500%; anything far
-                // outside is no monitor's.
-                if !(48..=960).contains(&dpi) {
+                // Windows's scales run from 100% to 500%; anything else is
+                // no monitor's.
+                if !(96..=480).contains(&dpi) {
                     return 0;
                 }
                 let resized = with_editor(|e| {
@@ -573,8 +667,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_CLOSE => {
                 match with_editor(|e| unsaved(e)) {
                     Some(true) => ask(Some(Ask::Closing)),
-                    _ => {
+                    Some(false) => {
                         DestroyWindow(hwnd);
+                    }
+                    // In use further up the stack: try again once it is done,
+                    // rather than close past changes.
+                    None => {
+                        PostMessageW(hwnd, WM_CLOSE, 0, 0);
                     }
                 }
                 0

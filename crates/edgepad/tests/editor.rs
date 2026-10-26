@@ -168,11 +168,24 @@ fn four_tabs_switch() {
     for name in ["一般", "辺", "キーセット", "プロファイル"] {
         assert!(child(editor, TAB_CLASS, name).is_some(), "a tab 「{name}」");
     }
+    // Inside a tab's edge, clear of its label: its fill.
+    let fill = |name: &str| {
+        let r = window_rect(child(editor, TAB_CLASS, name).expect("a tab"));
+        colour_at(POINT { x: r.left + 3, y: r.top + 3 })
+    };
     for name in ["キーセット", "辺", "プロファイル", "一般"] {
         click_child(editor, TAB_CLASS, name);
         let want = format!("settings: tab {name}");
         assert!(within_3s(|| test_events(&app).last() == Some(&want)), "{name} is the tab shown: {:?}", test_events(&app));
+        let other = if name == "一般" { "辺" } else { "一般" };
+        let _ = within_3s(|| fill(name) != fill(other));
+        assert_ne!(fill(name), fill(other), "{name} looks shown, unlike {other}");
     }
+}
+
+fn colour_at(p: POINT) -> [i32; 3] {
+    unsafe { DwmFlush() };
+    channels(capture(RECT { left: p.x, top: p.y, right: p.x + 1, bottom: p.y + 1 })[0])
 }
 
 // AC3
@@ -214,7 +227,7 @@ fn a_file_changed_outside_is_told_and_its_own_save_is_not() {
     // Outside, then read again.
     std::fs::write(&path, settings("theme = dark")).unwrap();
     assert!(within_3s(|| child(editor, BUTTON_CLASS, "読み直す").is_some()), "told of the change");
-    assert!(child(editor, BUTTON_CLASS, "画面の内容を保つ").is_some(), "with a choice");
+    assert!(within_3s(|| child(editor, BUTTON_CLASS, "画面の内容を保つ").is_some()), "with a choice");
     click_child(editor, BUTTON_CLASS, "読み直す");
     assert!(within_3s(|| child(editor, BUTTON_CLASS, "読み直す").is_none()), "answered");
     change(editor, 60);
@@ -291,6 +304,36 @@ fn closing_with_changes_asks_whether_to_save_them() {
     let editor = open(&app, id);
     unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
     assert!(within_3s(|| editors(&app).is_empty()), "nothing to ask about");
+
+    // A change outside kept off, nothing of the window's changed: nothing
+    // to ask about either.
+    let path = exe_dir(&app).join("edgepad.ini");
+    let editor = open(&app, id);
+    std::fs::write(&path, settings("theme = dark")).unwrap();
+    assert!(within_3s(|| child(editor, BUTTON_CLASS, "画面の内容を保つ").is_some()));
+    click_child(editor, BUTTON_CLASS, "画面の内容を保つ");
+    unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
+    assert!(within_3s(|| editors(&app).is_empty()), "kept off, nothing to save: it closes");
+
+    // Changes, and a change outside not yet answered: closing asks about
+    // both; cancelled, the change outside is asked about again.
+    let editor = open(&app, id);
+    change(editor, 30);
+    std::fs::write(&path, settings("theme = light")).unwrap();
+    assert!(within_3s(|| child(editor, BUTTON_CLASS, "読み直す").is_some()));
+    unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
+    assert!(within_3s(|| child(editor, BUTTON_CLASS, "キャンセル").is_some()), "asked about closing");
+    assert!(status(editor).contains("外でも"), "and told of the change outside: {:?}", status(editor));
+    click_child(editor, BUTTON_CLASS, "キャンセル");
+    assert!(within_3s(|| child(editor, BUTTON_CLASS, "読み直す").is_some()), "asked about the change outside again");
+
+    // The tray's exit, with changes not saved: EdgePad stays, asking.
+    let exit = menu_item(&app, "終了").id;
+    let tray = find_window(&app, TRAY_CLASS, false);
+    unsafe { PostMessageW(tray, WM_COMMAND, exit as usize, 0) };
+    pump(1000);
+    assert!(editors(&app).contains(&editor), "EdgePad and the window are still there");
+    assert!(child(editor, BUTTON_CLASS, "保存せずに閉じる").is_some(), "asking about the changes");
 }
 
 /// A new window of this process, once it is in front.
@@ -378,10 +421,17 @@ fn it_follows_the_dpi_of_its_monitor_and_the_theme() {
         });
         let c = middle(editor);
         assert!(near(c, want), "{theme}: the background is {want:?}, not {c:?}");
-        let tab = child(editor, TAB_CLASS, "一般").expect("a tab");
+        // A tab not shown, filled as a key: its label is what differs.
+        let tab = child(editor, TAB_CLASS, "辺").expect("a tab");
         let r = window_rect(tab);
-        let ink = capture(r).iter().map(|&p| channels(p)).filter(|&c| !near(c, want)).count();
-        assert!(ink > 0, "{theme}: the tab's label is drawn");
+        let ink = || {
+            unsafe { DwmFlush() };
+            let pixels = capture(r);
+            let face = channels(pixels[(3 * (r.right - r.left) + 3) as usize]);
+            pixels.iter().map(|&p| channels(p)).filter(|&c| !near(c, face)).count()
+        };
+        let _ = within_3s(|| ink() > 0);
+        assert!(ink() > 0, "{theme}: the tab's label is drawn");
         drop(app);
     }
 
@@ -397,6 +447,14 @@ fn it_follows_the_dpi_of_its_monitor_and_the_theme() {
     let (h1, w1) = (window_rect(tab).bottom - window_rect(tab).top, window_rect(editor).right - window_rect(editor).left);
     assert!((h1 - h0 * 3 / 2).abs() <= 2, "the tab grows with the DPI: {h0} -> {h1}");
     assert!((w1 - w0 * 3 / 2).abs() <= 4, "and the window: {w0} -> {w1}");
+
+    // A DPI no monitor has (0, or far past 500%) changes nothing.
+    for bad in [0, 0xFFFF] {
+        unsafe { SendMessageW(editor, WM_DPICHANGED, (bad << 16 | bad) as usize, &suggested as *const _ as isize) };
+        pump(300);
+        let w = window_rect(editor).right - window_rect(editor).left;
+        assert_eq!(w, w1, "DPI {bad}: the window stays as it was");
+    }
 }
 
 fn private_bytes(app: &Running) -> usize {

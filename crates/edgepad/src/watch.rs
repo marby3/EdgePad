@@ -5,7 +5,7 @@
 //! at once (MsgWaitForMultipleObjectsEx), so waiting costs no CPU: no timer,
 //! no polling.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::mem::zeroed;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
@@ -36,6 +36,34 @@ thread_local! {
     // each report writes the --debug log into a watched folder, which would
     // wake this up again for the same failure.
     static UNREADABLE: RefCell<Option<String>> = const { RefCell::new(None) };
+    // The settings folders are to be looked up and watched afresh.
+    static RESCAN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Watch any settings folder made since the watching began, once the
+/// messages in hand are handled (%APPDATA%\EdgePad, made when the exe's
+/// folder takes no file).
+pub fn rescan() {
+    RESCAN.set(true);
+}
+
+/// Add a change notification for each settings folder there is and
+/// `watched` does not yet name, to `watched` and `watches` alike. Those
+/// there already stay: closed and opened again, they would miss a change
+/// made in between.
+fn watch_folders(watched: &mut Vec<std::path::PathBuf>, watches: &mut Vec<HANDLE>) {
+    for dir in settings::folders() {
+        if watched.contains(&dir) {
+            continue;
+        }
+        let path: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+        let filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;
+        let h = unsafe { FindFirstChangeNotificationW(path.as_ptr(), 0, filter) };
+        if h != INVALID_HANDLE_VALUE {
+            watched.push(dir);
+            watches.push(h);
+        }
+    }
 }
 
 /// Read the settings file and apply it if it changed since it was last read,
@@ -84,24 +112,17 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
     SEEN.set(seen);
     // A file that could not be read at start was reported then already.
     UNREADABLE.set(unreadable);
-    let watches: Vec<HANDLE> = settings::folders()
-        .iter()
-        .filter_map(|dir| {
-            let path: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
-            let filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;
-            let h = unsafe { FindFirstChangeNotificationW(path.as_ptr(), 0, filter) };
-            (h != INVALID_HANDLE_VALUE).then_some(h)
-        })
-        .collect();
-    let folders = watches.len() as u32;
-    let mut handles = watches.clone();
-    if !toggle.is_null() {
-        handles.push(toggle);
-    }
-    let n = handles.len() as u32;
+    let (mut watched, mut watches) = (Vec::new(), Vec::new());
+    watch_folders(&mut watched, &mut watches);
     // When the folders have been quiet for SETTLE after a change.
     let mut due: Option<Instant> = None;
     loop {
+        let folders = watches.len() as u32;
+        let mut handles = watches.clone();
+        if !toggle.is_null() {
+            handles.push(toggle);
+        }
+        let n = handles.len() as u32;
         let timeout = due.map_or(INFINITE, |t| t.saturating_duration_since(Instant::now()).as_millis() as u32);
         let woke = unsafe {
             MsgWaitForMultipleObjectsEx(n, handles.as_ptr(), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
@@ -119,6 +140,9 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
                     return;
                 }
                 unsafe { DispatchMessageW(&msg) };
+            }
+            if RESCAN.take() {
+                watch_folders(&mut watched, &mut watches);
             }
         } else if woke == WAIT_TIMEOUT {
             due = None;

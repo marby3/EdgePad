@@ -280,6 +280,8 @@ unsafe fn open_settings(hwnd: HWND) {
         notify("設定ファイルを作れませんでした");
         return;
     };
+    // The file may be new, in a folder made just now: watched from now.
+    watch::rescan();
     test_event(&format!("open: {}", path.display()));
     // Test builds stop short of starting an editor.
     #[cfg(not(feature = "fault-injection"))]
@@ -312,7 +314,11 @@ unsafe fn exit(hwnd: HWND) {
 unsafe fn command(hwnd: HWND, id: usize) {
     unsafe {
         match id {
-            CMD_EXIT => exit(hwnd),
+            CMD_EXIT => {
+                if editor::may_exit() {
+                    exit(hwnd);
+                }
+            }
             CMD_EDITOR => editor::open(),
             CMD_OPEN => open_settings(hwnd),
             CMD_RELOAD => watch::reload(true),
