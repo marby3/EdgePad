@@ -124,6 +124,32 @@ fn comctl32_v6(app: &Running) -> bool {
     modules(app).iter().any(|m| m.contains("microsoft.windows.common-controls") && m.ends_with("comctl32.dll"))
 }
 
+/// The files of the modules loaded in process `pid`.
+fn modules_of(pid: u32) -> Vec<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+        assert!(!process.is_null(), "open process {pid}");
+        let mut handles = vec![null_mut(); 1024];
+        let mut needed = 0;
+        let size = (handles.len() * size_of::<usize>()) as u32;
+        let listed = EnumProcessModulesEx(process, handles.as_mut_ptr(), size, &mut needed, LIST_MODULES_ALL);
+        assert!(listed != 0, "list the modules of process {pid}");
+        handles.truncate(needed as usize / size_of::<usize>());
+        let names = handles
+            .iter()
+            .map(|&m| {
+                let mut buf = [0u16; 520];
+                let n = GetModuleFileNameExW(process, m, buf.as_mut_ptr(), 520);
+                String::from_utf16_lossy(&buf[..n as usize]).to_lowercase()
+            })
+            .collect();
+        CloseHandle(process);
+        names
+    }
+}
+
 // AC2
 #[test]
 fn its_parts_are_windows_own_controls_of_comctl32_v6_asking_as_before() {
@@ -132,7 +158,12 @@ fn its_parts_are_windows_own_controls_of_comctl32_v6_asking_as_before() {
     let id = open_id(&app);
     assert!(!comctl32_v6(&app), "precondition: not loaded before the window opens");
     let editor = open(&app, id);
-    assert!(comctl32_v6(&app), "loaded from WinSxS once it opens: {:?}", modules(&app));
+    // In the settings window's own process since Issue #90.
+    let theirs = modules_of(pid_of(editor));
+    assert!(
+        theirs.iter().any(|m| m.contains("microsoft.windows.common-controls") && m.ends_with("comctl32.dll")),
+        "loaded from WinSxS once it opens: {theirs:?}"
+    );
     for c in children(editor) {
         let class = class_of(c);
         assert!(["Button", "ListBox", "Static"].contains(&class.as_str()), "a part of Windows's own, not {class:?}");

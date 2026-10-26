@@ -135,9 +135,6 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
                     close(&watches);
                     return;
                 }
-                if unsafe { editor::take(&msg) } {
-                    continue;
-                }
                 unsafe { DispatchMessageW(&msg) };
             }
             if RESCAN.take() {
@@ -145,19 +142,13 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
             }
         } else if woke == WAIT_TIMEOUT {
             due = None;
-            unsafe {
-                reload(false);
-                editor::file_changed();
-            }
+            unsafe { reload(false) };
         } else {
             // WAIT_FAILED: nothing sensible to wait on; keep the app alive
             // on messages alone.
             close(&watches);
             let mut msg: MSG = unsafe { zeroed() };
             while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {
-                if unsafe { editor::take(&msg) } {
-                    continue;
-                }
                 unsafe { DispatchMessageW(&msg) };
             }
             return;
@@ -168,5 +159,58 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
 fn close(watches: &[HANDLE]) {
     for &h in watches {
         unsafe { FindCloseChangeNotification(h) };
+    }
+}
+
+/// The message loop of the settings window's process (`editor_process`):
+/// the settings folders are watched, from before `open` shows the window,
+/// for its question about a change outside; keys reach it first; and the
+/// loop ends when the window closes. False if `open` could not.
+pub unsafe fn run_settings(open: impl FnOnce() -> bool) -> bool {
+    let (mut watched, mut watches) = (Vec::new(), Vec::new());
+    watch_folders(&mut watched, &mut watches);
+    if !open() {
+        close(&watches);
+        return false;
+    }
+    // The window may have made the settings file, in a folder of its own.
+    watch_folders(&mut watched, &mut watches);
+    let mut due: Option<Instant> = None;
+    loop {
+        let n = watches.len() as u32;
+        let timeout = due.map_or(INFINITE, |t| t.saturating_duration_since(Instant::now()).as_millis() as u32);
+        let woke = unsafe { MsgWaitForMultipleObjectsEx(n, watches.as_ptr(), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
+        if woke < WAIT_OBJECT_0 + n {
+            unsafe { FindNextChangeNotification(watches[(woke - WAIT_OBJECT_0) as usize]) };
+            due = Some(Instant::now() + SETTLE);
+        } else if woke == WAIT_OBJECT_0 + n {
+            let mut msg: MSG = unsafe { zeroed() };
+            while unsafe { PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) } != 0 {
+                if msg.message == WM_QUIT {
+                    close(&watches);
+                    return true;
+                }
+                if unsafe { editor::take(&msg) } {
+                    continue;
+                }
+                unsafe { DispatchMessageW(&msg) };
+            }
+            if RESCAN.take() {
+                watch_folders(&mut watched, &mut watches);
+            }
+        } else if woke == WAIT_TIMEOUT {
+            due = None;
+            unsafe { editor::file_changed() };
+        } else {
+            close(&watches);
+            let mut msg: MSG = unsafe { zeroed() };
+            while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {
+                if unsafe { editor::take(&msg) } {
+                    continue;
+                }
+                unsafe { DispatchMessageW(&msg) };
+            }
+            return true;
+        }
     }
 }

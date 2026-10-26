@@ -5,6 +5,7 @@
 mod autostart;
 mod colors;
 mod editor;
+mod editor_process;
 mod instance;
 mod launch;
 mod log;
@@ -21,6 +22,7 @@ use std::process::ExitCode;
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
+use windows_sys::Win32::UI::Input::Ime::ImmDisableIME;
 use windows_sys::Win32::UI::Input::Pointer::EnableMouseInPointer;
 
 fn main() -> ExitCode {
@@ -31,16 +33,28 @@ fn main() -> ExitCode {
         unsafe { send::release_all() };
         report(info);
     }));
+    let debug = std::env::args_os().skip(1).any(|a| a == "--debug");
     unsafe {
         // Each panel follows the DPI of its own monitor (WM_DPICHANGED).
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        // Started from the tray to show the settings window, and nothing
+        // else (editor_process).
+        if std::env::args_os().skip(1).any(|a| a == editor_process::ARG) {
+            log::start(debug, log::SETTINGS_FILE_NAME);
+            return if editor::run() { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+        }
+        // Nothing here takes typing: without the IME, Windows loads none of
+        // its text input into EdgePad when the tray menu takes the focus
+        // (spec 8). The settings window, which does take typing, has it in
+        // its own process.
+        ImmDisableIME(u32::MAX);
         // Mouse arrives as WM_POINTER* too, so one code path serves both.
         EnableMouseInPointer(1);
         // An edge set to none shows no panel; the tray runs regardless.
         // A second launch toggles the running EdgePad's panels and leaves.
         let Some(toggle) = instance::claim() else { return ExitCode::SUCCESS };
         // After the claim: a second launch must not wipe the running one's log.
-        log::start(std::env::args_os().skip(1).any(|a| a == "--debug"));
+        log::start(debug, log::FILE_NAME);
         let path = settings::path();
         let shown = path.as_ref().map_or("なし".into(), |p| p.display().to_string());
         log::debug_log!("起動 EdgePad {} 設定: {shown}", env!("CARGO_PKG_VERSION"));

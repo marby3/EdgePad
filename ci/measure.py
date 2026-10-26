@@ -10,9 +10,10 @@ CPU time and stops the process. The startup time runs from just before the
 launch call, so it includes process creation and errs on the slow side.
 
 With --settings-window, the settings window is then opened from the tray and
-closed again five times, and the private memory read while it is open and
-after each closing; and whether the common controls (comctl32 v6) were
-loaded before it first opened.
+closed again five times: the private memory of its process is read while it
+is open, and the running EdgePad's after each closing; and whether the
+common controls (comctl32 v6) were loaded in the running EdgePad, before
+and after, and in the settings window's process.
 
 With --settings, the hotkey the file names is checked as well: free before
 the launch, held once EdgePad is up. That shows the settings were applied
@@ -71,8 +72,10 @@ kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes
 kernel32.OpenProcess.restype = wintypes.HANDLE
 kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
 
 PROCESS_QUERY_INFORMATION = 0x0400
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_VM_READ = 0x0010
 
 
@@ -246,19 +249,56 @@ def to_front(hwnd):
     return user32.GetForegroundWindow() == hwnd
 
 
+def exe_of(pid):
+    """The exe process `pid` runs, or None."""
+    process = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not process:
+        return None
+    try:
+        name = ctypes.create_unicode_buffer(520)
+        size = wintypes.DWORD(520)
+        if not kernel32.QueryFullProcessImageNameW(process, 0, name, ctypes.byref(size)):
+            return None
+        return pathlib.Path(name.value)
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def settings_windows():
+    """The shown settings windows of the exe measured, with their process:
+    since Issue #90 the window is in a process of its own."""
+    found, hwnd = [], None
+    while True:
+        hwnd = user32.FindWindowExW(None, hwnd, EDITOR_CLASS, None)
+        if not hwnd:
+            return found
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        exe = exe_of(owner.value)
+        if user32.IsWindowVisible(hwnd) and exe and os.path.normcase(exe) == os.path.normcase(EXE):
+            found.append((hwnd, owner.value))
+
+
 def settings_window(pid, handle):
     """Open the settings window and close it OPENINGS times, reading the
-    private memory each time it is open and once it is closed."""
+    private memory of its process while it is open, and of the running
+    EdgePad (`handle`) once it is closed."""
     at_start = comctl32_v6(handle)
     tray, command = settings_command(pid)
     opened, closed, in_front, when_open = [], [], [], False
     for _ in range(OPENINGS):
         user32.PostMessageW(tray, WM_COMMAND, command, 0)
-        window = wait_for(lambda: shown(pid, EDITOR_CLASS), 5, "the settings window opens")
+        window, owner = wait_for(settings_windows, 5, "the settings window opens")
         in_front.append(to_front(window))
         time.sleep(SETTLE)
-        opened.append(memory(handle)[0])
-        when_open = when_open or comctl32_v6(handle)
+        process = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, owner)
+        if not process:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            opened.append(memory(process)[0])
+            when_open = when_open or comctl32_v6(process)
+        finally:
+            kernel32.CloseHandle(process)
         user32.PostMessageW(window, WM_CLOSE, 0, 0)
         wait_for(lambda: [True] if not user32.IsWindow(window) else [], 5, "the settings window closes")
         time.sleep(SETTLE)
@@ -266,6 +306,7 @@ def settings_window(pid, handle):
     return {
         "comctl32_at_start": at_start,
         "comctl32_when_open": when_open,
+        "comctl32_at_end": comctl32_v6(handle),
         "in_front": in_front,
         "open_private_bytes": opened,
         "closed_private_bytes": closed,
@@ -416,11 +457,11 @@ def table(r, env):
     if window:
         rows += [
             ("comctl32 v6 before the settings window opens", str(window["comctl32_at_start"]), "False"),
-            ("private memory, settings window open (most)", mib(max(window["open_private_bytes"])), "8 MiB or less"),
+            ("private memory of the settings window's process (most)", mib(max(window["open_private_bytes"])), "8 MiB or less"),
             (
-                "private memory, settings window closed (each time)",
+                "private memory once it closed (each time)",
                 ", ".join(mib(b) for b in window["closed_private_bytes"]),
-                "4 MiB or less, not growing",
+                "3 MiB or less, not growing",
             ),
         ]
     lines = [f"{k}: {v}" for k, v in env.items()]
