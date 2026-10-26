@@ -74,7 +74,8 @@ pub struct Opening<'a> {
     pub set: &'a str,
     pub labels: &'a [&'a str],
     pub palette: Palette,
-    /// The constant alpha the panel is drawn with now.
+    /// The constant alpha the menu is drawn with: the panels' own, not
+    /// the dimmed one they take behind it.
     pub alpha: u8,
 }
 

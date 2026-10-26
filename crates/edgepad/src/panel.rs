@@ -325,9 +325,11 @@ thread_local! {
     // across rebuilds, never written to disk.
     static HIDDEN: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
-    // The edges a pen hovers over, shown dimmed while it does (spec 4.5).
-    // Hiding an edge ends it.
+    // The edges a pen hovers over, shown dimmed while it does (spec 4.5),
+    // and the pen's pointer: its leaving ends it, out of range too, when
+    // its kind may no longer be asked. Hiding an edge ends it.
     static PEN_OVER: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
+    static PEN_ID: Cell<[u32; 4]> = const { Cell::new([0; 4]) };
     // The theme and accent of the settings, and the colours they come to.
     // Every panel shares them; Windows changing its own makes them anew.
     static STYLE: Cell<(Theme, Accent)> = const { Cell::new((Theme::Auto, Accent::Auto)) };
@@ -606,18 +608,27 @@ fn redraw_all() -> bool {
     })
 }
 
-/// A pen came over the panel of `hwnd` (`over`), or went off it or out of
-/// range: that panel alone is dimmed while it is there.
-unsafe fn pen_over(hwnd: HWND, over: bool) {
+/// Pointer `id` came over the panel of `hwnd` (`over`, if it is a pen), or
+/// went off it or out of range (if it is the pen that came): that panel
+/// alone is dimmed while a pen is there.
+unsafe fn pen_over(hwnd: HWND, id: u32, over: bool) {
     let mut edge = None;
     with_panel(hwnd, |panel| edge = Some(panel.edge));
     let Some(edge) = edge else { return };
-    let mut now = PEN_OVER.get();
-    if now[edge as usize] == over {
+    let (mut now, mut ids) = (PEN_OVER.get(), PEN_ID.get());
+    let k = edge as usize;
+    match over {
+        true if is_pen(id) => ids[k] = id,
+        false if now[k] && ids[k] == id => ids[k] = 0,
+        _ => return,
+    }
+    if now[k] == over {
+        PEN_ID.set(ids);
         return;
     }
-    now[edge as usize] = over;
+    now[k] = over;
     PEN_OVER.set(now);
+    PEN_ID.set(ids);
     debug_log!("パネル {}: ペンが{}", edge_name(edge), if over { "乗った（半透明）" } else { "離れた" });
     if !redraw_all() {
         unsafe { PostMessageW(hwnd, REDRAW, 0, 0) };
@@ -660,6 +671,9 @@ unsafe fn apply_visibility() {
                 if show {
                     // Room first: no maximised window is under it as it shows.
                     dock(panel);
+                    // At the alpha it has now: a pie menu may have opened or
+                    // closed while it was hidden.
+                    draw(panel);
                     slide(panel, true);
                     ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
                     count_idle(panel);
@@ -867,18 +881,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_POINTERENTER => {
-                if is_pen(pointer_id(wp)) {
-                    pen_over(hwnd, true);
-                }
+                pen_over(hwnd, pointer_id(wp), true);
                 mouse_moved(hwnd, wp, Some(pointer_at(lp)));
                 0
             }
             // Gone from the panel, though perhaps onto its handle; a pen
             // perhaps only out of range.
             WM_POINTERLEAVE => {
-                if is_pen(pointer_id(wp)) {
-                    pen_over(hwnd, false);
-                }
+                pen_over(hwnd, pointer_id(wp), false);
                 mouse_moved(hwnd, wp, None);
                 0
             }

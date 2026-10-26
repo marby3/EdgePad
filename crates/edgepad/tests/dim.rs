@@ -94,7 +94,7 @@ fn centre(r: RECT) -> POINT {
 }
 
 /// The centre of the key at `column`, `row` of the left panel.
-fn cell(panel: RECT, column: i32, row: i32) -> POINT {
+fn key_at(panel: RECT, column: i32, row: i32) -> POINT {
     let key = key_px();
     POINT { x: panel.left + key * column + key / 2, y: panel.top + key * row + key / 2 }
 }
@@ -125,7 +125,8 @@ fn a_short_swipe_shows_the_panel_normally_and_an_inward_flick_lets_no_key_go() {
     unsafe { GetCursorPos(&mut saved) };
     mouse_move_to(start);
     mouse_down_at(start);
-    let end = POINT { x: start.x + key_px() * 3 / 4, y: start.y };
+    // Just past half a key: a short swipe.
+    let end = POINT { x: start.x + key_px() / 2 + 3, y: start.y };
     mouse_move_to(end);
     pump(100);
     mouse_up_at(end);
@@ -137,7 +138,7 @@ fn a_short_swipe_shows_the_panel_normally_and_an_inward_flick_lets_no_key_go() {
     // A quick flick inward on the panel: A stays pressed until the lift.
     let log = KeyLog::start();
     let mut touch = Touch::new();
-    let a = cell(left_panel(&app), 0, 0);
+    let a = key_at(left_panel(&app), 0, 0);
     touch.down(1, a);
     touch.move_to(1, POINT { x: a.x + key_px() * 2, y: a.y });
     pump(300);
@@ -181,9 +182,10 @@ fn while_a_pie_menu_is_open_the_panels_are_dimmed_and_the_menu_is_not() {
     let backdrops = backdrops();
     let app = launch_with(Some(&settings(DIMMING)), None);
     find_panel(&app);
-    let log = KeyLog::start();
+    // Swallows the item's F2, so it reaches no window of the desktop.
+    let _log = KeyLog::start();
     let mut touch = Touch::new();
-    let pie = cell(left_panel(&app), 1, 0);
+    let pie = key_at(left_panel(&app), 1, 0);
 
     // Held open, slid to an item and let go.
     touch.down(1, pie);
@@ -199,7 +201,8 @@ fn while_a_pie_menu_is_open_the_panels_are_dimmed_and_the_menu_is_not() {
     let r = key_px() as f64 * 1.625 / std::f64::consts::SQRT_2;
     let item = POINT { x: pie.x + r as i32, y: pie.y + r as i32 };
     let o = opacity(&backdrops, RECT { left: item.x, top: item.y, right: item.x + 1, bottom: item.y + 1 });
-    assert!(menu.right > item.x && near(o, 70), "the menu itself at opacity 70%, not {o}%");
+    let inside = item.x > menu.left && item.x < menu.right && item.y > menu.top && item.y < menu.bottom;
+    assert!(inside && near(o, 70), "the menu itself at opacity 70%, not {o}%");
     touch.move_to(1, item);
     touch.up(1);
     wait_pie(&app, false);
@@ -219,7 +222,6 @@ fn while_a_pie_menu_is_open_the_panels_are_dimmed_and_the_menu_is_not() {
     wait_pie(&app, false);
     let o = becomes(&backdrops, || left_panel(&app), 70);
     assert!(near(o, 70), "closed by a tap: back to 70%, not {o}%");
-    let _ = log.keys();
 }
 
 /// An injected pen, hovering in range without touching. A real pen keeps
@@ -298,7 +300,7 @@ fn a_pen_over_a_panel_dims_that_panel_alone_and_presses_nothing() {
     let app = launch_with(Some(&settings(DIMMING)), None);
     find_panel(&app);
     let log = KeyLog::start();
-    let a = cell(left_panel(&app), 0, 0);
+    let a = key_at(left_panel(&app), 0, 0);
     let middle = centre(primary_monitor());
 
     let pen = Pen::new();

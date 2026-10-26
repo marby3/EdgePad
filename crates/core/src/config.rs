@@ -71,7 +71,8 @@ pub struct General {
     pub key_size: u32,
     /// Opacity of the shown panel, percent.
     pub opacity: u8,
-    /// Opacity of the dimmed panel, percent.
+    /// Opacity of the panels while a pie menu is open, or of one a pen is
+    /// over, percent.
     pub dim_opacity: u8,
     /// A modifier tapped for less than this latches.
     pub latch_ms: u32,
