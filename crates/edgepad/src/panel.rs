@@ -314,6 +314,14 @@ pub unsafe fn restyle() -> bool {
     })
 }
 
+/// Take the theme and accent of `panels`, for the panels and the settings
+/// window alike: with no panel at all, the settings window still draws in
+/// them.
+pub fn set_style(panels: &Panels) {
+    STYLE.set((panels.theme, panels.accent));
+    PALETTE.set(Some(colors::palette(panels.theme, panels.accent)));
+}
+
 /// `percent` opacity as a constant alpha.
 fn alpha(percent: u8) -> u8 {
     ((percent.min(100) as u32 * 255 + 50) / 100) as u8
@@ -447,8 +455,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         if hwnd.is_null() {
             return false;
         }
-        STYLE.set((panels.theme, panels.accent));
-        PALETTE.set(Some(colors::palette(panels.theme, panels.accent)));
+        set_style(panels);
         let keys: Vec<PanelKey> = p.keys.iter().map(PanelKey::of).collect();
         let presses = Presses::new(keys.len());
         let rect = Rect { x: 0, y: 0, w: 0, h: 0 };
@@ -530,6 +537,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
 /// are released first, so none is left down with no panel to lift it.
 /// Returns false if a window could not be created.
 pub unsafe fn rebuild(panels: &Panels) -> bool {
+    set_style(panels);
     unsafe {
         // The handles go, and their hover timers with them. An edge shown by
         // hovering stays so, if it still has a panel.

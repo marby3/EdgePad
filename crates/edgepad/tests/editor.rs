@@ -105,10 +105,12 @@ fn centre(r: RECT) -> POINT {
     POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }
 }
 
-/// Click the child of `editor` of `class` and `text`, in front first.
+/// Click the child of `editor` of `class` and `text`, in front first: the
+/// window opens behind whatever is in front when the tray did not have the
+/// focus to give it, as the posted command does not on CI.
 fn click_child(editor: HWND, class: &str, text: &str) {
     let c = child(editor, class, text).unwrap_or_else(|| panic!("no {class} 「{text}」"));
-    force_foreground(editor);
+    wait_in_front(editor);
     click(centre(window_rect(c)));
     pump(300);
 }
@@ -183,7 +185,7 @@ fn saving_checks_with_the_parser_and_writes_only_what_reads() {
 
     change(editor, 150);
     click_child(editor, BUTTON_CLASS, "保存");
-    within_3s(|| !status(editor).is_empty());
+    let _ = within_3s(|| !status(editor).is_empty());
     let said = status(editor);
     assert!(said.contains('3') && said.contains("150"), "the line and the reason: {said:?}");
     assert_eq!(file(&app), before, "nothing written");
@@ -191,7 +193,7 @@ fn saving_checks_with_the_parser_and_writes_only_what_reads() {
     change(editor, 70);
     click_child(editor, BUTTON_CLASS, "保存");
     let want = before.replace("opacity = 90   ;", "opacity = 70   ;");
-    within_3s(|| file(&app) == want);
+    let _ = within_3s(|| file(&app) == want);
     assert_eq!(file(&app), want, "written, the rest as it was");
 }
 
@@ -265,7 +267,7 @@ fn closing_with_changes_asks_whether_to_save_them() {
     unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
     assert!(within_3s(|| child(editor, BUTTON_CLASS, "保存する").is_some()));
     click_child(editor, BUTTON_CLASS, "保存する");
-    within_3s(|| status(editor).contains("150"));
+    let _ = within_3s(|| status(editor).contains("150"));
     assert!(status(editor).contains("150"), "the reason shows: {:?}", status(editor));
     assert!(unsafe { IsWindow(editor) } != 0 && child(editor, BUTTON_CLASS, "保存せずに閉じる").is_some(), "still asked");
     click_child(editor, BUTTON_CLASS, "保存せずに閉じる");
@@ -304,8 +306,7 @@ fn in_front_the_window_switches_no_profile_and_lets_no_key_go() {
     let mut touch = Touch::new();
     touch.down(1, key_centre(left_panel(&app), 0));
     let editor = open(&app, id);
-    force_foreground(editor);
-    assert_eq!(unsafe { GetForegroundWindow() }, editor, "precondition: the settings window in front");
+    wait_in_front(editor);
     pump(500);
     assert_eq!(left_keys(&app), 3, "the profile stays");
     assert_eq!(log.keys(), [(b'A' as u16, false)], "A stays held");
@@ -336,8 +337,8 @@ fn it_follows_the_dpi_of_its_monitor_and_the_theme() {
     for (theme, want) in [("dark", DARK), ("light", LIGHT)] {
         let app = launch_with(Some(&settings(&format!("theme = {theme}"))), None);
         let editor = open(&app, open_id(&app));
-        force_foreground(editor);
-        within_3s(|| {
+        wait_in_front(editor);
+        let _ = within_3s(|| {
             unsafe { DwmFlush() };
             near(middle(editor), want)
         });

@@ -21,7 +21,7 @@ use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWin
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_ESCAPE};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
@@ -61,7 +61,10 @@ const STATUS: isize = 3;
 /// messages are: the name is the contract with the tests.
 #[cfg(feature = "fault-injection")]
 fn test_set() -> u32 {
-    unsafe { RegisterWindowMessageW(w!("EdgePadTestEditorSet")) }
+    thread_local! {
+        static ID: u32 = unsafe { RegisterWindowMessageW(w!("EdgePadTestEditorSet")) };
+    }
+    ID.with(|id| *id)
 }
 
 const STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
@@ -256,6 +259,11 @@ pub unsafe fn open() {
         }
         editor.save = part(hwnd, w!("EdgePadSettingsButton"), "保存", SAVE, BUTTON);
         editor.status = part(hwnd, w!("EdgePadSettingsStatus"), "", 0, STATUS);
+        if editor.tabs.iter().chain([&editor.save, &editor.status]).any(|p| p.is_null()) {
+            debug_log!("設定画面の部品を作れない");
+            DestroyWindow(hwnd);
+            return;
+        }
         editor.font = font_for(editor.dpi);
         let dpi = editor.dpi;
         EDITOR.set(Some(editor));
@@ -338,7 +346,6 @@ fn set_status(e: &Editor, text: &str) {
 /// take a question away.
 unsafe fn ask(ask: Option<Ask>) {
     let made = with_editor(|e| unsafe {
-        let asked = !e.answers.is_empty();
         for answer in e.answers.drain(..) {
             DestroyWindow(answer);
         }
@@ -350,11 +357,7 @@ unsafe fn ask(ask: Option<Ask>) {
             ),
             None => ("", &[]),
         };
-        // Taken away, a question leaves whatever the status line says now
-        // in place: an error from answering it, for one.
-        if ask.is_some() || !asked {
-            set_status(e, text);
-        }
+        set_status(e, text);
         for &(label, id) in answers {
             e.answers.push(part(e.hwnd, w!("EdgePadSettingsButton"), label, id, BUTTON));
         }
@@ -370,7 +373,11 @@ fn save(e: &mut Editor) -> bool {
     let bytes = e.doc.to_bytes();
     if let Err(errors) = config::parse(&bytes) {
         let first = errors.first().map_or_else(String::new, ToString::to_string);
-        set_status(e, &format!("保存できません: {first}"));
+        let more = match errors.len() {
+            0 | 1 => String::new(),
+            n => format!("（ほか {} 件）", n - 1),
+        };
+        set_status(e, &format!("保存できません: {first}{more}"));
         return false;
     }
     if let Err(why) = std::fs::write(&e.path, &bytes) {
@@ -379,6 +386,8 @@ fn save(e: &mut Editor) -> bool {
     }
     debug_log!("設定画面から保存");
     e.known = bytes;
+    // Saved, the window's is the file: a change outside is answered.
+    e.outside = None;
     set_status(e, "保存しました");
     true
 }
@@ -414,17 +423,19 @@ unsafe fn command(id: usize) {
         // What is left to do once the window is let go: close it, or take
         // the question away.
         let mut close = false;
+        // Answered: the question goes, and the status line says what was
+        // done, in place of the question.
+        let mut said = "";
         let answered = with_editor(|e| match id {
-            SAVE => {
-                save(e);
-                false
-            }
+            // Saved, nothing is left to ask about.
+            SAVE => save(e) && !e.answers.is_empty(),
             RELOAD => {
                 let Some(bytes) = e.outside.take() else { return true };
                 match Document::new(&bytes) {
                     Ok(doc) => {
                         e.doc = doc;
                         e.known = bytes;
+                        said = "読み直しました";
                         true
                     }
                     // The question stays, the reason beside it.
@@ -440,6 +451,7 @@ unsafe fn command(id: usize) {
                 if let Some(bytes) = e.outside.take() {
                     e.known = bytes;
                 }
+                said = "画面の内容を保ちました（保存すると外の変更を上書きします）";
                 true
             }
             // Not saved, the question stays, the reason beside it.
@@ -459,6 +471,10 @@ unsafe fn command(id: usize) {
             DestroyWindow(hwnd);
         } else if answered == Some(true) {
             ask(None);
+            if id == SAVE {
+                said = "保存しました";
+            }
+            with_editor(|e| set_status(e, said));
         }
     }
 }
@@ -479,10 +495,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             // The scale of the window's monitor changed: the window and its
-            // parts grow or shrink to it. Windows sends it from this thread
-            // with the place to take, as the window is dragged across; any
-            // other sender's lParam is not this process's to read, and the
-            // window works out its new size where it is itself.
+            // parts grow or shrink to it, where it is. The suggested place
+            // in lParam is not read: any process can post this message, and
+            // a pointer from it is nothing to follow.
             WM_DPICHANGED => {
                 let dpi = (wp & 0xFFFF) as u32;
                 if dpi == 0 {
@@ -494,12 +509,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     e.dpi = dpi;
                 });
                 if resized.is_some() {
-                    if InSendMessage() == 0 && lp != 0 {
-                        let r = *(lp as *const RECT);
-                        SetWindowPos(hwnd, null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
-                    } else {
-                        size_for(hwnd, dpi, false);
-                    }
+                    size_for(hwnd, dpi, false);
                     lay_out();
                 }
                 0
@@ -508,11 +518,23 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 command(wp & 0xFFFF);
                 0
             }
+            // Esc closes, Ctrl+S saves. The rest of the keyboard comes with
+            // the fields of the tabs.
+            WM_KEYDOWN if wp == VK_ESCAPE as usize => {
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                0
+            }
+            WM_KEYDOWN if wp == b'S' as usize && GetKeyState(VK_CONTROL as i32) < 0 => {
+                command(SAVE);
+                0
+            }
             // With changes not saved, ask first; asked already about a
             // change outside, that answer comes first.
             WM_CLOSE => {
                 match with_editor(|e| (unsaved(e), e.outside.is_some())) {
-                    Some((_, true)) => {}
+                    Some((_, true)) => {
+                        with_editor(|e| set_status(e, "設定ファイルが外で書き換わりました。先にこの問いに答えてください"));
+                    }
                     Some((true, false)) => ask(Some(Ask::Closing)),
                     _ => {
                         DestroyWindow(hwnd);
@@ -521,6 +543,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_DESTROY => {
+                PRESSED.set(null_mut());
                 if let Some(e) = EDITOR.take() {
                     DeleteObject(e.font);
                     debug_log!("設定画面を閉じる");
@@ -582,6 +605,12 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 PRESSED.set(hwnd);
                 // A mouse let go off the part still tells it.
                 SetCapture(hwnd);
+                0
+            }
+            WM_POINTERCAPTURECHANGED => {
+                if PRESSED.get() == hwnd {
+                    PRESSED.set(null_mut());
+                }
                 0
             }
             WM_POINTERUP if kind != STATUS => {
