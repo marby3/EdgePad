@@ -222,8 +222,12 @@ fn exit_asks_in_the_window_about_changes_and_otherwise_ends_both() {
     pump(1000);
     assert!(app_alive(&app), "EdgePad goes on");
     assert!(test_events(&app).iter().any(|e| e.contains("保存していない変更")), "and says why: {:?}", test_events(&app));
-    click_button(editor, "保存せずに閉じる");
-    assert!(ends(pid_of(editor)), "closed without saving");
+    // Pressed by its message, not a click: the tray's notice may lie over
+    // the window's corner on a small screen.
+    let discard = child(editor, "Button", "保存せずに閉じる").expect("保存せずに閉じる");
+    let pid = pid_of(editor);
+    unsafe { SendMessageW(discard, BM_CLICK, 0, 0) };
+    assert!(ends(pid), "closed without saving");
 
     let editor = open(&app, id);
     let pid = pid_of(editor);
