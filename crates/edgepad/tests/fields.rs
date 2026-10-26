@@ -531,9 +531,10 @@ fn the_fields_follow_the_theme_and_the_dpi() {
         let choice = field(editor, "latch");
         let r = window_rect(choice);
         let pixels = look(choice);
-        // In lock, not chosen: drawn as a key, not in the accent.
-        let w = r.right - r.left;
-        let lock = channels(pixels[(3 * w + w - 4) as usize]);
+        // In lock, the option not chosen: drawn as a key, not in the
+        // accent. Inside its right end, past the frame (2 logical px).
+        let (w, inset) = (r.right - r.left, 5 * unsafe { GetDpiForWindow(editor) } as i32 / 96);
+        let lock = channels(pixels[((r.bottom - r.top) / 2 * w + w - 1 - inset) as usize]);
         assert_eq!(dark(lock), theme == "dark", "{theme}: a choice of the theme too, not {lock:?}");
         drop(app);
     }

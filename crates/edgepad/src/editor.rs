@@ -54,10 +54,12 @@ const CANCEL: usize = 304;
 
 /// Sizes in logical pixels (96 DPI).
 const CLIENT_W: i32 = 680;
-const CLIENT_H: i32 = 540;
+const CLIENT_H: i32 = 504;
 const MARGIN: i32 = 8;
 const TAB_W: i32 = 120;
 const ROW_H: i32 = 32;
+/// The status line: two lines of text.
+const STATUS_H: i32 = 40;
 /// Where the rows of a tab start, under the tabs, and the gap between them.
 const ROW_TOP: i32 = MARGIN + ROW_H + MARGIN;
 const ROW_GAP: i32 = 4;
@@ -126,8 +128,6 @@ struct Editor {
     rows: Vec<fields::Row>,
     /// The edge the 辺 tab edits, of `fields::EDGES`.
     edge: usize,
-    /// Whether the status line tells of a field's wrong value.
-    wrong_said: bool,
     /// The part that had the focus when the window was last left.
     focus: HWND,
     save: HWND,
@@ -345,7 +345,6 @@ pub unsafe fn open() {
             tab: 0,
             rows: Vec::new(),
             edge: 0,
-            wrong_said: false,
             focus: null_mut(),
             save: null_mut(),
             status: null_mut(),
@@ -383,17 +382,19 @@ pub unsafe fn open() {
 }
 
 /// Size the window for `dpi`, its client area CLIENT_W by CLIENT_H logical
-/// pixels: with `centre`, in the middle of its monitor's work area, else
-/// where it is, moved only as far as keeps it on the monitor it is on.
+/// pixels, or as much of that as its monitor's work area has room for
+/// (the rows then come closer together, `fields::place`): with `centre`,
+/// in the middle of the work area, else where it is, moved only as far as
+/// keeps it on the monitor it is on.
 unsafe fn size_for(hwnd: HWND, dpi: u32, centre: bool) {
     unsafe {
         let mut r = RECT { left: 0, top: 0, right: scale(CLIENT_W, dpi), bottom: scale(CLIENT_H, dpi) };
         AdjustWindowRectExForDpi(&mut r, STYLE, 0, EX_STYLE, dpi);
-        let (w, h) = (r.right - r.left, r.bottom - r.top);
         let mut info: MONITORINFO = zeroed();
         info.cbSize = size_of::<MONITORINFO>() as u32;
         GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
         let a = info.rcWork;
+        let (w, h) = ((r.right - r.left).min(a.right - a.left), (r.bottom - r.top).min(a.bottom - a.top));
         let (x, y) = if centre {
             (a.left + (a.right - a.left - w) / 2, a.top + (a.bottom - a.top - h) / 2)
         } else {
@@ -412,19 +413,16 @@ unsafe fn lay_out() {
     else {
         return;
     };
-    let placed = with_editor(|e| unsafe {
-        let mut client: RECT = zeroed();
-        GetClientRect(e.hwnd, &mut client);
-        fields::place(e, client);
-    });
-    if placed.is_none() {
-        return;
-    }
     unsafe {
         let mut client: RECT = zeroed();
         GetClientRect(hwnd, &mut client);
         let s = |v| scale(v, dpi);
         let (m, row, button) = (s(MARGIN), s(ROW_H), s(BUTTON_W));
+        // The rows, down to the status line.
+        let status_top = client.bottom - m - row - m - s(STATUS_H);
+        if with_editor(|e| fields::place(e, client, status_top - m)).is_none() {
+            return;
+        }
         for (i, &tab) in tabs.iter().enumerate() {
             MoveWindow(tab, m + i as i32 * (s(TAB_W) + m), m, s(TAB_W), row, 1);
         }
@@ -437,7 +435,7 @@ unsafe fn lay_out() {
             x -= m + button;
             MoveWindow(answer, x, y, button, row, 1);
         }
-        MoveWindow(status, m, y - m - 2 * row, (client.right - 2 * m).max(0), 2 * row, 1);
+        MoveWindow(status, m, status_top, (client.right - 2 * m).max(0), s(STATUS_H), 1);
         // In their places now: shown, and not before; the rows, those of
         // the tab shown, as they stand.
         for &part in tabs.iter().chain([&save, &status]).chain(&answers) {
@@ -607,6 +605,8 @@ pub unsafe fn may_exit() -> bool {
     if !is_open() {
         return true;
     }
+    // What is typed and not yet entered counts too.
+    unsafe { enter_focused() };
     // Open but in use: not now, rather than past changes.
     let Some((hwnd, unsaved)) = with_editor(|e| (e.hwnd, unsaved(e))) else { return false };
     if !unsaved {
@@ -911,7 +911,6 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 let pressed = PRESSED.get() == (pointer_id(wp), hwnd);
                 if pressed {
                     PRESSED.set((0, null_mut()));
-                DPI.set(0);
                 }
                 let mut r: RECT = zeroed();
                 GetWindowRect(hwnd, &mut r);

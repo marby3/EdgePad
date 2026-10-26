@@ -11,7 +11,8 @@
 //! A value is checked as the parser reads it before it goes into the
 //! window's copy of the file: one it would turn away stays in its field,
 //! marked, with the reason in the status line, and the file's copy keeps
-//! the value it had.
+//! the value it had. The ranges in the notes and the defaults shown are
+//! the parser's own (`config::RANGES`, `config::default_value`).
 
 use std::ptr::{null, null_mut};
 
@@ -35,8 +36,11 @@ use crate::panel;
 pub(super) const FIELD: usize = 400;
 pub(super) const RESET: usize = 500;
 
-/// Sizes in logical pixels (96 DPI).
+/// Sizes in logical pixels (96 DPI). A row is FIELD_H high, with ROW_GAP
+/// below it, as far as the window has room; with less, rows come closer,
+/// and then lower, down to MIN_FIELD_H.
 const FIELD_H: i32 = 26;
+const MIN_FIELD_H: i32 = 20;
 const LABEL_W: i32 = 150;
 const FIELD_W: i32 = 150;
 const NOTE_W: i32 = 230;
@@ -87,15 +91,14 @@ struct Spec {
     tab: Tab,
     /// The label: the setting's name, but for the parts of the handle.
     name: &'static str,
+    /// What the field takes, for a setting that is not a number: a
+    /// number's note is its range (`note_of`).
     note: &'static str,
-    /// What the field shows when the file does not have the setting: the
-    /// parser's default.
-    default: &'static str,
     kind: Kind,
 }
 
-const fn spec(tab: Tab, name: &'static str, note: &'static str, default: &'static str, kind: Kind) -> Spec {
-    Spec { tab, name, note, default, kind }
+const fn spec(tab: Tab, name: &'static str, note: &'static str, kind: Kind) -> Spec {
+    Spec { tab, name, note, kind }
 }
 
 use Kind::*;
@@ -103,28 +106,57 @@ use Tab::{Edge as E, General as G};
 
 /// Every row, the 一般 tab's in the file's order, then the 辺 tab's.
 const ROWS: [Spec; 21] = [
-    spec(G, "hotkey", "キーの組み合わせか none", "none", Text),
-    spec(G, "key_size", "24〜200", "56", Text),
-    spec(G, "opacity", "10〜100", "90", Text),
-    spec(G, "dim_opacity", "10〜100", "35", Text),
-    spec(G, "latch_ms", "50〜2000", "250", Text),
-    spec(G, "latch", "", "oneshot", Choice(&[("oneshot", "oneshot"), ("lock", "lock")])),
-    spec(G, "pen_presses", "", "false", Choice(ON_OFF)),
-    spec(G, "theme", "", "auto", Choice(&[("light", "light"), ("dark", "dark"), ("auto", "auto")])),
-    spec(G, "accent", "auto か #RRGGBB", "auto", Text),
-    spec(G, "hover_ms", "0 でオフ、100〜5000", "0", Text),
-    spec(G, "auto_hide_ms", "0 でオフ、1000〜3600000", "0", Text),
-    spec(G, "slide_ms", "0 でオフ、50〜500", "0", Text),
-    spec(E, "辺", "", "left", Kind::Edge),
-    spec(E, "enabled", "", "true", Choice(ON_OFF)),
-    spec(E, "dock", "", "false", Choice(ON_OFF)),
-    spec(E, "monitor", "primary / cursor / 1〜16", "primary", Text),
-    spec(E, "columns", "1〜3", "1", Lines),
-    spec(E, "handle", "", "on", Handle),
-    spec(E, "handle の幅", "4〜8", "6", HandlePart(0)),
-    spec(E, "handle の長さ", "1〜100%", "40", HandlePart(1)),
-    spec(E, "handle の位置", "0〜100%", "50", HandlePart(2)),
+    spec(G, "hotkey", "キーの組み合わせか none", Text),
+    spec(G, "key_size", "", Text),
+    spec(G, "opacity", "", Text),
+    spec(G, "dim_opacity", "", Text),
+    spec(G, "latch_ms", "", Text),
+    spec(G, "latch", "", Choice(&[("oneshot", "oneshot"), ("lock", "lock")])),
+    spec(G, "pen_presses", "", Choice(ON_OFF)),
+    spec(G, "theme", "", Choice(&[("light", "light"), ("dark", "dark"), ("auto", "auto")])),
+    spec(G, "accent", "auto か #RRGGBB", Text),
+    spec(G, "hover_ms", "", Text),
+    spec(G, "auto_hide_ms", "", Text),
+    spec(G, "slide_ms", "", Text),
+    spec(E, "辺", "", Kind::Edge),
+    spec(E, "enabled", "", Choice(ON_OFF)),
+    spec(E, "dock", "", Choice(ON_OFF)),
+    spec(E, "monitor", "", Text),
+    spec(E, "columns", "", Lines),
+    spec(E, "handle", "", Handle),
+    spec(E, "handle の幅", "", HandlePart(0)),
+    spec(E, "handle の長さ", "", HandlePart(1)),
+    spec(E, "handle の位置", "", HandlePart(2)),
 ];
+
+/// What the field of `spec` takes, as its note says it: a number's range
+/// as the parser has it.
+fn note_of(spec: &Spec) -> String {
+    let r = &config::RANGES;
+    let span = |r: config::Range| format!("{}〜{}", r.min, r.max);
+    match spec.kind {
+        Lines => span(r.lines),
+        HandlePart(0) => span(r.handle_width),
+        HandlePart(1) => format!("{}%", span(r.handle_length)),
+        HandlePart(_) => format!("{}%", span(r.handle_position)),
+        _ if spec.name == "monitor" => format!("primary / cursor / {}", span(r.monitor)),
+        _ => match config::range_of(spec.name) {
+            Some(range) if range.off => format!("0 でオフ、{}", span(range)),
+            Some(range) => span(range),
+            None => spec.note.into(),
+        },
+    }
+}
+
+/// The parser's default handle, as its width, length and position; none
+/// if an edge has none unless the file gives it one.
+fn default_handle() -> Option<[u8; 3]> {
+    let value = config::default_value("edge.left", "handle")?;
+    match config::handle(&value) {
+        Ok(Some(h)) => Some([h.width, h.length, h.position]),
+        _ => None,
+    }
+}
 
 /// The windows of a row.
 pub(super) struct Row {
@@ -139,6 +171,9 @@ pub(super) struct Row {
     mark: HWND,
     /// Whether the file has the row's setting.
     written: bool,
+    /// Why the value typed or chosen in the field was turned away, while
+    /// it stands.
+    reason: Option<String>,
 }
 
 /// The values the choice `id` offers, and their labels.
@@ -221,9 +256,9 @@ pub(super) unsafe fn make(parent: HWND) -> Option<Vec<Row>> {
                     let edit = CreateWindowExW(0, w!("EDIT"), w!(""), style, 0, 0, 1, 1, field, 1 as HMENU, null_mut(), null());
                     (field, edit)
                 }
-                _ => (part(parent, w!("EdgePadSettingsChoice"), spec.default, id, CHOICE), null_mut()),
+                _ => (part(parent, w!("EdgePadSettingsChoice"), "", id, CHOICE), null_mut()),
             };
-            let note = part(parent, w!("EdgePadSettingsNote"), spec.note, 0, NOTE);
+            let note = part(parent, w!("EdgePadSettingsNote"), &note_of(spec), 0, NOTE);
             let own = !matches!(spec.kind, Kind::Edge | HandlePart(_));
             let (reset, mark) = if own {
                 (
@@ -237,7 +272,7 @@ pub(super) unsafe fn make(parent: HWND) -> Option<Vec<Row>> {
             let made = [label, field, note].iter().all(|w| !w.is_null())
                 && (!typed || !edit.is_null())
                 && (!own || !reset.is_null() && !mark.is_null());
-            let row = Row { label, field, edit, note, reset, mark, written: false };
+            let row = Row { label, field, edit, note, reset, mark, written: false, reason: None };
             rows.push(row);
             if !made {
                 return None;
@@ -254,22 +289,27 @@ pub(super) unsafe fn set_font(e: &Editor) {
     }
 }
 
-/// Place the rows in the client area `client`, at `dpi`: each tab's from
-/// the top, one under another.
-pub(super) unsafe fn place(e: &Editor, client: RECT) {
+/// Place the rows in the client area `client` down to `bottom`: each tab's
+/// from the top, one under another, closer together where the window has
+/// less room than they ask for.
+pub(super) unsafe fn place(e: &Editor, client: RECT, bottom: i32) {
     let s = |v| scale(v, e.dpi);
-    let (m, h) = (s(MARGIN), s(FIELD_H));
+    let m = s(MARGIN);
+    let most = ROWS.iter().filter(|r| r.tab == G).count().max(ROWS.iter().filter(|r| r.tab == E).count()) as i32;
+    let pitch = ((bottom - s(ROW_TOP)) / most).clamp(s(MIN_FIELD_H), s(FIELD_H + ROW_GAP));
+    let h = pitch.min(s(FIELD_H));
     let field_x = m + s(LABEL_W) + m;
     let note_x = field_x + s(FIELD_W) + m;
     let reset_x = client.right - m - s(RESET_W);
     let (mut general, mut edge) = (0, 0);
     for (spec, row) in ROWS.iter().zip(&e.rows) {
         let n = if spec.tab == G { &mut general } else { &mut edge };
-        let y = s(ROW_TOP) + *n * (h + s(ROW_GAP));
+        let y = s(ROW_TOP) + *n * pitch;
         *n += 1;
         unsafe {
             MoveWindow(row.label, m, y, s(LABEL_W), h, 1);
-            let wide = if row.edit.is_null() { note_x + s(NOTE_W) - field_x } else { s(FIELD_W) };
+            // A choice with no note takes the note's room too.
+            let wide = if row.edit.is_null() && note_of(spec).is_empty() { note_x + s(NOTE_W) - field_x } else { s(FIELD_W) };
             MoveWindow(row.field, field_x, y, wide, h, 1);
             MoveWindow(row.note, note_x, y, s(NOTE_W), h, 1);
             for part in [row.reset, row.mark] {
@@ -294,7 +334,7 @@ pub(super) unsafe fn show(e: &Editor) {
         };
         shown(row.label, true);
         shown(row.field, true);
-        shown(row.note, !spec.note.is_empty());
+        shown(row.note, !note_of(spec).is_empty());
         shown(row.reset, row.written);
         shown(row.mark, !row.written);
     }
@@ -304,29 +344,32 @@ pub(super) unsafe fn show(e: &Editor) {
 /// Not written, or not as the parser reads it: the default.
 fn handle_now(e: &Editor) -> Option<[u8; 3]> {
     let section = format!("edge.{}", EDGES[e.edge].0);
-    let default = Some([6, 40, 50]);
     match e.doc.get(&section, "handle").map(config::handle) {
         Some(Ok(Some(h))) => Some([h.width, h.length, h.position]),
         Some(Ok(None)) => None,
-        _ => default,
+        _ => default_handle(),
     }
 }
 
-/// Show row `i` as the window's copy of the file has it.
-unsafe fn refresh_row(e: &mut Editor, i: usize) {
+/// Show row `i` as the window's copy of the file has it, a reason it had
+/// gone. Whether it had one.
+unsafe fn refresh_row(e: &mut Editor, i: usize) -> bool {
     let spec = &ROWS[i];
     let (section, name) = setting(e, i);
     let written = e.doc.get(&section, name).map(str::to_string);
     let wrong = spec.kind != Kind::Edge && written.as_deref().is_some_and(|v| config::check(&section, name, v).is_err());
+    let default = || config::default_value(&section, name).unwrap_or_default();
     let shown = match spec.kind {
-        Text | Lines => written.clone().unwrap_or_else(|| spec.default.into()),
-        Choice(_) => written.as_deref().map_or_else(|| spec.default.into(), str::to_ascii_lowercase),
+        Text | Lines => written.clone().unwrap_or_else(default),
+        Choice(_) => written.as_deref().map_or_else(default, str::to_ascii_lowercase),
         Kind::Edge => EDGES[e.edge].0.into(),
-        Handle => if written.is_some() && handle_now(e).is_none() { "none" } else { "on" }.into(),
-        HandlePart(k) => handle_now(e).unwrap_or([6, 40, 50])[k].to_string(),
+        Handle => if handle_now(e).is_none() { "none" } else { "on" }.into(),
+        // With no handle, the parts a handle would have by default, greyed.
+        HandlePart(k) => handle_now(e).or_else(default_handle).map_or_else(String::new, |h| h[k].to_string()),
     };
     let row = &mut e.rows[i];
     row.written = written.is_some();
+    let had = row.reason.take().is_some();
     unsafe {
         if row.edit.is_null() {
             set_text(row.field, &shown);
@@ -343,14 +386,29 @@ unsafe fn refresh_row(e: &mut Editor, i: usize) {
         let on = handle_now(e).is_some();
         unsafe { EnableWindow(e.rows[i].edit, on.into()) };
     }
+    had
+}
+
+/// Show the rows `rows` as the window's copy of the file has them; if a
+/// reason went with them, the status line says one still standing, or no
+/// more than the question asked.
+unsafe fn refresh_rows(e: &mut Editor, rows: impl IntoIterator<Item = usize>) {
+    let mut had = false;
+    for i in rows {
+        had |= unsafe { refresh_row(e, i) };
+    }
+    if had {
+        match e.rows.iter().find_map(|r| r.reason.clone()) {
+            Some(reason) => tell(e, &reason),
+            None => ask_reason(e),
+        }
+    }
+    unsafe { show(e) };
 }
 
 /// Show every row as the window's copy of the file has it.
 pub(super) unsafe fn refresh(e: &mut Editor) {
-    for i in 0..ROWS.len() {
-        unsafe { refresh_row(e, i) };
-    }
-    unsafe { show(e) };
+    unsafe { refresh_rows(e, 0..ROWS.len()) };
 }
 
 /// The rows of the setting of row `i`: the handle's go together.
@@ -372,23 +430,23 @@ fn handle_value(e: &Editor) -> String {
 
 /// Take the value of field `id` into the window's copy of the file, if
 /// the parser reads it; else mark the field and say why. A typed value is
-/// taken once only, when it has changed since.
+/// taken when it was changed since it was last taken: one turned away is
+/// checked again, and its reason said again, each time it is entered.
 pub(super) unsafe fn commit(id: usize) {
-    let shown = with_editor(|e| unsafe {
+    with_editor(|e| unsafe {
         let i = id - FIELD;
         let spec = &ROWS[i];
         let row = &e.rows[i];
-        if !row.edit.is_null() {
-            if SendMessageW(row.edit, EM_GETMODIFY, 0, 0) == 0 {
-                return false;
-            }
-            SendMessageW(row.edit, EM_SETMODIFY, 0, 0);
+        if !row.edit.is_null() && SendMessageW(row.edit, EM_GETMODIFY, 0, 0) == 0 {
+            return;
         }
         let text = text_of(if row.edit.is_null() { row.field } else { row.edit });
+        // Another edge: its rows, and only they, show it.
         if spec.kind == Kind::Edge {
             e.edge = EDGES.iter().position(|&(v, _)| v == text).unwrap_or(0);
-            refresh(e);
-            return false;
+            let edge_rows: Vec<usize> = (0..ROWS.len()).filter(|&j| ROWS[j].tab == E).collect();
+            refresh_rows(e, edge_rows);
+            return;
         }
         let (section, name) = setting(e, i);
         let value = match spec.kind {
@@ -403,25 +461,13 @@ pub(super) unsafe fn commit(id: usize) {
         match checked {
             Err(why) => {
                 set_wrong(e.rows[i].field, true);
-                e.wrong_said = true;
                 let reason = if why.contains(name) { why } else { format!("{name}: {why}") };
                 tell(e, &reason);
-                false
+                e.rows[i].reason = Some(reason);
             }
-            Ok(()) => {
-                for j in rows_of(i) {
-                    refresh_row(e, j);
-                }
-                if std::mem::take(&mut e.wrong_said) {
-                    ask_reason(e);
-                }
-                true
-            }
+            Ok(()) => refresh_rows(e, rows_of(i)),
         }
     });
-    if shown == Some(true) {
-        with_editor(|e| unsafe { show(e) });
-    }
 }
 
 /// 既定に戻す of row `id - RESET`: take its setting out of the window's
@@ -431,10 +477,7 @@ pub(super) unsafe fn reset(id: usize) {
         let i = id - RESET;
         let (section, name) = setting(e, i);
         e.doc.set_value(&section, name, None);
-        for j in rows_of(i) {
-            refresh_row(e, j);
-        }
-        show(e);
+        refresh_rows(e, rows_of(i));
         let row = &e.rows[i];
         if row.edit.is_null() { row.field } else { row.edit }
     });
@@ -556,6 +599,23 @@ pub(super) unsafe extern "system" fn box_proc(hwnd: HWND, msg: u32, wp: WPARAM, 
     }
 }
 
+/// The segments of choice `hwnd`, whose client area is `r`: inside a
+/// frame, with gaps between them; and the frame's width.
+unsafe fn segments(hwnd: HWND, r: RECT, n: usize) -> (Vec<RECT>, i32) {
+    let gap = scale(2, part_dpi(hwnd));
+    let inner = RECT { left: r.left + gap, top: r.top + gap, right: r.right - gap, bottom: r.bottom - gap };
+    let (n, w) = (n.max(1) as i32, inner.right - inner.left);
+    let segs = (0..n)
+        .map(|i| RECT {
+            left: inner.left + w * i / n + if i > 0 { gap / 2 } else { 0 },
+            top: inner.top,
+            right: inner.left + w * (i + 1) / n - if i < n - 1 { gap / 2 } else { 0 },
+            bottom: inner.bottom,
+        })
+        .collect();
+    (segs, gap)
+}
+
 /// Draw choice `hwnd` into `dc`: a segment for each option, the one chosen
 /// in the accent, a frame round it all while it has the focus (red while
 /// its value is wrong).
@@ -564,34 +624,24 @@ pub(super) unsafe fn draw_choice(hwnd: HWND, dc: HDC, r: RECT, wrong: bool) {
         let c = panel::palette();
         let options = options(GetDlgCtrlID(hwnd) as usize);
         let now = text_of(hwnd);
-        let gap = scale(2, part_dpi(hwnd));
         let fill = |r: &RECT, colour: Rgb| {
             let brush = CreateSolidBrush(colorref(colour));
             FillRect(dc, r, brush);
             DeleteObject(brush);
         };
-        let focused = GetFocus() == hwnd;
         let frame = if wrong {
             [0xD0, 0x30, 0x30]
-        } else if focused {
+        } else if GetFocus() == hwnd {
             c.text
         } else {
             c.background
         };
         fill(&r, frame);
+        let (segs, gap) = segments(hwnd, r, options.len());
         let inner = RECT { left: r.left + gap, top: r.top + gap, right: r.right - gap, bottom: r.bottom - gap };
         fill(&inner, c.background);
-        let n = options.len().max(1) as i32;
-        let w = inner.right - inner.left;
         SetBkMode(dc, TRANSPARENT as i32);
-        for (i, &(value, label)) in options.iter().enumerate() {
-            let i = i as i32;
-            let mut seg = RECT {
-                left: inner.left + w * i / n + if i > 0 { gap / 2 } else { 0 },
-                top: inner.top,
-                right: inner.left + w * (i + 1) / n - if i < n - 1 { gap / 2 } else { 0 },
-                bottom: inner.bottom,
-            };
+        for (&(value, label), mut seg) in options.iter().zip(segs) {
             let chosen = value.eq_ignore_ascii_case(&now);
             let (face, ink) = if chosen { (c.held, c.held_text) } else { (c.face, c.text) };
             fill(&seg, face);
@@ -602,15 +652,19 @@ pub(super) unsafe fn draw_choice(hwnd: HWND, dc: HDC, r: RECT, wrong: bool) {
     }
 }
 
-/// The option of choice `hwnd` at screen x `x`.
+/// The option of choice `hwnd` at screen x `x`: of the segment it is in,
+/// or nearest to.
 pub(super) unsafe fn option_at(hwnd: HWND, x: i32) -> Option<&'static str> {
     unsafe {
         let options = options(GetDlgCtrlID(hwnd) as usize);
         let mut r: RECT = std::mem::zeroed();
         GetWindowRect(hwnd, &mut r);
-        let w = (r.right - r.left).max(1);
-        let i = ((x - r.left) * options.len() as i32 / w).clamp(0, options.len() as i32 - 1);
-        options.get(i as usize).map(|&(v, _)| v)
+        let client = RECT { left: 0, top: 0, right: r.right - r.left, bottom: r.bottom - r.top };
+        let (segs, _) = segments(hwnd, client, options.len());
+        let x = x - r.left;
+        let distance = |s: &RECT| if x < s.left { s.left - x } else if x >= s.right { x - s.right + 1 } else { 0 };
+        let i = segs.iter().enumerate().min_by_key(|(_, s)| distance(s)).map(|(i, _)| i)?;
+        options.get(i).map(|&(v, _)| v)
     }
 }
 
