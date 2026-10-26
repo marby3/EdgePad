@@ -430,14 +430,19 @@ fn a_value_out_of_range_or_malformed_stops_at_its_field() {
     let editor = open(&app);
     let before = file(&app);
 
+    // A field as it is with nothing wrong: dim_opacity's, untouched. Asked
+    // each time, once drawn: a debug build on CI draws late.
+    let fine = || inside(editor, "dim_opacity");
+
     // Part way through typing, nothing is said.
     type_into(editor, "opacity", "1");
     pump(500);
-    let fine = inside(editor, "opacity");
     assert_eq!(status(editor), "", "not yet entered");
+    let _ = within_3s(|| inside(editor, "opacity") == fine());
+    assert_eq!(inside(editor, "opacity"), fine(), "not yet entered: not marked");
 
     for (name, bad, said) in [("opacity", "150", "150"), ("hotkey", "Ctrl+Foo", "Foo"), ("accent", "#12345", "#12345")] {
-        let normal = inside(editor, name);
+        let normal = fine();
         enter(editor, name, bad);
         assert!(within_3s(|| status(editor).contains(said)), "{name} = {bad}: the reason, {:?}", status(editor));
         assert!(status(editor).contains(name), "{name}: named in the reason, {:?}", status(editor));
@@ -451,8 +456,8 @@ fn a_value_out_of_range_or_malformed_stops_at_its_field() {
     assert!(status(editor).contains("保存していない"), "saved, still told of what was not: {:?}", status(editor));
 
     enter(editor, "opacity", "80");
-    let _ = within_3s(|| inside(editor, "opacity") == fine);
-    assert_eq!(inside(editor, "opacity"), fine, "corrected: the field as it was");
+    let _ = within_3s(|| inside(editor, "opacity") == fine());
+    assert_eq!(inside(editor, "opacity"), fine(), "corrected: the field as it was");
     assert!(!status(editor).contains("150"), "and the reason gone: {:?}", status(editor));
 }
 
