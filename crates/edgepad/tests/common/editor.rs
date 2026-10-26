@@ -40,9 +40,11 @@ pub fn within_3s(mut done: impl FnMut() -> bool) -> bool {
     true
 }
 
-/// The settings windows of `app` now.
+/// The settings windows of `app` now: in a process of its own (Issue
+/// #90), started from the same exe as `app`.
 pub fn editors(app: &Running) -> Vec<HWND> {
     let name = wide(EDITOR_CLASS);
+    let exe = exe_dir(app).join("edgepad.exe");
     let mut found = Vec::new();
     let mut hwnd = null_mut();
     loop {
@@ -50,12 +52,38 @@ pub fn editors(app: &Running) -> Vec<HWND> {
         if hwnd.is_null() {
             return found;
         }
-        let mut pid = 0;
-        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-        if pid == app.0.id() {
+        if process_exe(pid_of(hwnd)).is_some_and(|p| same_file(&p, &exe)) {
             found.push(hwnd);
         }
     }
+}
+
+/// The process owning `hwnd`.
+pub fn pid_of(hwnd: HWND) -> u32 {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid
+}
+
+/// The exe process `pid` runs, if it can be read.
+pub fn process_exe(pid: u32) -> Option<std::path::PathBuf> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 520];
+        let mut n = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut n);
+        CloseHandle(process);
+        (ok != 0).then(|| String::from_utf16_lossy(&buf[..n as usize]).into())
+    }
+}
+
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
 }
 
 pub fn open_id(app: &Running) -> u32 {
