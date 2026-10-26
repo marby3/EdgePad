@@ -850,6 +850,10 @@ unsafe fn command(id: usize) {
                     }
                 }
             }
+            // An answer counts only to the question asked now: one posted
+            // by anything else changes nothing.
+            RELOAD | KEEP if !matches!(e.asked, Some(Ask::Changed)) => false,
+            SAVE_AND_CLOSE | DISCARD | CANCEL if !matches!(e.asked, Some(Ask::Closing)) => false,
             // Read again only what the parser reads: else the question
             // stays, the reason beside it.
             RELOAD => {

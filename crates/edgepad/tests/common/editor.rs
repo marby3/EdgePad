@@ -106,9 +106,11 @@ pub fn click_button(editor: HWND, text: &str) {
     pump(300);
 }
 
+/// The text of `hwnd`, a window of EdgePad's: asked with WM_GETTEXT, as
+/// GetWindowText does not ask a control of another process.
 pub fn text_of(hwnd: HWND) -> String {
     let mut buf = [0u16; 512];
-    let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), 512) };
+    let n = unsafe { SendMessageW(hwnd, WM_GETTEXT, 512, buf.as_mut_ptr() as isize) };
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 

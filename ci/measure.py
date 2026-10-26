@@ -167,6 +167,8 @@ MF_BYPOSITION = 0x400
 VK_ESCAPE = 0x1B
 VK_MENU = 0x12
 KEYEVENTF_KEYUP = 0x2
+MOUSEEVENTF_LEFTDOWN = 0x2
+MOUSEEVENTF_LEFTUP = 0x4
 LIST_MODULES_ALL = 0x3
 
 
@@ -178,7 +180,8 @@ def comctl32_v6(handle):
         raise ctypes.WinError(ctypes.get_last_error())
     name = ctypes.create_unicode_buffer(520)
     for module in modules[: needed.value // ctypes.sizeof(wintypes.HMODULE)]:
-        psapi.GetModuleFileNameExW(handle, module, name, 520)
+        if not psapi.GetModuleFileNameExW(handle, module, name, 520):
+            raise ctypes.WinError(ctypes.get_last_error())
         path = name.value.lower()
         if "microsoft.windows.common-controls" in path and path.endswith("comctl32.dll"):
             return True
@@ -224,7 +227,8 @@ def settings_command(pid):
 def to_front(hwnd):
     """Bring `hwnd` to the front, as a user's click would: a window takes
     the focus, and Windows loads its text input. A tap of Alt first makes
-    this process the one with the last input, which may set the front.
+    this process the one with the last input, which may set the front;
+    failing that, a click in the middle of the window, on no part of it.
     Whether it came to the front."""
     for _ in range(3):
         user32.keybd_event(VK_MENU, 0, 0, 0)
@@ -233,7 +237,13 @@ def to_front(hwnd):
         time.sleep(0.2)
         if user32.GetForegroundWindow() == hwnd:
             return True
-    return False
+    r = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(r))
+    user32.SetCursorPos((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.3)
+    return user32.GetForegroundWindow() == hwnd
 
 
 def settings_window(pid, handle):

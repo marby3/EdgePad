@@ -140,6 +140,9 @@ class SettingsWindowMemoryTest(unittest.TestCase):
         result = json.loads(out.stdout)
         window = result["settings_window"]
         print(f"\n  settings window: {window}", file=sys.stderr)
+        # Unless the window took the focus, Windows loaded no text input
+        # for it, and the figures would be low for want of it.
+        self.assertTrue(all(window["in_front"]), f"each opening came to the front: {window['in_front']}")
         self.assertFalse(window["comctl32_at_start"], "the common controls are not loaded before the window opens")
         self.assertTrue(window["comctl32_when_open"], "they are, once it opens")
         self.assertLessEqual(result["private_bytes"], PRIVATE_LIMIT, "never opened: as before")
