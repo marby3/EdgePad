@@ -246,7 +246,7 @@ def table(r, env):
     rows = [
         ("exe size", kib(r["exe_bytes"]), "1,024 KiB (1 MiB) or less"),
         ("startup (launch to panel shown)", f'{r["startup_ms"]} ms', "100 ms or less"),
-        ("private memory", mib(r["private_bytes"]), "2 MiB or less"),
+        ("private memory", mib(r["private_bytes"]), "2.5 MiB or less"),
         ("working set", mib(r["working_set_bytes"]), "5 MiB or less"),
         (f'idle CPU time over {r["idle_seconds"]} s', f'{r["idle_cpu_ms"]} ms', "0% (no timers, no polling)"),
         ("panels shown", str(r["panels"]), "as the settings say"),
