@@ -112,6 +112,11 @@ thread_local! {
     static PRESSED: Cell<(u32, HWND)> = const { Cell::new((0, null_mut())) };
 }
 
+/// Whether the window is open: in use further up the stack, it is.
+fn is_open() -> bool {
+    EDITOR.with(|e| e.try_borrow().map_or(true, |e| e.is_some()))
+}
+
 /// Run `f` on the window, if it is open and not in use further up the stack.
 fn with_editor<R>(f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
     EDITOR.with(|e| match e.try_borrow_mut() {
@@ -204,9 +209,7 @@ fn read_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 unsafe fn title_bar(hwnd: HWND) {
     type SetAttribute = unsafe extern "system" fn(HWND, u32, *const core::ffi::c_void, u32) -> i32;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
-    let c = panel::palette().background;
-    // Dark as theme::text_on judges a colour dark.
-    let dark: i32 = ((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000 < 150).into();
+    let dark: i32 = edgepad_core::theme::is_dark(panel::palette().background).into();
     unsafe {
         let dwm = LoadLibraryExW(w!("dwmapi.dll"), null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
         if dwm.is_null() {
@@ -232,9 +235,11 @@ pub unsafe fn restyle() {
 /// Open the settings window from the tray, or bring it back if it is open.
 pub unsafe fn open() {
     unsafe {
-        if let Some(hwnd) = with_editor(|e| e.hwnd) {
-            ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
-            SetForegroundWindow(hwnd);
+        if is_open() {
+            if let Some(hwnd) = with_editor(|e| e.hwnd) {
+                ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
+                SetForegroundWindow(hwnd);
+            }
             return;
         }
         let Some(path) = settings::path_or_template() else {
@@ -270,6 +275,7 @@ pub unsafe fn open() {
         );
         if hwnd.is_null() {
             debug_log!("設定画面を作れない");
+            tray::notify("設定画面を開けませんでした");
             return;
         }
         let tabs = TABS.map(|_| null_mut());
@@ -357,7 +363,7 @@ unsafe fn lay_out() {
             x -= m + button;
             MoveWindow(answer, x, y, button, row, 1);
         }
-        MoveWindow(status, m, y - m - row, (client.right - 2 * m).max(0), row, 1);
+        MoveWindow(status, m, y - m - 2 * row, (client.right - 2 * m).max(0), 2 * row, 1);
         // In their places now: shown, and not before.
         for &part in tabs.iter().chain([&save, &status]).chain(&answers) {
             ShowWindow(part, SW_SHOWNA);
@@ -388,16 +394,17 @@ fn question(e: &Editor, ask: Ask) -> &'static str {
     match ask {
         Ask::Changed => "設定ファイルが外で書き換わりました",
         Ask::Closing if e.outside.is_some() || e.known != e.base => {
-            "保存していない変更があります（設定ファイルは外でも書き換わっています。保存するとその変更を上書きします）"
+            "保存していない変更があります（ファイルは外でも書き換わりました。保存すると上書きします）"
         }
         Ask::Closing => "保存していない変更があります",
     }
 }
 
-/// Say `reason`: beside the question asked now, which stays, or alone.
+/// Say `reason`: first, the question asked now, which stays, after it on
+/// the line below.
 fn tell(e: &Editor, reason: &str) {
     match e.asked {
-        Some(ask) => set_status(e, &format!("{}（{reason}）", question(e, ask))),
+        Some(ask) => set_status(e, &format!("{reason}\n{}", question(e, ask))),
         None => set_status(e, reason),
     }
 }
@@ -450,6 +457,8 @@ fn save(e: &mut Editor) -> Result<(), String> {
     // in its place: a write that fails part way leaves the file as it was,
     // not cut short.
     let fresh = e.path.with_extension(format!("ini.{}.new", std::process::id()));
+    // One left by an EdgePad that crashed, and had this process's number.
+    let _ = std::fs::remove_file(&fresh);
     let written = (|| -> std::io::Result<()> {
         // Made new by this, it is this's to take away if what follows fails;
         // a file of that name already there is left alone.
@@ -497,14 +506,24 @@ pub unsafe fn file_changed() {
     });
     if changed == Some(true) {
         debug_log!("設定画面: ファイルが外で書き換わった");
-        unsafe { ask(Some(Ask::Changed)) };
+        // Asked about closing already: that question stays, now telling of
+        // the change outside too; else, ask about the change.
+        let closing = with_editor(|e| matches!(e.asked, Some(Ask::Closing))) == Some(true);
+        unsafe { ask(Some(if closing { Ask::Closing } else { Ask::Changed })) };
     }
 }
 
 /// EdgePad is to end from the tray: unless the window holds changes not
 /// saved, in which case it asks about them and EdgePad goes on.
 pub unsafe fn may_exit() -> bool {
-    let Some((hwnd, true)) = with_editor(|e| (e.hwnd, unsaved(e))) else { return true };
+    if !is_open() {
+        return true;
+    }
+    // Open but in use: not now, rather than past changes.
+    let Some((hwnd, unsaved)) = with_editor(|e| (e.hwnd, unsaved(e))) else { return false };
+    if !unsaved {
+        return true;
+    }
     unsafe {
         ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
         SetForegroundWindow(hwnd);
@@ -643,7 +662,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 0
             }
-            WM_COMMAND => {
+            WM_COMMAND if wp >> 16 & 0xFFFF == 0 => {
                 command(wp & 0xFFFF);
                 0
             }
@@ -724,8 +743,13 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 SetTextColor(dc, colorref(ink));
                 let mut text = [0u16; 256];
                 let n = GetWindowTextW(hwnd, text.as_mut_ptr(), 256);
-                let align = if kind == STATUS { DT_LEFT } else { DT_CENTER };
-                DrawTextW(dc, text.as_ptr(), n, &mut r, align | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                // The status line runs to two lines: a reason, and the
+                // question it is about.
+                let format = match kind {
+                    STATUS => DT_LEFT | DT_BOTTOM | DT_WORDBREAK | DT_END_ELLIPSIS,
+                    _ => DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                };
+                DrawTextW(dc, text.as_ptr(), n, &mut r, format);
                 if let Some(old) = old {
                     SelectObject(dc, old);
                 }

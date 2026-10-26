@@ -22,11 +22,16 @@ pub struct Palette {
 const WHITE: Rgb = [0xFF, 0xFF, 0xFF];
 const BLACK: Rgb = [0x00, 0x00, 0x00];
 
-/// Darker or lighter labels, whichever reads on a key of `colour`.
-fn text_on(colour: Rgb) -> Rgb {
+/// Whether `colour` is dark: light labels read on it.
+pub fn is_dark(colour: Rgb) -> bool {
     let [r, g, b] = colour.map(u32::from);
     // Perceived brightness, 0..=255.
-    if (r * 299 + g * 587 + b * 114) / 1000 < 150 { WHITE } else { BLACK }
+    (r * 299 + g * 587 + b * 114) / 1000 < 150
+}
+
+/// Darker or lighter labels, whichever reads on a key of `colour`.
+fn text_on(colour: Rgb) -> Rgb {
+    if is_dark(colour) { WHITE } else { BLACK }
 }
 
 /// The palette for a `dark` or light panel with `accent`.

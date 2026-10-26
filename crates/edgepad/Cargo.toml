@@ -27,7 +27,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [features]
-# Test-only hooks (a message that panics). Never enabled in release builds.
+# Test-only hooks (messages that panic, fail a send, or change the settings
+# window's copy of the file). Never enabled in release builds.
 fault-injection = []
 
 [dev-dependencies]

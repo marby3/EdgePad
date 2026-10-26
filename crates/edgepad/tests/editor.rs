@@ -200,7 +200,7 @@ fn saving_checks_with_the_parser_and_writes_only_what_reads() {
     click_child(editor, BUTTON_CLASS, "保存");
     let _ = within_3s(|| !status(editor).is_empty());
     let said = status(editor);
-    assert!(said.contains('3') && said.contains("150"), "the line and the reason: {said:?}");
+    assert!(said.contains("3 行目") && said.contains("150"), "the line and the reason: {said:?}");
     assert_eq!(file(&app), before, "nothing written");
 
     change(editor, 70);
