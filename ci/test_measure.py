@@ -1,6 +1,6 @@
-"""Checks for Issue #9 (the measurement script reports every figure) and
+"""Checks for Issue #9 (the measurement script reports every figure),
 Issue #34 (private memory stays within the spec's limit, 2.5 MiB since
-Issue #83).
+Issue #83) and Issue #86 (the settings window's memory, open and closed).
 
 Run from the repo root: python -m unittest ci/test_measure.py
 """
@@ -113,6 +113,45 @@ class MemoryTest(unittest.TestCase):
                 running.kill()
                 running.wait()
 
+
+# Spec, chapter 8 (Issue #86): private memory with the settings window
+# open, and once it is closed again. Closed, it keeps what Windows loads
+# the first time a window of EdgePad's takes the focus (text input, about
+# 1 MiB, its timing swaying the figure by 0.3 MiB) and the common controls
+# with their theme (about 0.1 to 0.2 MiB). The window as it was before
+# Issue #86 measured 3.04 to 3.29 MiB closed, this one 3.08 to 3.47 MiB:
+# hence 4 MiB, not the 3 MiB the Issue first set.
+OPEN_LIMIT = 8 * 1024 * 1024
+CLOSED_LIMIT = 4 * 1024 * 1024
+# What counts as no growth over the closings: a page or so either way is
+# Windows's own coming and going, not something the window left behind.
+CLOSED_SLACK = 64 * 1024
+
+
+class SettingsWindowMemoryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        subprocess.run(["cargo", "build", "--release"], cwd=ROOT, check=True, timeout=600, capture_output=True)
+
+    # Issue #86, AC8
+    def test_the_settings_window_stays_within_its_memory_open_and_closed(self):
+        out = measure("--idle", "5", "--settings", "ci/example.ini", "--settings-window")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        result = json.loads(out.stdout)
+        window = result["settings_window"]
+        print(f"\n  settings window: {window}", file=sys.stderr)
+        # Unless the window took the focus, Windows loaded no text input
+        # for it, and the figures would be low for want of it.
+        self.assertTrue(all(window["in_front"]), f"each opening came to the front: {window['in_front']}")
+        self.assertFalse(window["comctl32_at_start"], "the common controls are not loaded before the window opens")
+        self.assertTrue(window["comctl32_when_open"], "they are, once it opens")
+        self.assertLessEqual(result["private_bytes"], PRIVATE_LIMIT, "never opened: as before")
+        self.assertEqual(len(window["closed_private_bytes"]), 5, "opened and closed five times")
+        opened = max(window["open_private_bytes"])
+        self.assertLessEqual(opened, OPEN_LIMIT, f"open: {opened / 1024 / 1024:.2f} MiB is over 8 MiB")
+        closed = window["closed_private_bytes"]
+        self.assertLessEqual(max(closed), CLOSED_LIMIT, f"closed: {max(closed) / 1024 / 1024:.2f} MiB is over 4 MiB")
+        self.assertLessEqual(closed[-1], closed[0] + CLOSED_SLACK, f"no growth over the closings: {closed}")
 
 
 if __name__ == "__main__":

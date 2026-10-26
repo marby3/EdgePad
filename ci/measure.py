@@ -9,6 +9,11 @@ Times how long the panel takes to appear, waits idle, then reads memory and
 CPU time and stops the process. The startup time runs from just before the
 launch call, so it includes process creation and errs on the slow side.
 
+With --settings-window, the settings window is then opened from the tray and
+closed again five times, and the private memory read while it is open and
+after each closing; and whether the common controls (comctl32 v6) were
+loaded before it first opened.
+
 With --settings, the hotkey the file names is checked as well: free before
 the launch, held once EdgePad is up. That shows the settings were applied
 (a rejected file falls back to the fixed keys, which have no hotkey). If
@@ -21,6 +26,7 @@ is 21H2).
     python ci/measure.py --idle 10    # shorter idle wait
     python ci/measure.py --json       # machine-readable
     python ci/measure.py --settings ci/example.ini   # with a settings file
+    python ci/measure.py --settings-window           # and the settings window
 
 Build first: cargo build --release
 """
@@ -40,8 +46,18 @@ from ctypes import wintypes
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXE = ROOT / "target" / "release" / "edgepad.exe"
-# Same class as crates/edgepad/src/panel.rs registers.
+# Same classes as crates/edgepad/src/panel.rs, tray.rs and editor.rs register.
 PANEL_CLASS = "EdgePadPanel"
+TRAY_CLASS = "EdgePadTray"
+EDITOR_CLASS = "EdgePadSettings"
+# The tray icon's callback message (tray.rs), and the item that opens the
+# settings window.
+TRAY_CALLBACK = 0x8000 + 1
+SETTINGS_ITEM = "設定…"
+# How often the settings window is opened and closed, and how long it is
+# given to settle each time: Windows loads its text input in its own time.
+OPENINGS = 5
+SETTLE = 1.5
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -56,7 +72,7 @@ kernel32.OpenProcess.restype = wintypes.HANDLE
 kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
-PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010
 
 
@@ -79,6 +95,19 @@ class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
 psapi.GetProcessMemoryInfo.argtypes = [
     wintypes.HANDLE, ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX), wintypes.DWORD,
 ]
+
+
+def windows_of(pid, class_name):
+    """The top-level windows of `class_name` that process `pid` owns."""
+    found, hwnd = [], None
+    while True:
+        hwnd = user32.FindWindowExW(None, hwnd, class_name, None)
+        if not hwnd:
+            return found
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid:
+            found.append(hwnd)
 
 
 def panels_visible(pid):
@@ -112,6 +141,135 @@ def memory(handle):
     if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
         raise ctypes.WinError(ctypes.get_last_error())
     return counters.PrivateUsage, counters.WorkingSetSize
+
+
+psapi.EnumProcessModulesEx.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(wintypes.HMODULE), wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.DWORD,
+]
+psapi.GetModuleFileNameExW.argtypes = [wintypes.HANDLE, wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.SendMessageW.restype = wintypes.HMENU
+user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.GetMenuItemCount.argtypes = [wintypes.HMENU]
+user32.GetMenuItemID.restype = wintypes.UINT
+user32.GetMenuItemID.argtypes = [wintypes.HMENU, ctypes.c_int]
+user32.GetMenuStringW.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.LPWSTR, ctypes.c_int, wintypes.UINT]
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.IsWindow.argtypes = [wintypes.HWND]
+
+WM_CLOSE = 0x0010
+WM_COMMAND = 0x0111
+WM_KEYDOWN = 0x0100
+WM_RBUTTONUP = 0x0205
+MN_GETHMENU = 0x01E1
+MF_BYPOSITION = 0x400
+VK_ESCAPE = 0x1B
+VK_MENU = 0x12
+KEYEVENTF_KEYUP = 0x2
+MOUSEEVENTF_LEFTDOWN = 0x2
+MOUSEEVENTF_LEFTUP = 0x4
+LIST_MODULES_ALL = 0x3
+
+
+def comctl32_v6(handle):
+    """Whether the process has comctl32 version 6 loaded: the one in WinSxS."""
+    modules = (wintypes.HMODULE * 1024)()
+    needed = wintypes.DWORD()
+    if not psapi.EnumProcessModulesEx(handle, modules, ctypes.sizeof(modules), ctypes.byref(needed), LIST_MODULES_ALL):
+        raise ctypes.WinError(ctypes.get_last_error())
+    name = ctypes.create_unicode_buffer(520)
+    for module in modules[: needed.value // ctypes.sizeof(wintypes.HMODULE)]:
+        if not psapi.GetModuleFileNameExW(handle, module, name, 520):
+            raise ctypes.WinError(ctypes.get_last_error())
+        path = name.value.lower()
+        if "microsoft.windows.common-controls" in path and path.endswith("comctl32.dll"):
+            return True
+    return False
+
+
+def wait_for(found, seconds, what):
+    """The first of what `found` returns, waiting up to `seconds` for it."""
+    end = time.perf_counter() + seconds
+    while True:
+        got = found()
+        if got:
+            return got[0]
+        if time.perf_counter() > end:
+            sys.exit(f"{what}: not within {seconds} s")
+        time.sleep(0.02)
+
+
+def shown(pid, class_name):
+    return [w for w in windows_of(pid, class_name) if user32.IsWindowVisible(w)]
+
+
+def settings_command(pid):
+    """The tray window of process `pid`, and the command id of 設定… in its
+    menu: the menu opened, read, and closed again."""
+    tray = wait_for(lambda: windows_of(pid, TRAY_CLASS), 5, "the tray window")
+    user32.PostMessageW(tray, TRAY_CALLBACK, 0, WM_RBUTTONUP)
+    window = wait_for(lambda: shown(pid, "#32768"), 5, "the tray menu opens")
+    menu = user32.SendMessageW(window, MN_GETHMENU, 0, 0)
+    command = None
+    text = ctypes.create_unicode_buffer(64)
+    for i in range(user32.GetMenuItemCount(menu)):
+        user32.GetMenuStringW(menu, i, text, 64, MF_BYPOSITION)
+        if SETTINGS_ITEM in text.value:
+            command = user32.GetMenuItemID(menu, i)
+    user32.PostMessageW(window, WM_KEYDOWN, VK_ESCAPE, 0)
+    time.sleep(0.2)
+    if command is None:
+        sys.exit(f"no {SETTINGS_ITEM} in the tray menu")
+    return tray, command
+
+
+def to_front(hwnd):
+    """Bring `hwnd` to the front, as a user's click would: a window takes
+    the focus, and Windows loads its text input. A tap of Alt first makes
+    this process the one with the last input, which may set the front;
+    failing that, a click in the middle of the window, on no part of it.
+    Whether it came to the front."""
+    for _ in range(3):
+        user32.keybd_event(VK_MENU, 0, 0, 0)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.2)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+    r = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(r))
+    user32.SetCursorPos((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.3)
+    return user32.GetForegroundWindow() == hwnd
+
+
+def settings_window(pid, handle):
+    """Open the settings window and close it OPENINGS times, reading the
+    private memory each time it is open and once it is closed."""
+    at_start = comctl32_v6(handle)
+    tray, command = settings_command(pid)
+    opened, closed, in_front, when_open = [], [], [], False
+    for _ in range(OPENINGS):
+        user32.PostMessageW(tray, WM_COMMAND, command, 0)
+        window = wait_for(lambda: shown(pid, EDITOR_CLASS), 5, "the settings window opens")
+        in_front.append(to_front(window))
+        time.sleep(SETTLE)
+        opened.append(memory(handle)[0])
+        when_open = when_open or comctl32_v6(handle)
+        user32.PostMessageW(window, WM_CLOSE, 0, 0)
+        wait_for(lambda: [True] if not user32.IsWindow(window) else [], 5, "the settings window closes")
+        time.sleep(SETTLE)
+        closed.append(memory(handle)[0])
+    return {
+        "comctl32_at_start": at_start,
+        "comctl32_when_open": when_open,
+        "in_front": in_front,
+        "open_private_bytes": opened,
+        "closed_private_bytes": closed,
+    }
 
 
 def environment():
@@ -174,7 +332,7 @@ def hotkey_free(hotkey):
     return False
 
 
-def measure(idle, settings=None):
+def measure(idle, settings=None, window=False):
     if not EXE.is_file():
         sys.exit(f"{EXE} not found: run cargo build --release first")
     if settings and not pathlib.Path(settings).is_file():
@@ -191,7 +349,7 @@ def measure(idle, settings=None):
         hotkey = hotkey_of(settings) if settings else None
         free_before = hotkey_free(hotkey) if hotkey else None
         env = os.environ | {"APPDATA": appdata}
-        result = run(env, idle, hotkey)
+        result = run(env, idle, hotkey, window)
     if hotkey is None:
         result["hotkey"] = "none"
     elif not free_before:
@@ -202,7 +360,7 @@ def measure(idle, settings=None):
     return result
 
 
-def run(env, idle, hotkey):
+def run(env, idle, hotkey, window=False):
     started = time.perf_counter()
     app = subprocess.Popen([str(EXE)], env=env)
     try:
@@ -213,7 +371,7 @@ def run(env, idle, hotkey):
                 sys.exit("no panel within 10 s")
             time.sleep(0.002)
         startup_ms = (time.perf_counter() - started) * 1000
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, False, app.pid)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, app.pid)
         if not handle:
             raise ctypes.WinError(ctypes.get_last_error())
         try:
@@ -223,6 +381,8 @@ def run(env, idle, hotkey):
             private, working_set = memory(handle)
             panels = panels_visible(app.pid)
             held = hotkey is not None and not hotkey_free(hotkey)
+            # Last: it loads what stays in the process once the window closes.
+            opened = settings_window(app.pid, handle) if window else None
         finally:
             kernel32.CloseHandle(handle)
     finally:
@@ -237,7 +397,7 @@ def run(env, idle, hotkey):
         "idle_cpu_ms": round(idle_cpu, 1),
         "panels": panels,
         "hotkey_held": held,
-    }
+    } | ({"settings_window": opened} if opened else {})
 
 
 def table(r, env):
@@ -252,6 +412,17 @@ def table(r, env):
         ("panels shown", str(r["panels"]), "as the settings say"),
         ("hotkey of the settings", r["hotkey"], "registered, when there is one"),
     ]
+    window = r.get("settings_window")
+    if window:
+        rows += [
+            ("comctl32 v6 before the settings window opens", str(window["comctl32_at_start"]), "False"),
+            ("private memory, settings window open (most)", mib(max(window["open_private_bytes"])), "8 MiB or less"),
+            (
+                "private memory, settings window closed (each time)",
+                ", ".join(mib(b) for b in window["closed_private_bytes"]),
+                "4 MiB or less, not growing",
+            ),
+        ]
     lines = [f"{k}: {v}" for k, v in env.items()]
     lines += ["", "| exe measurement | value | target |", "|---|---|---|"]
     lines += [f"| {a} | {b} | {c} |" for a, b, c in rows]
@@ -263,6 +434,7 @@ def main():
     parser.add_argument("--idle", type=int, default=60, help="seconds to wait idle (default 60)")
     parser.add_argument("--json", action="store_true", help="print JSON instead of a table")
     parser.add_argument("--settings", type=pathlib.Path, help="settings file to measure with")
+    parser.add_argument("--settings-window", action="store_true", help="open and close the settings window too")
     args = parser.parse_args()
     if args.settings and not args.settings.is_file():
         parser.error(f"--settings {args.settings}: no such file")
@@ -270,7 +442,7 @@ def main():
         parser.error("--idle must be at least 1 second")
     # Environment first: a failure here should not throw away a long run.
     env = environment()
-    result = measure(args.idle, args.settings)
+    result = measure(args.idle, args.settings, args.settings_window)
     if args.json:
         print(json.dumps(result | {"environment": env}))
     else:
