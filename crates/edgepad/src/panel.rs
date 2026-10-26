@@ -455,7 +455,6 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         if hwnd.is_null() {
             return false;
         }
-        set_style(panels);
         let keys: Vec<PanelKey> = p.keys.iter().map(PanelKey::of).collect();
         let presses = Presses::new(keys.len());
         let rect = Rect { x: 0, y: 0, w: 0, h: 0 };

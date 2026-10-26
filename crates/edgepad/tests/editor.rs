@@ -216,7 +216,7 @@ fn a_file_changed_outside_is_told_and_its_own_save_is_not() {
     assert!(within_3s(|| child(editor, BUTTON_CLASS, "読み直す").is_some()), "told of the change");
     assert!(child(editor, BUTTON_CLASS, "画面の内容を保つ").is_some(), "with a choice");
     click_child(editor, BUTTON_CLASS, "読み直す");
-    assert!(child(editor, BUTTON_CLASS, "読み直す").is_none(), "answered");
+    assert!(within_3s(|| child(editor, BUTTON_CLASS, "読み直す").is_none()), "answered");
     change(editor, 60);
     click_child(editor, BUTTON_CLASS, "保存");
     assert!(file(&app).contains("theme = dark"), "the window took up the file as changed: {}", file(&app));
@@ -226,8 +226,22 @@ fn a_file_changed_outside_is_told_and_its_own_save_is_not() {
     assert!(within_3s(|| child(editor, BUTTON_CLASS, "画面の内容を保つ").is_some()));
     click_child(editor, BUTTON_CLASS, "画面の内容を保つ");
     click_child(editor, BUTTON_CLASS, "保存");
+    let _ = within_3s(|| file(&app).contains("theme = dark"));
     let saved = file(&app);
     assert!(saved.contains("theme = dark") && saved.contains("opacity = 60"), "the window's, not the change outside: {saved}");
+
+    // Outside, and broken (not UTF-8): it cannot be read again; the reason
+    // shows, the question stays, and the window keeps its own.
+    std::fs::write(&path, b"[\xFF\xFE]\n").unwrap();
+    assert!(within_3s(|| child(editor, BUTTON_CLASS, "読み直す").is_some()), "told of the change");
+    click_child(editor, BUTTON_CLASS, "読み直す");
+    let _ = within_3s(|| status(editor).contains("読み直せません"));
+    assert!(status(editor).contains("読み直せません"), "the reason: {:?}", status(editor));
+    assert!(child(editor, BUTTON_CLASS, "画面の内容を保つ").is_some(), "the question stays");
+    click_child(editor, BUTTON_CLASS, "画面の内容を保つ");
+    click_child(editor, BUTTON_CLASS, "保存");
+    let _ = within_3s(|| file(&app).contains("opacity = 60"));
+    assert!(file(&app).contains("theme = dark") && file(&app).contains("opacity = 60"), "the window's own, saved over it");
 }
 
 // AC5
@@ -311,6 +325,26 @@ fn in_front_the_window_switches_no_profile_and_lets_no_key_go() {
     assert_eq!(left_keys(&app), 3, "the profile stays");
     assert_eq!(log.keys(), [(b'A' as u16, false)], "A stays held");
     touch.up(1);
+
+    // A mouse holding a key on the panel and dragged off it, a finger
+    // tapping a tab meanwhile: the key comes up when the mouse lets go,
+    // off the panel as it is, as ever.
+    let before = log.keys().len();
+    let m = primary_monitor();
+    let off = test_window("EdgePadTestEditorOff", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, RECT { left: m.left + 200, top: m.bottom - 200, right: m.left + 400, bottom: m.bottom - 100 });
+    let b = key_centre(left_panel(&app), 1);
+    mouse_move_to(b);
+    mouse_down_at(b);
+    pump(200);
+    let away = centre(window_rect(off.0));
+    mouse_move_to(away);
+    pump(200);
+    let tab = centre(window_rect(child(editor, TAB_CLASS, "辺").expect("a tab")));
+    touch.down(2, tab);
+    touch.up(2);
+    mouse_up_at(away);
+    let _ = within_3s(|| log.keys().len() >= before + 2);
+    assert_eq!(log.keys()[before..], [(b'B' as u16, false), (b'B' as u16, true)], "B down, and up with the mouse");
 }
 
 /// The palette's background of each theme (spec 5.2).

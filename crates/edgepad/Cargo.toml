@@ -32,4 +32,4 @@ windows-sys = { version = "0.61", features = [
 fault-injection = []
 
 [dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Controls"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Dwm", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Controls"] }

@@ -21,13 +21,14 @@ use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWin
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_ESCAPE};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::colors::colorref;
 use crate::log::debug_log;
-use crate::{panel, settings, tray};
+use crate::panel::{self, pointer_id};
+use crate::{settings, tray};
 
 const TABS: [&str; 4] = ["一般", "辺", "キーセット", "プロファイル"];
 
@@ -100,13 +101,21 @@ struct Editor {
 thread_local! {
     static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
     static REGISTERED: Cell<bool> = const { Cell::new(false) };
-    // The part a pointer went down on: only it answers that pointer's lift.
-    static PRESSED: Cell<HWND> = const { Cell::new(null_mut()) };
+    // The pointer that went down on a part, and the part: only it answers
+    // that pointer's lift. No part takes the capture, which the panels on
+    // this thread hold for a mouse pressing a key.
+    static PRESSED: Cell<(u32, HWND)> = const { Cell::new((0, null_mut())) };
 }
 
 /// Run `f` on the window, if it is open and not in use further up the stack.
 fn with_editor<R>(f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
-    EDITOR.with(|e| e.try_borrow_mut().ok()?.as_mut().map(f))
+    EDITOR.with(|e| match e.try_borrow_mut() {
+        Ok(mut e) => e.as_mut().map(f),
+        Err(_) => {
+            debug_log!("設定画面が使用中: 後回しにできない操作は捨てる");
+            None
+        }
+    })
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -150,7 +159,8 @@ unsafe fn register() -> bool {
     true
 }
 
-/// A part of `parent`: a tab, button or status line, of `kind`.
+/// A part of `parent`: a tab, button or status line, of `kind`. Made
+/// hidden, to be shown once it is in its place.
 unsafe fn part(parent: HWND, class: *const u16, text: &str, id: usize, kind: isize) -> HWND {
     unsafe {
         let text = wide(text);
@@ -158,7 +168,7 @@ unsafe fn part(parent: HWND, class: *const u16, text: &str, id: usize, kind: isi
             0,
             class,
             text.as_ptr(),
-            WS_CHILD | WS_VISIBLE,
+            WS_CHILD,
             0,
             0,
             1,
@@ -184,7 +194,8 @@ fn read_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 /// Make the title bar dark with a dark palette, light with a light one.
 unsafe fn title_bar(hwnd: HWND) {
     let c = panel::palette().background;
-    let dark: i32 = ((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000 < 128).into();
+    // Dark as theme::text_on judges a colour dark.
+    let dark: i32 = ((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000 < 150).into();
     unsafe { DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, &dark as *const i32 as _, 4) };
 }
 
@@ -277,22 +288,25 @@ pub unsafe fn open() {
 }
 
 /// Size the window for `dpi`, its client area CLIENT_W by CLIENT_H logical
-/// pixels; with `centre`, in the middle of its monitor's work area.
+/// pixels: with `centre`, in the middle of its monitor's work area, else
+/// where it is, moved only as far as keeps it on the monitor it is on.
 unsafe fn size_for(hwnd: HWND, dpi: u32, centre: bool) {
     unsafe {
         let mut r = RECT { left: 0, top: 0, right: scale(CLIENT_W, dpi), bottom: scale(CLIENT_H, dpi) };
         AdjustWindowRectExForDpi(&mut r, STYLE, 0, EX_STYLE, dpi);
         let (w, h) = (r.right - r.left, r.bottom - r.top);
-        if centre {
-            let mut info: MONITORINFO = zeroed();
-            info.cbSize = size_of::<MONITORINFO>() as u32;
-            GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mut info);
-            let a = info.rcWork;
-            let (x, y) = (a.left + (a.right - a.left - w) / 2, a.top + (a.bottom - a.top - h) / 2);
-            SetWindowPos(hwnd, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        let mut info: MONITORINFO = zeroed();
+        info.cbSize = size_of::<MONITORINFO>() as u32;
+        GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
+        let a = info.rcWork;
+        let (x, y) = if centre {
+            (a.left + (a.right - a.left - w) / 2, a.top + (a.bottom - a.top - h) / 2)
         } else {
-            SetWindowPos(hwnd, null_mut(), 0, 0, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
-        }
+            let mut now: RECT = zeroed();
+            GetWindowRect(hwnd, &mut now);
+            (now.left.min(a.right - w).max(a.left), now.top.min(a.bottom - h).max(a.top))
+        };
+        SetWindowPos(hwnd, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
@@ -321,6 +335,10 @@ unsafe fn lay_out() {
             MoveWindow(answer, x, y, button, row, 1);
         }
         MoveWindow(status, m, y - m - row, (client.right - 2 * m).max(0), row, 1);
+        // In their places now: shown, and not before.
+        for &part in tabs.iter().chain([&save, &status]).chain(&answers) {
+            ShowWindow(part, SW_SHOWNA);
+        }
         InvalidateRect(hwnd, null(), 1);
     }
 }
@@ -352,14 +370,22 @@ unsafe fn ask(ask: Option<Ask>) {
         let (text, answers): (&str, &[(&str, usize)]) = match ask {
             Some(Ask::Changed) => ("設定ファイルが外で書き換わりました", &[("読み直す", RELOAD), ("画面の内容を保つ", KEEP)]),
             Some(Ask::Closing) => (
-                "保存していない変更があります",
+                match e.outside.is_some() {
+                    true => "保存していない変更があります（設定ファイルは外でも書き換わっています。保存するとその変更を上書きします）",
+                    false => "保存していない変更があります",
+                },
                 &[("保存する", SAVE_AND_CLOSE), ("保存せずに閉じる", DISCARD), ("キャンセル", CANCEL)],
             ),
             None => ("", &[]),
         };
         set_status(e, text);
         for &(label, id) in answers {
-            e.answers.push(part(e.hwnd, w!("EdgePadSettingsButton"), label, id, BUTTON));
+            let answer = part(e.hwnd, w!("EdgePadSettingsButton"), label, id, BUTTON);
+            if answer.is_null() {
+                debug_log!("設定画面の答えのボタンを作れない: {label}");
+                continue;
+            }
+            e.answers.push(answer);
         }
     });
     if made.is_some() {
@@ -380,7 +406,11 @@ fn save(e: &mut Editor) -> bool {
         set_status(e, &format!("保存できません: {first}{more}"));
         return false;
     }
-    if let Err(why) = std::fs::write(&e.path, &bytes) {
+    // Written beside it and then put in its place: a write that fails part
+    // way leaves the file as it was, not cut short.
+    let fresh = e.path.with_extension("ini.new");
+    if let Err(why) = std::fs::write(&fresh, &bytes).and_then(|()| std::fs::rename(&fresh, &e.path)) {
+        let _ = std::fs::remove_file(&fresh);
         set_status(e, &format!("保存できません: {why}"));
         return false;
     }
@@ -427,8 +457,14 @@ unsafe fn command(id: usize) {
         // done, in place of the question.
         let mut said = "";
         let answered = with_editor(|e| match id {
-            // Saved, nothing is left to ask about.
-            SAVE => save(e) && !e.answers.is_empty(),
+            // Saved, nothing is left to ask about; over a change outside,
+            // the window's won, which it says.
+            SAVE => {
+                let over = e.outside.is_some();
+                let saved = save(e);
+                said = if over { "外の変更を上書きして保存しました" } else { "保存しました" };
+                saved && !e.answers.is_empty()
+            }
             RELOAD => {
                 let Some(bytes) = e.outside.take() else { return true };
                 match Document::new(&bytes) {
@@ -471,9 +507,6 @@ unsafe fn command(id: usize) {
             DestroyWindow(hwnd);
         } else if answered == Some(true) {
             ask(None);
-            if id == SAVE {
-                said = "保存しました";
-            }
             with_editor(|e| set_status(e, said));
         }
     }
@@ -500,7 +533,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // a pointer from it is nothing to follow.
             WM_DPICHANGED => {
                 let dpi = (wp & 0xFFFF) as u32;
-                if dpi == 0 {
+                // Windows's scales run from 100% to 500%; anything far
+                // outside is no monitor's.
+                if !(48..=960).contains(&dpi) {
                     return 0;
                 }
                 let resized = with_editor(|e| {
@@ -528,14 +563,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 command(SAVE);
                 0
             }
-            // With changes not saved, ask first; asked already about a
-            // change outside, that answer comes first.
+            // Alt alone opens no menu: the window has none, and the
+            // system menu's mode would swallow the next click on a part.
+            // Alt+Space still opens the system menu.
+            WM_SYSCOMMAND if wp & 0xFFF0 == SC_KEYMENU as usize && lp == 0 => 0,
+            // With changes not saved, ask first (a question about a change
+            // outside gives way: the answer to this one settles it too).
+            // Nothing of the window's to lose, it just closes.
             WM_CLOSE => {
-                match with_editor(|e| (unsaved(e), e.outside.is_some())) {
-                    Some((_, true)) => {
-                        with_editor(|e| set_status(e, "設定ファイルが外で書き換わりました。先にこの問いに答えてください"));
-                    }
-                    Some((true, false)) => ask(Some(Ask::Closing)),
+                match with_editor(|e| unsaved(e)) {
+                    Some(true) => ask(Some(Ask::Closing)),
                     _ => {
                         DestroyWindow(hwnd);
                     }
@@ -543,7 +580,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_DESTROY => {
-                PRESSED.set(null_mut());
+                PRESSED.set((0, null_mut()));
                 if let Some(e) = EDITOR.take() {
                     DeleteObject(e.font);
                     debug_log!("設定画面を閉じる");
@@ -602,20 +639,14 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 r
             }
             WM_POINTERDOWN if kind != STATUS => {
-                PRESSED.set(hwnd);
-                // A mouse let go off the part still tells it.
-                SetCapture(hwnd);
-                0
-            }
-            WM_POINTERCAPTURECHANGED => {
-                if PRESSED.get() == hwnd {
-                    PRESSED.set(null_mut());
-                }
+                PRESSED.set((pointer_id(wp), hwnd));
                 0
             }
             WM_POINTERUP if kind != STATUS => {
-                let pressed = PRESSED.replace(null_mut()) == hwnd;
-                ReleaseCapture();
+                let pressed = PRESSED.get() == (pointer_id(wp), hwnd);
+                if pressed {
+                    PRESSED.set((0, null_mut()));
+                }
                 let mut r: RECT = zeroed();
                 GetWindowRect(hwnd, &mut r);
                 let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
