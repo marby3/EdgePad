@@ -382,11 +382,7 @@ fn rewrite(raw: &str, line: &Line) -> String {
     let fields = [line.label.as_str(), line.kind.as_str(), line.content.as_str(), options.as_str()];
     let mut segments: Vec<String> = raw.split('|').map(String::from).collect();
     let count = if options.is_empty() { 3 } else { 4 };
-    segments.resize(count.max(segments.len().min(count)), String::new());
-    segments.truncate(count);
-    while segments.len() < count {
-        segments.push(String::new());
-    }
+    segments.resize(count, String::new());
     let last = count - 1;
     let refilled: Vec<String> = segments.iter().enumerate().map(|(i, s)| refill(s, fields[i], i, i == last)).collect();
     refilled.join("|").trim_end().to_string()
@@ -395,15 +391,23 @@ fn rewrite(raw: &str, line: &Line) -> String {
 /// Field `i`, `segment` with the spaces around it, holding `new`.
 fn refill(segment: &str, new: &str, i: usize, last: bool) -> String {
     let old = segment.trim();
-    if old == new {
-        return segment.to_string();
-    }
     let lead = &segment[..segment.len() - segment.trim_start().len()];
     let trail = &segment[segment.trim_end().len()..];
+    // A field that ended the line and no longer does is spaced from the
+    // `|` after it.
+    if old == new && (last || !trail.is_empty()) {
+        return segment.to_string();
+    }
     let lead = if lead.is_empty() && i > 0 { " " } else { lead };
     let trail = if trail.is_empty() && !last { " " } else { trail };
-    let pad = if last { 0 } else { old.chars().count().saturating_sub(new.chars().count()) };
+    let pad = if last { 0 } else { columns(old).saturating_sub(columns(new)) };
     format!("{lead}{new}{}{trail}", " ".repeat(pad))
+}
+
+/// How many columns `text` takes in a monospaced editor: two for a wide
+/// character (kana, kanji and the like), one for the rest.
+fn columns(text: &str) -> usize {
+    text.chars().map(|c| if c as u32 >= 0x1100 { 2 } else { 1 }).sum()
 }
 
 /// `key` as the file writes it in a combination: the comma key by name, as
@@ -487,7 +491,7 @@ fn sent(line: &Line, step: usize) -> Option<Combo> {
 }
 
 fn is_wait(step: &str) -> bool {
-    step.get(..5).is_some_and(|w| w.eq_ignore_ascii_case("wait ")) || step.eq_ignore_ascii_case("wait")
+    step.get(..5).is_some_and(|w| w.eq_ignore_ascii_case("wait "))
 }
 
 /// A step as the list shows it.
@@ -502,9 +506,11 @@ fn part_of(e: &Editor, id: usize) -> HWND {
     unsafe { GetDlgItem(e.hwnd, id as i32) }
 }
 
+/// The text of `hwnd`, however long.
 fn text_of(hwnd: HWND) -> String {
-    let mut buf = [0u16; 512];
-    let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), 512) };
+    let len = unsafe { GetWindowTextLengthW(hwnd) }.max(0) as usize;
+    let mut buf = vec![0u16; len + 1];
+    let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
@@ -910,7 +916,9 @@ fn is_macro(e: &Editor) -> bool {
 }
 
 /// Show the page as the window's copy of the file has it, the chosen key
-/// set and key kept if they are still there.
+/// set and key kept if they are still there. Called when the page is shown
+/// and when Windows's colours change too: the sample follows the
+/// panels' look, set on the other pages or by Windows.
 pub(super) unsafe fn refresh(e: &mut Editor) {
     let sets = set_names(&e.doc);
     let k = &mut e.keymap;
@@ -1083,8 +1091,8 @@ unsafe fn taken(e: &mut Editor, field: usize, result: Result<(), String>) -> boo
 
 /// The chosen key turned into kind `kind`: what it sends kept where the
 /// new kind can send it too, else the kind's own first value.
-fn convert(line: &mut Line, kind: usize, sets: &[String], own: &str) {
-    let combo = sent(line, 0);
+fn convert(line: &mut Line, kind: usize, step: usize, sets: &[String], own: &str) {
+    let combo = sent(line, step);
     let old = line.kind();
     line.content = match kind {
         MODIFIER => {
@@ -1217,10 +1225,10 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 None
             }
             _ if clicked && (KINDS..KINDS + 9).contains(&id) => {
-                let sets = set_names(&e.doc);
+                let (sets, step) = (set_names(&e.doc), e.keymap.step);
                 change(e, id, |line| {
                     if line.kind() != Some(id - KINDS) {
-                        convert(line, id - KINDS, &sets, &set);
+                        convert(line, id - KINDS, step, &sets, &set);
                     }
                     Ok(())
                 });
@@ -1398,6 +1406,8 @@ unsafe fn edit_steps(e: &mut Editor, id: usize) {
 
 /// Put the name field out, over the list of sets, to name the set.
 fn start_naming(e: &mut Editor) -> HWND {
+    // The name is typed, not captured.
+    cancel_capture(e);
     e.keymap.naming = true;
     let name = part_of(e, NAME);
     set_text(name, e.keymap.set.as_deref().unwrap_or(""));
@@ -1471,9 +1481,6 @@ pub(super) unsafe fn commit(id: usize) -> bool {
                     focus = Some(part_of(e, SET));
                 }
                 taken(e, NAME, renamed);
-                if focus.is_none() {
-                    SendMessageW(field, EM_SETMODIFY, 1, 0);
-                }
             }
             LABEL => {
                 change(e, id, |line| {
@@ -1510,6 +1517,10 @@ pub(super) unsafe fn commit(id: usize) -> bool {
                 });
             }
             _ => {}
+        }
+        // Turned away, it is entered again as it is, with Enter.
+        if e.keymap.wrong.as_ref().is_some_and(|(wrong, _)| *wrong == id) {
+            SendMessageW(field, EM_SETMODIFY, 1, 0);
         }
     })
     .is_some();
@@ -1706,7 +1717,7 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
                 DeleteObject(brush);
                 SetTextColor(dc, colorref(ink));
                 let label = &v.labels[i];
-                DrawTextW(dc, label.as_ptr(), label.len() as i32, &mut face, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                DrawTextW(dc, label.as_ptr(), label.len() as i32, &mut face, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
             SelectObject(dc, old_pen);
             SelectObject(dc, old_font);

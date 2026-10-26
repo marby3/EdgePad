@@ -459,6 +459,34 @@ fn the_sample_draws_the_set_as_its_panel_and_chooses_a_key() {
     wait_in_front(editor);
     click(sample_cell(editor, 3, 0));
     assert!(within_3s(|| text(editor, LABEL) == "C"), "C chosen: {:?}", text(editor, LABEL));
+
+    // The panels' theme changed on 辺と表示 (its field 404): the sample
+    // follows it, back on キー配置.
+    wait_in_front(editor);
+    click(centre(sidebar_item(editor, 2)));
+    assert!(within_3s(|| heading(editor) == "辺と表示"));
+    choose(editor, 404, "dark");
+    wait_in_front(editor);
+    click(centre(sidebar_item(editor, 0)));
+    assert!(within_3s(|| heading(editor) == "キー配置"));
+    let dark_face = [0x3A, 0x3A, 0x3A];
+    assert!(within_3s(|| near(colour_at(sample_cell(editor, 0, 0)), dark_face)), "A as a key of a dark panel: {:?}", colour_at(sample_cell(editor, 0, 0)));
+}
+
+// A value the parser turns away stays in its field, out of the file.
+#[test]
+fn a_key_value_that_does_not_read_is_stopped_in_its_field() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_set(&app, "mods");
+    enter(editor, WIDTH, "9");
+    assert!(within_3s(|| status(editor).contains("width")), "why: {:?}", status(editor));
+    let r = window_rect(part(editor, WIDTH));
+    let inside = colour_at(POINT { x: r.right - 4, y: (r.top + r.bottom) / 2 });
+    assert!(inside[0] > inside[1] + 30, "the field shows it wrong: {inside:?}");
+    save(editor);
+    assert!(within_3s(|| status(editor).contains("保存しました")), "{:?}", status(editor));
+    assert!(!file(&app).contains("width"), "not written: {}", file(&app));
 }
 
 // AC3

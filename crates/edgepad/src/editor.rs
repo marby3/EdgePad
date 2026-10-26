@@ -522,6 +522,8 @@ unsafe fn restyle() {
         for part in typed {
             RedrawWindow(part, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
         }
+        // The sample's panel colours, of theme = auto, follow Windows too.
+        with_editor(|e| keymap::refresh(e));
         RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
     }
 }
@@ -795,6 +797,9 @@ unsafe fn show_page(index: usize) {
         keymap::cancel_capture(e);
         unsafe {
             fields::show(e);
+            if index == keymap::PAGE {
+                keymap::refresh(e);
+            }
             keymap::show(e);
         }
         (e.sidebar, e.heading)
