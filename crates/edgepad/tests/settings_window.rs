@@ -400,7 +400,9 @@ fn it_follows_the_dpi_lays_out_again_when_resized_and_keeps_its_least_size() {
     pump(300);
     let after = corner(save);
     assert!((after.0 - before.0).abs() <= 1 && (after.1 - before.1).abs() <= 1, "保存 stays in the corner: {before:?} -> {after:?}");
-    assert!((height(list) - list0 - 120).abs() <= 1, "the sidebar runs on down: {list0} -> {}", height(list));
+    // As much taller as the screen let it be (CI's is 1024 x 768).
+    let grown = window_rect(editor).bottom - window_rect(editor).top - h;
+    assert!(grown > 0 && (height(list) - list0 - grown).abs() <= 1, "the sidebar runs on down: {list0} -> {}, +{grown}", height(list));
     assert!(window_rect(list).bottom < window_rect(save).top, "above the bottom row");
 
     // Far too small: it stops at its least size, its parts all inside it.

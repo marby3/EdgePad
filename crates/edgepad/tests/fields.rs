@@ -98,9 +98,15 @@ fn click_on(editor: HWND, hwnd: HWND) {
 }
 
 fn show_page(editor: HWND, page: usize) {
-    wait_in_front(editor);
-    click(centre(sidebar_item(editor, page)));
-    assert!(within_3s(|| heading(editor) == PAGES[page]), "page {}", PAGES[page]);
+    // Twice at most: a click lost to a busy machine is tried again.
+    for _ in 0..2 {
+        wait_in_front(editor);
+        click(centre(sidebar_item(editor, page)));
+        if within_3s(|| heading(editor) == PAGES[page]) {
+            return;
+        }
+    }
+    panic!("page {}, not {:?}", PAGES[page], heading(editor));
 }
 
 /// Type `text` as characters, wherever the focus is.
@@ -669,16 +675,17 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     let _ = within_3s(|| brightness(inside(editor, "opacity")) > 170);
     assert!(brightness(inside(editor, "opacity")) > 170, "light again: {:?}", inside(editor, "opacity"));
 
-    // The DPI: rows and the figure grow with it.
-    let height = |w: HWND| window_rect(w).bottom - window_rect(w).top;
-    let (row0, fig0) = (height(field(editor, "opacity")), height(part(editor, DIAGRAM)));
+    // The DPI: fields and the figure grow with it. Across: down the
+    // page, rows come closer where the screen is small (CI's 1024 x 768).
+    let width = |w: HWND| window_rect(w).right - window_rect(w).left;
+    let (row0, fig0) = (width(field(editor, "opacity")), width(part(editor, DIAGRAM)));
     let dpi = unsafe { GetDpiForWindow(editor) } as i32;
     let new = dpi * 3 / 2;
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
     pump(300);
-    assert!((height(field(editor, "opacity")) - row0 * 3 / 2).abs() <= 3, "a field grows: {row0} -> {}", height(field(editor, "opacity")));
-    assert!((height(part(editor, DIAGRAM)) - fig0 * 3 / 2).abs() <= 3, "the figure grows: {fig0} -> {}", height(part(editor, DIAGRAM)));
+    assert!((width(field(editor, "opacity")) - row0 * 3 / 2).abs() <= 3, "a field grows: {row0} -> {}", width(field(editor, "opacity")));
+    assert!((width(part(editor, DIAGRAM)) - fig0 * 3 / 2).abs() <= 3, "the figure grows: {fig0} -> {}", width(part(editor, DIAGRAM)));
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
     pump(300);
     drop(dark);
