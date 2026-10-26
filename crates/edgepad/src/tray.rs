@@ -25,7 +25,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::log::debug_log;
-use crate::{autostart, editor, panel, pie_menu, profile, send, settings, watch};
+use crate::{autostart, editor_process, panel, pie_menu, profile, send, settings, watch};
 
 // The class name, TRAY_ID, TRAY_CALLBACK, the menu texts and the test
 // messages are the contract the tests drive the tray through: change them
@@ -321,11 +321,13 @@ unsafe fn command(hwnd: HWND, id: usize) {
     unsafe {
         match id {
             CMD_EXIT => {
-                if editor::may_exit() {
+                if editor_process::may_exit() {
                     exit(hwnd);
+                } else {
+                    notify("設定画面に保存していない変更があります。保存するか閉じてから終了してください");
                 }
             }
-            CMD_EDITOR => editor::open(),
+            CMD_EDITOR => editor_process::open(),
             CMD_OPEN => open_settings(hwnd),
             CMD_RELOAD => watch::reload(true),
             CMD_PAUSE => panel::toggle_pause(),

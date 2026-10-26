@@ -17,8 +17,10 @@
 //! the arrows are the controls' own), Esc closes and Ctrl+S saves. So does
 //! a finger, while a panel holds the mouse for a key it presses.
 //!
-//! Everything is made when the window opens, and goes when it closes; but
-//! comctl32, once loaded, stays (spec 8).
+//! It runs in a process of its own, started by the running EdgePad
+//! (`editor_process`), which ends when the window closes: what the window
+//! loaded, comctl32 and Windows's text input among it, goes with it
+//! (spec 8).
 
 use std::cell::{Cell, RefCell};
 use std::io::Read;
@@ -40,7 +42,7 @@ use windows_sys::Win32::System::ApplicationInstallationAndServicing::{
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetCapture, GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_TAB,
+    GetAsyncKeyState, GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_RETURN, VK_SHIFT, VK_TAB,
 };
 use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -422,32 +424,52 @@ unsafe fn restyle() {
     }
 }
 
-/// Open the settings window from the tray, or bring it back if it is open.
-pub unsafe fn open() {
+/// The settings file, made from the template if there is none, and as a
+/// document; else why the window cannot open it, as the tray tells it.
+fn load() -> Result<(PathBuf, Document, Vec<u8>), String> {
+    let path = settings::path_or_template().ok_or("設定ファイルを作れませんでした")?;
+    let read = read_file(&path).map_err(|e| e.to_string());
+    match read.and_then(|b| Document::new(&b).map(|d| (d, b)).map_err(|e| e.to_string())) {
+        Ok((doc, bytes)) => Ok((path, doc, bytes)),
+        Err(why) => Err(format!("設定ファイルを開けません: {why}")),
+    }
+}
+
+/// Whether the settings window can open the settings file: asked by the
+/// running EdgePad before it starts the window's process, as only it can
+/// tell why not.
+pub fn check_file() -> Result<(), String> {
+    load().map(|_| ())
+}
+
+/// "EdgePadSettingsMayExit", sent by the running EdgePad when it is to end:
+/// the window answers whether it may (`may_exit`). Registered by name: the
+/// name is the contract between the two processes.
+pub fn may_exit_message() -> u32 {
+    thread_local! {
+        static ID: u32 = unsafe { RegisterWindowMessageW(w!("EdgePadSettingsMayExit")) };
+    }
+    ID.with(|id| *id)
+}
+
+/// The settings window's process (`editor_process`): open the window, and
+/// run until it closes. False if it could not open.
+pub unsafe fn run() -> bool {
+    unsafe { watch::run_settings(|| open()) }
+}
+
+/// Open the settings window. False if it could not be.
+unsafe fn open() -> bool {
     unsafe {
-        if is_open() {
-            if let Some(hwnd) = with_editor(|e| e.hwnd) {
-                ShowWindow(hwnd, if IsIconic(hwnd) != 0 { SW_RESTORE } else { SW_SHOW });
-                SetForegroundWindow(hwnd);
-            }
-            return;
-        }
-        let Some(path) = settings::path_or_template() else {
-            tray::notify("設定ファイルを作れませんでした");
-            return;
-        };
-        // The file may be new, in a folder made just now: watched from now.
-        watch::rescan();
-        let read = read_file(&path).map_err(|e| e.to_string());
-        let (doc, known) = match read.and_then(|b| Document::new(&b).map(|d| (d, b)).map_err(|e| e.to_string())) {
-            Ok(opened) => opened,
+        let (path, doc, known) = match load() {
+            Ok(loaded) => loaded,
             Err(why) => {
-                tray::notify(&format!("設定ファイルを開けません: {why}"));
-                return;
+                debug_log!("設定画面を開けない: {why}");
+                return false;
             }
         };
         if !register() {
-            return;
+            return false;
         }
         let title = wide(TITLE);
         let hwnd = CreateWindowExW(
@@ -466,8 +488,7 @@ pub unsafe fn open() {
         );
         if hwnd.is_null() {
             debug_log!("設定画面を作れない");
-            tray::notify("設定画面を開けませんでした");
-            return;
+            return false;
         }
         let dpi = GetDpiForWindow(hwnd).max(96);
         DPI.set(dpi);
@@ -490,8 +511,7 @@ pub unsafe fn open() {
                 ReleaseActCtx(context);
             }
             DPI.set(0);
-            tray::notify("設定画面を開けませんでした");
-            return;
+            return false;
         }
         let [sidebar, heading, status, path_part, open_text, save] = parts;
         for page in PAGES {
@@ -543,6 +563,7 @@ pub unsafe fn open() {
         SetForegroundWindow(hwnd);
         SetFocus(sidebar);
     }
+    true
 }
 
 /// Give the parts the window's fonts, and the sidebar's items their height.
@@ -798,9 +819,9 @@ pub unsafe fn file_changed() {
     }
 }
 
-/// EdgePad is to end from the tray: unless the window holds changes not
-/// saved, in which case it asks about them and EdgePad goes on.
-pub unsafe fn may_exit() -> bool {
+/// EdgePad is to end (`may_exit_message`): unless the window holds
+/// changes not saved, in which case it asks about them and EdgePad goes on.
+unsafe fn may_exit() -> bool {
     if !is_open() {
         return true;
     }
@@ -814,7 +835,6 @@ pub unsafe fn may_exit() -> bool {
         SetForegroundWindow(hwnd);
         ask(Some(Ask::Closing));
     }
-    tray::notify("設定画面に保存していない変更があります。保存するか閉じてから終了してください");
     false
 }
 
@@ -1091,7 +1111,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 0
             }
+            _ if msg == may_exit_message() => may_exit() as LRESULT,
             WM_DESTROY => {
+                // Its process has nothing else to do.
+                PostQuitMessage(0);
                 DPI.set(0);
                 if let Some(p) = PAINT.take() {
                     DeleteObject(p.background);
@@ -1123,7 +1146,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 }
 
 /// A message for the settings window, before it is dispatched: a key, or a
-/// finger while a panel holds the mouse. Whether it took the message.
+/// finger while the mouse is held down. Whether it took the message.
 pub unsafe fn take(msg: &MSG) -> bool {
     let keyed = (WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message);
     let pointed = matches!(msg.message, WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP);
@@ -1141,19 +1164,18 @@ pub unsafe fn take(msg: &MSG) -> bool {
     }
 }
 
-/// A finger on a part of the settings window while a panel holds the
-/// mouse, for a key it presses: taken as a tap here, not passed on.
+/// A finger on a part of the settings window while the mouse is held down
+/// (on a panel, for a key it presses): taken as a tap here, not passed on.
 /// Passed on, Windows would make mouse input of it, and the mouse's own
-/// press would end there, its key left held with no lift to come.
+/// press would end there, the panel's key left held with no lift to come.
 unsafe fn finger(hwnd: HWND, msg: &MSG) -> bool {
     let id = pointer_id(msg.wParam);
     unsafe {
         match msg.message {
             WM_POINTERDOWN => {
-                let held = GetCapture();
                 let mut kind = 0;
                 let mouse = GetPointerType(id, &mut kind) == 0 || kind == PT_MOUSE;
-                if mouse || held.is_null() || held == hwnd || IsChild(hwnd, held) != 0 {
+                if mouse || GetAsyncKeyState(VK_LBUTTON as i32) >= 0 {
                     return false;
                 }
                 TAPPED.set((id, msg.hwnd));

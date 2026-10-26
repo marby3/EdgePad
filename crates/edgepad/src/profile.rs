@@ -31,7 +31,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::log::debug_log;
 use crate::settings::{self, Panels};
-use crate::{panel, pie_menu, send, tray};
+use crate::{editor_process, panel, pie_menu, send, tray};
 
 /// Test builds only: treat every app coming to the front as out of reach.
 #[cfg(feature = "fault-injection")]
@@ -187,11 +187,12 @@ unsafe fn integrity(process: HANDLE) -> Option<u32> {
     }
 }
 
-/// Whether `hwnd` is one of EdgePad's own windows.
+/// Whether `hwnd` is one of EdgePad's own windows: this process's, or the
+/// settings window's.
 unsafe fn is_own(hwnd: HWND) -> bool {
     let mut pid = 0;
     unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-    pid == unsafe { GetCurrentProcessId() }
+    pid == unsafe { GetCurrentProcessId() } || editor_process::is_settings(pid)
 }
 
 /// The executable's file name of the process owning `hwnd`, if it can be
