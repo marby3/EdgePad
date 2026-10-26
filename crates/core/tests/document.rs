@@ -122,7 +122,19 @@ fn sections_come_and_go_and_a_renamed_set_takes_its_references_along() {
     let mut d = doc("[set.a] ; see [b]\nkey = x | page | a\n[profile.default]\nleft = a\n");
     assert!(d.rename_section("Set.A", "set.c"));
     assert_eq!(text(&d), "[set.c] ; see [b]\nkey = x | page | c\n[profile.default]\nleft = c\n");
-    assert!(!d.rename_section("set.c", "profile.default"), "a name taken is refused");
+    // Names taken, and names a page key or an edge reads as no set, are
+    // refused; a set called so, renamed, leaves page turns and hidden edges.
+    let mut d = doc("[set.next]\nkey = x | page | next\nkey = y | pie | next\n[set.b]\nkey = z | page | prev\n[profile.default]\nleft = none\nright = next\n");
+    assert!(!d.rename_section("set.next", "set.b"), "a name taken is refused");
+    for reserved in ["set.next", "set.PREV", "set.none"] {
+        assert!(!d.rename_section("set.b", reserved), "{reserved} is refused");
+    }
+    assert!(d.rename_section("set.next", "set.more"));
+    assert_eq!(
+        text(&d),
+        "[set.more]\nkey = x | page | next\nkey = y | pie | more\n[set.b]\nkey = z | page | prev\n[profile.default]\nleft = none\nright = more\n",
+        "the pie key and the edge follow; the page turn and the hidden edge stay"
+    );
 }
 
 // AC5
@@ -159,9 +171,12 @@ fn text_the_parser_cannot_read_makes_no_panic_and_broken_bytes_make_no_document(
     not_utf8.extend([0xFF, 0xFE, b'\n']);
     let error = Document::new(&not_utf8).err().expect("not UTF-8");
     assert_eq!(error.line, 3, "{error:?}");
+    assert_eq!(Some(error), parse(&not_utf8).unwrap_err().into_iter().next(), "for the parser's reason");
 
     let huge = "; padding\n".repeat(MAX_BYTES / 10 + 1);
-    assert_eq!(Document::new(huge.as_bytes()).err().expect("too big").line, 0);
+    let error = Document::new(huge.as_bytes()).err().expect("too big");
+    assert_eq!(error.line, 0);
+    assert_eq!(Some(error), parse(huge.as_bytes()).unwrap_err().into_iter().next(), "for the parser's reason");
 
     let noise: Vec<u8> = (0..4096u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8 & 0x7F).collect();
     let odds: Vec<&[u8]> = vec![&noise, b"[", b"]", b"=", b"key", b"key =", b"[set.]", b"[profile.default", b"\xEF\xBB\xBF", b"[set.a]\nkey = a | page", b"x = ; y"];

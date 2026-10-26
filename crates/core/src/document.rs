@@ -8,13 +8,18 @@
 //!
 //! Sections are named as their headers are, without the brackets:
 //! `general`, `edge.left`, `set.pad`, `profile.csp`. Names match in any
-//! case, as the parser reads them. An edit on a section or line that is not
-//! there does nothing.
+//! case, as the parser reads them; of two sections of one name, which the
+//! parser turns away, edits reach the first. Every edit says whether it was
+//! made: on a section or line that is not there, or with a value the file
+//! cannot hold, it does nothing and says false.
 //!
-//! A document does not check what it writes: the settings window reads the
-//! text back with the parser before saving (spec 7.1). A key set removed
-//! while keys or profiles still name it, for one, is an error there, for
-//! the user to settle, rather than something to guess at here.
+//! The file has no escapes, so a value cannot hold a line break, or a `;`
+//! after a space, where the parser's comments start: such values are
+//! turned away. Beyond that, a document does not check what it writes: the
+//! settings window reads the text back with the parser before saving (spec
+//! 7.1). A key set removed while keys or profiles still name it, for one,
+//! is an error there, for the user to settle, rather than something to
+//! guess at here.
 
 use crate::config::{self, Error, strip_comment};
 
@@ -71,6 +76,16 @@ fn value(line: &str) -> Option<&str> {
     let (_, (from, to)) = value_spans(line)?;
     Some(&line[from..to])
 }
+
+/// Whether `value` can stand in the file as written: on one line, with no
+/// `;` the parser would take for the start of a comment.
+fn writable(value: &str) -> bool {
+    !value.contains(['\r', '\n']) && strip_comment(value).len() == value.len()
+}
+
+/// Names a page key or a profile's edge reads as something else than a key
+/// set: the next and previous page, and no set at all.
+const RESERVED: [&str; 3] = ["next", "prev", "none"];
 
 /// `line` with the value of its setting replaced by `value`.
 fn with_value(line: &str, value: &str) -> String {
@@ -162,7 +177,10 @@ impl Document {
     /// Set `name` in `section` to `value`, or remove it with none. A new
     /// setting goes after the section's last one, as `name = value`; a new
     /// section goes at the end.
-    pub fn set_value(&mut self, section: &str, name: &str, value: Option<&str>) {
+    pub fn set_value(&mut self, section: &str, name: &str, value: Option<&str>) -> bool {
+        if value.is_some_and(|v| !writable(v)) || !writable(name) {
+            return false;
+        }
         let found = self.settings(section, name).first().copied();
         match (found, value) {
             (Some(i), Some(value)) => self.lines[i] = with_value(&self.lines[i], value),
@@ -170,15 +188,14 @@ impl Document {
                 self.lines.remove(i);
             }
             (None, Some(value)) => {
-                if self.section(section).is_none() {
-                    self.add_section(section);
-                }
-                let Some((start, end)) = self.section(section) else { return };
+                self.add_section(section);
+                let Some((start, end)) = self.section(section) else { return false };
                 let at = self.after_last_setting(start, end);
                 self.insert_line(at, &format!("{name} = {value}"));
             }
-            (None, None) => {}
+            (None, None) => return false,
         }
+        true
     }
 
     /// The keys of key set `set`, as written after `key =`: the fields
@@ -189,16 +206,16 @@ impl Document {
     }
 
     /// Make key `index` of `set` `key` (`label | kind | content ...`).
-    pub fn set_key(&mut self, set: &str, index: usize, key: &str) {
-        if let Some(&i) = self.settings(set, "key").get(index) {
-            self.lines[i] = with_value(&self.lines[i], key);
-        }
+    pub fn set_key(&mut self, set: &str, index: usize, key: &str) -> bool {
+        let Some(&i) = self.settings(set, "key").get(index).filter(|_| writable(key)) else { return false };
+        self.lines[i] = with_value(&self.lines[i], key);
+        true
     }
 
     /// Put `key` in as key `index` of `set`: before the key there now, or
-    /// after the last. False, and nothing done, without such a set.
+    /// after the last.
     pub fn insert_key(&mut self, set: &str, index: usize, key: &str) -> bool {
-        let Some((start, end)) = self.section(set) else { return false };
+        let Some((start, end)) = self.section(set).filter(|_| writable(key)) else { return false };
         let keys = self.settings(set, "key");
         let at = match keys.get(index) {
             Some(&i) => i,
@@ -209,35 +226,38 @@ impl Document {
     }
 
     /// Take key `index` out of `set`.
-    pub fn remove_key(&mut self, set: &str, index: usize) {
-        if let Some(&i) = self.settings(set, "key").get(index) {
-            self.lines.remove(i);
-        }
+    pub fn remove_key(&mut self, set: &str, index: usize) -> bool {
+        let Some(&i) = self.settings(set, "key").get(index) else { return false };
+        self.lines.remove(i);
+        true
     }
 
     /// Move key `from` of `set` to be key `to`, the keys between shifting
     /// over to make room. Each key line moves with its comment; the lines
     /// between the keys stay where they are.
-    pub fn move_key(&mut self, set: &str, from: usize, to: usize) {
+    pub fn move_key(&mut self, set: &str, from: usize, to: usize) -> bool {
         let slots = self.settings(set, "key");
-        if from >= slots.len() || to >= slots.len() || from == to {
-            return;
+        if from >= slots.len() || to >= slots.len() {
+            return false;
         }
-        // Moved, the last line may no longer be last.
-        self.end_last_line();
+        // A key on the last line, moved, may no longer be last.
+        if slots.last() == Some(&(self.lines.len() - 1)) {
+            self.end_last_line();
+        }
         let mut keys: Vec<String> = slots.iter().map(|&i| self.lines[i].clone()).collect();
         let key = keys.remove(from);
         keys.insert(to, key);
         for (&i, key) in slots.iter().zip(keys) {
             self.lines[i] = key;
         }
+        true
     }
 
-    /// Add an empty section `name` at the end, after a blank line, unless
-    /// it is there already.
-    pub fn add_section(&mut self, name: &str) {
-        if self.section(name).is_some() {
-            return;
+    /// Add an empty section `name` at the end, after a blank line; false if
+    /// there is one already.
+    pub fn add_section(&mut self, name: &str) -> bool {
+        if self.section(name).is_some() || !writable(name) || name.contains(['[', ']']) {
+            return false;
         }
         self.end_last_line();
         if self.lines.last().is_some_and(|l| !body(l).trim().is_empty()) {
@@ -245,21 +265,32 @@ impl Document {
         }
         let line = format!("[{name}]{}", self.ending());
         self.lines.push(line);
+        true
     }
 
     /// Take section `name` out: its header and every line up to the next
     /// header, comments included.
-    pub fn remove_section(&mut self, name: &str) {
-        if let Some((start, end)) = self.section(name) {
-            self.lines.drain(start..end);
-        }
+    pub fn remove_section(&mut self, name: &str) -> bool {
+        let Some((start, end)) = self.section(name) else { return false };
+        self.lines.drain(start..end);
+        true
     }
 
-    /// Call section `old` `new`, unless another section is called that
-    /// already; false, and nothing done, then or without `old`. A key set
-    /// renamed takes its name along to the page and pie keys that open it
-    /// and the edges of profiles that show it.
+    /// Call key set or profile `old` `new`: `set.a` to `set.b`, `profile.a`
+    /// to `profile.b`. Refused when another section is called `new`, or a
+    /// key set would be called a name a page key or an edge reads as
+    /// something else (`next`, `prev`, `none`). A key set renamed takes its
+    /// name along to the page and pie keys that open it and the edges of
+    /// profiles that show it.
     pub fn rename_section(&mut self, old: &str, new: &str) -> bool {
+        let (Some((kind, old_name)), Some((new_kind, new_name))) = (old.split_once('.'), new.split_once('.')) else { return false };
+        let kind = kind.to_ascii_lowercase();
+        if !matches!(kind.as_str(), "set" | "profile") || !new_kind.eq_ignore_ascii_case(&kind) {
+            return false;
+        }
+        if !writable(new) || new.contains(['[', ']']) || (kind == "set" && RESERVED.iter().any(|r| new_name.eq_ignore_ascii_case(r))) {
+            return false;
+        }
         let Some((start, _)) = self.section(old) else { return false };
         if self.section(new).is_some_and(|(other, _)| other != start) {
             return false;
@@ -269,35 +300,45 @@ impl Document {
         let end = strip_comment(body(line)).len();
         let (Some(open), Some(close)) = (line[..end].find('['), line[..end].rfind(']')) else { return false };
         self.lines[start] = format!("{}{new}{}", &line[..=open], &line[close..]);
-
-        let (old, new) = (old.to_ascii_lowercase(), new.to_ascii_lowercase());
-        let (Some(("set", old_set)), Some(("set", new_set))) = (old.split_once('.'), new.split_once('.')) else { return true };
-        // A profile's `none` hides its edge, whatever set is called so.
-        let edge_ref = |value: &str| value.eq_ignore_ascii_case(old_set) && !value.eq_ignore_ascii_case("none");
-        let headers: Vec<String> = self.lines.iter().filter_map(|l| header(l)).collect();
-        for section in headers {
-            let Some(("set" | "profile", _)) = section.split_once('.') else { continue };
-            let profile = section.starts_with("profile.");
-            let Some((start, end)) = self.section(&section) else { continue };
-            for i in start + 1..end {
-                let line = &self.lines[i];
-                let Some(name) = setting(line) else { continue };
-                let Some(value) = value(line) else { continue };
-                if profile {
-                    if ["left", "right", "top", "bottom"].contains(&name.as_str()) && edge_ref(value) {
-                        self.lines[i] = with_value(line, new_set);
-                    }
-                    continue;
-                }
-                let fields: Vec<&str> = value.split('|').map(str::trim).collect();
-                let refers = name == "key"
-                    && fields.get(1).is_some_and(|k| k.eq_ignore_ascii_case("page") || k.eq_ignore_ascii_case("pie"))
-                    && fields.get(2).is_some_and(|c| c.eq_ignore_ascii_case(old_set));
-                if refers {
-                    self.lines[i] = with_content(line, new_set);
-                }
-            }
+        if kind == "set" {
+            self.follow_rename(old_name, new_name);
         }
         true
     }
+
+    /// Key set `old` is called `new` now: so are the page and pie keys that
+    /// open it and the edges of profiles that show it. A page key's `next`
+    /// and `prev` and an edge's `none` mean no set, whatever sets are
+    /// called.
+    fn follow_rename(&mut self, old: &str, new: &str) {
+        let headers: Vec<String> = self.lines.iter().filter_map(|l| header(l)).collect();
+        for section in headers {
+            let Some((kind @ ("set" | "profile"), _)) = section.split_once('.') else { continue };
+            let Some((start, end)) = self.section(&section) else { continue };
+            for i in start + 1..end {
+                let line = &self.lines[i];
+                let (Some(name), Some(value)) = (setting(line), value(line)) else { continue };
+                if !value_refers(kind, &name, value, old) {
+                    continue;
+                }
+                self.lines[i] = if kind == "profile" { with_value(line, new) } else { with_content(line, new) };
+            }
+        }
+    }
+}
+
+/// Whether setting `name` = `value` in a section of `kind` names key set
+/// `old`: a profile's edge, unless `none`, or the content of a pie key, or
+/// of a page key unless `next` or `prev`.
+fn value_refers(kind: &str, name: &str, value: &str, old: &str) -> bool {
+    let is = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+    if kind == "profile" {
+        return ["left", "right", "top", "bottom"].contains(&name) && is(value, old) && !is(value, "none");
+    }
+    let fields: Vec<&str> = value.split('|').map(str::trim).collect();
+    let (Some(&key_kind), Some(&content)) = (fields.get(1), fields.get(2)) else { return false };
+    if name != "key" || !is(content, old) {
+        return false;
+    }
+    is(key_kind, "pie") || (is(key_kind, "page") && !is(content, "next") && !is(content, "prev"))
 }
