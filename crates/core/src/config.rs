@@ -290,19 +290,28 @@ pub struct Profile {
     pub edges: [Option<String>; 4],
 }
 
-/// Read a settings file.
-pub fn parse(bytes: &[u8]) -> Result<Config, Vec<Error>> {
+/// The text of a settings file, and whether it began with a BOM; an error
+/// when there is too much of it or it is not UTF-8.
+pub(crate) fn text_of(bytes: &[u8]) -> Result<(bool, &str), Error> {
     if bytes.len() > MAX_BYTES {
-        return Err(vec![Error { line: 0, reason: format!("ファイルが大きすぎる（{} KiB まで）", MAX_BYTES / 1024) }]);
+        return Err(Error { line: 0, reason: format!("ファイルが大きすぎる（{} KiB まで）", MAX_BYTES / 1024) });
     }
-    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    let text = match std::str::from_utf8(bytes) {
-        Ok(text) => text,
+    let (bom, bytes) = match bytes.strip_prefix(b"\xEF\xBB\xBF") {
+        Some(rest) => (true, rest),
+        None => (false, bytes),
+    };
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Ok((bom, text)),
         Err(e) => {
             let line = 1 + bytes[..e.valid_up_to()].iter().filter(|&&b| b == b'\n').count();
-            return Err(vec![Error { line, reason: "UTF-8 ではない文字がある".into() }]);
+            Err(Error { line, reason: "UTF-8 ではない文字がある".into() })
         }
-    };
+    }
+}
+
+/// Read a settings file.
+pub fn parse(bytes: &[u8]) -> Result<Config, Vec<Error>> {
+    let (_, text) = text_of(bytes).map_err(|e| vec![e])?;
     let mut parser = Parser::default();
     for (i, line) in text.split('\n').enumerate() {
         parser.line(i + 1, strip_comment(line.trim_end_matches('\r')).trim());
@@ -311,7 +320,7 @@ pub fn parse(bytes: &[u8]) -> Result<Config, Vec<Error>> {
 }
 
 /// `line` without its comment: from a `;` at the start or after whitespace.
-fn strip_comment(line: &str) -> &str {
+pub(crate) fn strip_comment(line: &str) -> &str {
     let mut prev_space = true;
     for (i, c) in line.char_indices() {
         if c == ';' && prev_space {
