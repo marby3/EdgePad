@@ -1,57 +1,65 @@
-//! Acceptance tests for Issue #54: the dimmed panel a short swipe from the
-//! handle shows, and the ways back to the normal panel.
+//! Acceptance tests for Issue #85: panels opaque by default, shown at
+//! `dim_opacity` only while a pie menu is open or a pen hovers over them;
+//! the short swipe from the handle no longer dims (it did since Issue #54).
 //!
-//! Opacity is read off the screen: a topmost backdrop made before EdgePad
-//! sits right under the panel, and the panel's corner is captured once over
-//! white and once over black. How far the two differ is how much of the
-//! backdrop shows through.
+//! Opacity is read off the screen: topmost backdrops made before EdgePad
+//! sit right under the left and right panels, and a panel's corner is
+//! captured once over white and once over black. How far the two differ is
+//! how much of the backdrop shows through.
 
 mod common;
 
+use std::ptr::null_mut;
+
 use windows_sys::Win32::Foundation::{POINT, RECT};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+use windows_sys::Win32::UI::Controls::{
+    CreateSyntheticPointerDevice, DestroySyntheticPointerDevice, HSYNTHETICPOINTERDEVICE, POINTER_FEEDBACK_NONE,
+};
+use windows_sys::Win32::UI::Input::Pointer::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use common::*;
 
 const A: u16 = b'A' as u16;
-const B: u16 = b'B' as u16;
 
-/// Two keys side by side on the left, at 70% shown and 40% dimmed: neither
-/// is a default, so the panel can only be following the settings.
-const SETTINGS: &str = "\
-[general]
-opacity     = 70
-dim_opacity = 40
-hotkey      = Ctrl+Alt+F16
-[edge.left]
-columns = 2
-[set.pad]
-key = A | hold | A
-key = B | hold | B
-[profile.default]
-left = pad
-";
-
-/// A topmost backdrop down the left of the primary monitor, three keys wide.
-/// Made before EdgePad starts, so the panel and handle go above it.
-fn backdrop() -> TestWindow {
-    let m = primary_monitor();
-    let under = RECT { left: m.left, top: m.top, right: m.left + key_px() * 3, bottom: m.bottom };
-    test_window("EdgePadTestDimBackdrop", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, under)
+/// Two keys side by side on the left, a pie key among them, and a key on
+/// the right; at 70% shown and 40% dimmed: neither is a default, so the
+/// panels can only be following the settings.
+fn settings(general: &str) -> String {
+    format!(
+        "[general]\n{general}\n[edge.left]\ncolumns = 2\n\
+         [set.pad]\nkey = A | hold | A\nkey = 変形 | pie | menu\n\
+         [set.menu]\nkey = 一 | shortcut | F1\nkey = 二 | shortcut | F2\n\
+         [set.right]\nkey = C | hold | C\n\
+         [profile.default]\nleft = pad\nright = right\n"
+    )
 }
 
-/// The panel's opacity in percent, from how much of the backdrop shows
+const DIMMING: &str = "opacity = 70\ndim_opacity = 40";
+
+/// Topmost backdrops down the left and right of the primary monitor, three
+/// keys wide. Made before EdgePad starts, so the panels go above them.
+fn backdrops() -> [TestWindow; 2] {
+    let m = primary_monitor();
+    let w = key_px() * 3;
+    [
+        test_window("EdgePadTestDimLeft", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, RECT { left: m.left, top: m.top, right: m.left + w, bottom: m.bottom }),
+        test_window("EdgePadTestDimRight", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, RECT { left: m.right - w, top: m.top, right: m.right, bottom: m.bottom }),
+    ]
+}
+
+/// The opacity in percent of `panel`, from how much of the backdrops shows
 /// through its top-left corner.
-fn opacity(backdrop: &TestWindow, panel: RECT) -> i32 {
+fn opacity(backdrops: &[TestWindow; 2], panel: RECT) -> i32 {
     let corner = RECT { left: panel.left, top: panel.top, right: panel.left + 3, bottom: panel.top + 3 };
     let average = |pixels: Vec<u32>| {
         let n = pixels.len() as i32;
         let sum = pixels.iter().map(|&p| channels(p)).fold([0; 3], |a, c| [a[0] + c[0], a[1] + c[1], a[2] + c[2]]);
         sum.map(|v| v / n)
     };
-    set_backdrop(backdrop.0, 0x00FF_FFFF);
+    let set = |colour| backdrops.iter().for_each(|b| set_backdrop(b.0, colour));
+    set(0x00FF_FFFF);
     let on_white = average(capture(corner));
-    set_backdrop(backdrop.0, 0x0000_0000);
+    set(0x0000_0000);
     let on_black = average(capture(corner));
     let through = (0..3).map(|c| on_white[c] - on_black[c]).sum::<i32>() / 3;
     100 - through * 100 / 255
@@ -62,195 +70,228 @@ fn near(actual: i32, want: i32) -> bool {
     (actual - want).abs() <= 4
 }
 
+/// Wait up to 2 s for the opacity of the panel `panel` gives to be `want`.
+fn becomes(backdrops: &[TestWindow; 2], panel: impl Fn() -> RECT, want: i32) -> i32 {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let o = opacity(backdrops, panel());
+        if near(o, want) || std::time::Instant::now() > end {
+            return o;
+        }
+        pump(50);
+    }
+}
+
+fn right_panel(app: &Running) -> RECT {
+    let m = primary_monitor();
+    panels(app).into_iter().find(|r| r.right == m.right).expect("a panel on the right")
+}
+
 fn centre(r: RECT) -> POINT {
     POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }
 }
 
-/// Drag the mouse inward from the left handle, stopping at each distance in
-/// turn; `at_each` runs at every stop with the button still down. Dragged
-/// with the mouse: on CI a touch moving inward from the screen edge never
-/// reaches the handle (see the handle tests).
-fn drag_from_handle(app: &Running, distances: &[i32], mut at_each: impl FnMut(i32)) {
-    let start = centre(left_handle(app));
-    let mut saved = POINT { x: 0, y: 0 };
-    unsafe { GetCursorPos(&mut saved) };
-    mouse_move_to(start);
-    mouse_down_at(start);
-    let mut last = start;
-    for &d in distances {
-        last = POINT { x: start.x + d, y: start.y };
-        mouse_move_to(last);
-        pump(100);
-        at_each(d);
-    }
-    mouse_up_at(last);
-    unsafe { SetCursorPos(saved.x, saved.y) };
-    pump(200);
-}
-
-/// Hide the left panel from the tray, then show it dimmed with a short
-/// swipe from the handle.
-fn show_dimmed(app: &Running, backdrop: &TestWindow) {
-    choose(app, "左辺");
-    assert!(panels_now(app).is_empty(), "precondition: the panel is hidden");
-    drag_from_handle(app, &[key_px() * 3 / 4], |_| {});
-    let o = opacity(backdrop, left_panel(app));
-    assert!(near(o, 40), "precondition: a short swipe shows the panel dimmed, at {o}%");
+/// The centre of the key at `column`, `row` of the left panel.
+fn cell(panel: RECT, column: i32, row: i32) -> POINT {
+    let key = key_px();
+    POINT { x: panel.left + key * column + key / 2, y: panel.top + key * row + key / 2 }
 }
 
 // AC1
 #[test]
-fn a_short_swipe_from_the_handle_shows_the_panel_dimmed() {
+fn written_without_opacity_a_panel_is_fully_opaque() {
     let _desktop = desktop();
-    let backdrop = backdrop();
-    let app = launch_with(Some(SETTINGS), None);
-    find_panel(&app);
-    choose(&app, "左辺");
-
-    let mut during = None;
-    drag_from_handle(&app, &[key_px() * 3 / 4], |_| {
-        let panel = panels_now(&app).first().copied();
-        during = panel.map(|p| opacity(&backdrop, p));
-    });
-    let during = during.expect("half a key in, the panel is shown before the swipe ends");
-    assert!(near(during, 40), "shown at dim_opacity 40%, not {during}%");
-
-    let after = opacity(&backdrop, left_panel(&app));
-    assert!(near(after, 40), "lifted there, the panel stays dimmed, not {after}%");
+    let backdrops = backdrops();
+    let app = launch_with(Some(&settings("")), None);
+    let o = becomes(&backdrops, || left_panel(&app), 100);
+    assert!(near(o, 100), "opaque by default, not {o}%");
 }
 
 // AC2
 #[test]
-fn carrying_the_swipe_on_to_two_keys_makes_the_panel_normal() {
+fn a_short_swipe_shows_the_panel_normally_and_an_inward_flick_lets_no_key_go() {
     let _desktop = desktop();
-    let backdrop = backdrop();
-    let app = launch_with(Some(SETTINGS), None);
+    let backdrops = backdrops();
+    let app = launch_with(Some(&settings(DIMMING)), None);
     find_panel(&app);
     choose(&app, "左辺");
+    assert!(panels_now(&app).iter().all(|r| r.left != primary_monitor().left), "precondition: hidden");
+    // Half a key in from the handle, with the mouse (on CI a touch from the
+    // screen edge never reaches the handle), and let go there.
+    let start = centre(left_handle(&app));
+    let mut saved = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&mut saved) };
+    mouse_move_to(start);
+    mouse_down_at(start);
+    let end = POINT { x: start.x + key_px() * 3 / 4, y: start.y };
+    mouse_move_to(end);
+    pump(100);
+    mouse_up_at(end);
+    unsafe { SetCursorPos(saved.x, saved.y) };
+    pump(300);
+    let o = becomes(&backdrops, || left_panel(&app), 70);
+    assert!(near(o, 70), "shown at opacity 70%, not dimmed: {o}%");
 
-    let key = key_px();
-    let mut seen = Vec::new();
-    // Just past two keys: any shorter long swipe would already have turned
-    // it normal at the first stop, any longer one not yet at the second.
-    drag_from_handle(&app, &[key * 3 / 4, key * 2 + 2], |d| {
-        let panel = panels_now(&app).first().copied().expect("the panel is shown during the swipe");
-        seen.push((d, opacity(&backdrop, panel)));
-    });
-    assert!(near(seen[0].1, 40), "half a key in: dimmed, got {seen:?}");
-    assert!(near(seen[1].1, 70), "two keys in, before lifting: at opacity 70%, got {seen:?}");
+    // A quick flick inward on the panel: A stays pressed until the lift.
+    let log = KeyLog::start();
+    let mut touch = Touch::new();
+    let a = cell(left_panel(&app), 0, 0);
+    touch.down(1, a);
+    touch.move_to(1, POINT { x: a.x + key_px() * 2, y: a.y });
+    pump(300);
+    assert_eq!(log.keys(), [(A, false)], "A held through the flick");
+    let o = opacity(&backdrops, left_panel(&app));
+    assert!(near(o, 70), "and the panel as it was, at 70%, not {o}%");
+    touch.up(1);
+    log.wait_for(2);
+    assert_eq!(log.keys(), [(A, false), (A, true)], "A comes up with the finger");
+}
 
-    let after = opacity(&backdrop, left_panel(&app));
-    assert!(near(after, 70), "and it stays at 70% once lifted, not {after}%");
+/// The pie menu window of `app`, if one is shown.
+fn pie_window(app: &Running) -> Option<windows_sys::Win32::Foundation::HWND> {
+    let name = wide("EdgePadPie");
+    let mut hwnd = null_mut();
+    loop {
+        hwnd = unsafe { FindWindowExW(null_mut(), hwnd, name.as_ptr(), std::ptr::null()) };
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid == app.0.id() && unsafe { IsWindowVisible(hwnd) } != 0 {
+            return Some(hwnd);
+        }
+    }
+}
+
+fn wait_pie(app: &Running, open: bool) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while pie_window(app).is_some() != open && std::time::Instant::now() < end {
+        pump(20);
+    }
+    assert_eq!(pie_window(app).is_some(), open, "the menu {}", if open { "opens" } else { "closes" });
 }
 
 // AC3
 #[test]
-fn a_quick_inward_flick_on_the_dimmed_panel_makes_it_normal_and_lets_go_of_the_key() {
+fn while_a_pie_menu_is_open_the_panels_are_dimmed_and_the_menu_is_not() {
     let _desktop = desktop();
-    let backdrop = backdrop();
-    let app = launch_with(Some(SETTINGS), None);
+    let backdrops = backdrops();
+    let app = launch_with(Some(&settings(DIMMING)), None);
     find_panel(&app);
-    show_dimmed(&app, &backdrop);
-
-    let panel = left_panel(&app);
-    let key = key_px();
     let log = KeyLog::start();
     let mut touch = Touch::new();
-    let start = cell(panel, key, 0, 0);
-    touch.down(1, start);
-    touch.move_to(1, POINT { x: start.x + key, y: start.y });
-    pump(200);
-    assert_eq!(log.keys(), [(A, false), (A, true)], "A is pressed, then let go as the flick lands");
-    let o = opacity(&backdrop, left_panel(&app));
-    assert!(near(o, 70), "the flick makes the panel normal, at 70%, not {o}%");
+    let pie = cell(left_panel(&app), 1, 0);
 
+    // Held open, slid to an item and let go.
+    touch.down(1, pie);
+    wait_pie(&app, true);
+    let o = becomes(&backdrops, || left_panel(&app), 40);
+    assert!(near(o, 40), "the left panel at dim_opacity 40%, not {o}%");
+    let o = becomes(&backdrops, || right_panel(&app), 40);
+    assert!(near(o, 40), "and the right one, not {o}%");
+    let menu = window_rect(pie_window(&app).expect("the menu"));
+    // An item of the menu, out to the right of the key, clear of the panel.
+    let item = POINT { x: pie.x + key_px() * 2, y: pie.y };
+    let o = opacity(&backdrops, RECT { left: item.x, top: item.y, right: item.x + 1, bottom: item.y + 1 });
+    assert!(menu.right > item.x && near(o, 70), "the menu itself at opacity 70%, not {o}%");
+    touch.move_to(1, item);
     touch.up(1);
-    pump(200);
-    assert_eq!(log.keys().len(), 2, "lifting afterwards sends nothing");
+    wait_pie(&app, false);
+    let o = becomes(&backdrops, || left_panel(&app), 70);
+    assert!(near(o, 70), "closed: back to 70%, not {o}%");
+    let o = becomes(&backdrops, || right_panel(&app), 70);
+    assert!(near(o, 70), "the right one too, not {o}%");
+
+    // Left open by a tap, then closed by a tap in its middle.
+    touch.down(1, pie);
+    touch.up(1);
+    wait_pie(&app, true);
+    let o = becomes(&backdrops, || left_panel(&app), 40);
+    assert!(near(o, 40), "left open: dimmed, {o}%");
+    touch.down(2, pie);
+    touch.up(2);
+    wait_pie(&app, false);
+    let o = becomes(&backdrops, || left_panel(&app), 70);
+    assert!(near(o, 70), "closed by a tap: back to 70%, not {o}%");
+    let _ = log.keys();
+}
+
+/// An injected pen, hovering in range without touching.
+struct Pen(HSYNTHETICPOINTERDEVICE);
+
+impl Pen {
+    fn new() -> Pen {
+        let pen = unsafe { CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_NONE) };
+        assert!(!pen.is_null(), "CreateSyntheticPointerDevice");
+        Pen(pen)
+    }
+
+    fn frame(&self, p: POINT, flags: POINTER_FLAGS) {
+        let frame = pen_frame(p, flags);
+        let ok = unsafe { InjectSyntheticPointerInput(self.0, &frame, 1) };
+        assert!(ok != 0, "InjectSyntheticPointerInput: {}", std::io::Error::last_os_error());
+        pump(100);
+    }
+
+    /// Hover over `p`.
+    fn hover(&self, p: POINT) {
+        self.frame(p, POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE);
+    }
+
+    /// Out of range, at `p`.
+    fn away(&self, p: POINT) {
+        self.frame(p, POINTER_FLAG_UPDATE);
+    }
+}
+
+impl Drop for Pen {
+    fn drop(&mut self) {
+        unsafe { DestroySyntheticPointerDevice(self.0) };
+    }
 }
 
 // AC4
 #[test]
-fn the_dimmed_panel_takes_fingers_ignores_pens_and_hides_with_a_flick_to_the_edge() {
+fn a_pen_over_a_panel_dims_that_panel_alone_and_presses_nothing() {
     let _desktop = desktop();
-    let backdrop = backdrop();
-    let app = launch_with(Some(SETTINGS), None);
+    let backdrops = backdrops();
+    let app = launch_with(Some(&settings(DIMMING)), None);
     find_panel(&app);
-    show_dimmed(&app, &backdrop);
-
-    let panel = left_panel(&app);
-    let key = key_px();
-    let b = cell(panel, key, 1, 0);
     let log = KeyLog::start();
-    let mut touch = Touch::new();
-    touch.down(1, b);
-    touch.hold(100);
-    touch.up(1);
-    assert_eq!(log.keys(), [(B, false), (B, true)], "a finger presses B");
-    let o = opacity(&backdrop, left_panel(&app));
-    assert!(near(o, 40), "and the panel is still dimmed, at {o}%");
+    let a = cell(left_panel(&app), 0, 0);
+    let middle = centre(primary_monitor());
 
+    let pen = Pen::new();
+    pen.hover(middle);
+    pen.hover(a);
+    pen.hover(POINT { x: a.x, y: a.y + 2 });
+    let o = becomes(&backdrops, || left_panel(&app), 40);
+    assert!(near(o, 40), "a pen over the left panel dims it: {o}%");
+    let o = opacity(&backdrops, right_panel(&app));
+    assert!(near(o, 70), "the right one stays at 70%: {o}%");
+
+    // Off the panel: back.
+    pen.hover(middle);
+    let o = becomes(&backdrops, || left_panel(&app), 70);
+    assert!(near(o, 70), "the pen gone off the panel: 70%, not {o}%");
+
+    // Out of range over it: back too.
+    pen.hover(a);
+    let o = becomes(&backdrops, || left_panel(&app), 40);
+    assert!(near(o, 40), "over it again: {o}%");
+    pen.away(a);
+    let o = becomes(&backdrops, || left_panel(&app), 70);
+    assert!(near(o, 70), "out of range: 70%, not {o}%");
+    drop(pen);
+    assert_eq!(log.keys(), [], "a pen presses nothing");
+
+    // The mouse over the panel dims nothing.
     let mut saved = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut saved) };
-    mouse_move_to(b);
-    mouse_down_at(b);
-    mouse_up_at(b);
+    mouse_move_to(a);
+    pump(300);
+    let o = opacity(&backdrops, left_panel(&app));
     unsafe { SetCursorPos(saved.x, saved.y) };
-    pump(200);
-    assert_eq!(log.keys()[2..], [(B, false), (B, true)], "so does the mouse");
-
-    pen_tap(b);
-    pump(200);
-    assert_eq!(log.keys().len(), 4, "a pen presses nothing");
-    let o = opacity(&backdrop, left_panel(&app));
-    assert!(near(o, 40), "and the panel is still dimmed, at {o}%");
-
-    touch.down(1, b);
-    touch.move_to(1, POINT { x: b.x - key, y: b.y });
-    pump(200);
-    assert!(panels_now(&app).is_empty(), "a quick flick toward the edge hides the dimmed panel");
-    touch.up(1);
-}
-
-// AC5
-#[test]
-fn shown_again_by_tap_click_hotkey_or_tray_the_panel_is_normal() {
-    let _desktop = desktop();
-    let backdrop = backdrop();
-    let app = launch_with(Some(SETTINGS), None);
-    find_panel(&app);
-
-    let hide_from_tray = |app: &Running| {
-        choose(app, "左辺");
-        assert!(panels_now(app).is_empty(), "precondition: hidden from the tray");
-    };
-    let ways: [(&str, &dyn Fn(&Running)); 4] = [
-        ("a tap on the handle", &|app| {
-            let mut touch = Touch::new();
-            touch.down(1, centre(left_handle(app)));
-            touch.up(1);
-            pump(200);
-        }),
-        ("a click on the handle", &|app| {
-            let mut saved = POINT { x: 0, y: 0 };
-            unsafe { GetCursorPos(&mut saved) };
-            click(centre(left_handle(app)));
-            unsafe { SetCursorPos(saved.x, saved.y) };
-            pump(200);
-        }),
-        ("the hotkey", &|_| {
-            for (vk, down) in [(VK_LCONTROL, true), (VK_LMENU, true), (VK_F16, true), (VK_F16, false), (VK_LMENU, false), (VK_LCONTROL, false)] {
-                keyboard(vk, down);
-            }
-            pump(300);
-        }),
-        ("the tray", &|app| choose(app, "左辺")),
-    ];
-    for (way, show) in ways {
-        show_dimmed(&app, &backdrop);
-        hide_from_tray(&app);
-        show(&app);
-        let o = opacity(&backdrop, left_panel(&app));
-        assert!(near(o, 70), "shown again by {way}, the panel is at 70%, not {o}%");
-    }
+    assert!(near(o, 70), "the mouse over it: still 70%, not {o}%");
 }

@@ -184,7 +184,8 @@ fn with_slide_ms_set_every_way_of_showing_slides_in_and_every_way_of_hiding_slid
     check_in("shown by a tap on the handle");
     drop(touch);
 
-    // A short swipe from the handle shows it dimmed: it slides in too.
+    // A short swipe from the handle shows it (dimmed until Issue #85): it
+    // slides in too.
     toggle.post();
     pump(SLIDE_MS + 200);
     let start = centre(left_handle(&app));
@@ -193,12 +194,12 @@ fn with_slide_ms_set_every_way_of_showing_slides_in_and_every_way_of_hiding_slid
     mouse_move_to(start);
     mouse_down_at(start);
     mouse_at(POINT { x: start.x + key_px() * 3 / 4, y: start.y }, 0);
-    let r = after(&app, 100).expect("dimmed: shown");
+    let r = after(&app, 100).expect("swiped: shown");
     mouse_up_at(POINT { x: start.x + key_px() * 3 / 4, y: start.y });
     unsafe { SetCursorPos(saved.x, saved.y) };
-    assert!(sliding(r), "shown dimmed: 100 ms in, still sliding in: {}", sides(&Some(r)));
-    let r = after(&app, 500).expect("dimmed: still shown");
-    assert!(in_place(r), "shown dimmed: then in place: {}", sides(&Some(r)));
+    assert!(sliding(r), "swiped: 100 ms in, still sliding in: {}", sides(&Some(r)));
+    let r = after(&app, 500).expect("swiped: still shown");
+    assert!(in_place(r), "swiped: then in place: {}", sides(&Some(r)));
 }
 
 // AC3
