@@ -114,6 +114,40 @@ class MemoryTest(unittest.TestCase):
                 running.wait()
 
 
+# Spec, chapter 8 (Issue #86): private memory with the settings window
+# open, and once it is closed again. Closed, it keeps what Windows loads
+# the first time a window of EdgePad's takes the focus (text input, about
+# 0.9 MiB) and the common controls.
+OPEN_LIMIT = 8 * 1024 * 1024
+CLOSED_LIMIT = 3 * 1024 * 1024
+# What counts as no growth over the closings: a page or so either way is
+# Windows's own coming and going, not something the window left behind.
+CLOSED_SLACK = 64 * 1024
+
+
+class SettingsWindowMemoryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        subprocess.run(["cargo", "build", "--release"], cwd=ROOT, check=True, timeout=600, capture_output=True)
+
+    # Issue #86, AC8
+    def test_the_settings_window_stays_within_its_memory_open_and_closed(self):
+        out = measure("--idle", "5", "--settings", "ci/example.ini", "--settings-window")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        result = json.loads(out.stdout)
+        window = result["settings_window"]
+        print(f"\n  settings window: {window}", file=sys.stderr)
+        self.assertFalse(window["comctl32_at_start"], "the common controls are not loaded before the window opens")
+        self.assertTrue(window["comctl32_when_open"], "they are, once it opens")
+        self.assertLessEqual(result["private_bytes"], PRIVATE_LIMIT, "never opened: as before")
+        self.assertEqual(len(window["closed_private_bytes"]), 5, "opened and closed five times")
+        opened = max(window["open_private_bytes"])
+        self.assertLessEqual(opened, OPEN_LIMIT, f"open: {opened / 1024 / 1024:.2f} MiB is over 8 MiB")
+        closed = window["closed_private_bytes"]
+        self.assertLessEqual(max(closed), CLOSED_LIMIT, f"closed: {max(closed) / 1024 / 1024:.2f} MiB is over 3 MiB")
+        self.assertLessEqual(closed[-1], closed[0] + CLOSED_SLACK, f"no growth over the closings: {closed}")
+
+
 
 if __name__ == "__main__":
     unittest.main()

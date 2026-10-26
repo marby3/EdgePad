@@ -33,6 +33,8 @@ use windows_sys::Win32::UI::Controls::{
 use windows_sys::Win32::UI::Input::Pointer::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+pub mod editor;
+
 pub const PANEL_CLASS: &str = "EdgePadPanel";
 pub const KEY_LOGICAL_PX: i32 = 56;
 pub const KEY_COUNT: i32 = 5;
