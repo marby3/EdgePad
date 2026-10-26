@@ -148,7 +148,8 @@ const EDGES: [(&str, Edge); 4] =
     [("left", Edge::Left), ("right", Edge::Right), ("top", Edge::Top), ("bottom", Edge::Bottom)];
 
 impl Edge {
-    fn parse(name: &str) -> Option<Edge> {
+    /// `left`, `right`, `top` or `bottom`, in any case.
+    pub fn parse(name: &str) -> Option<Edge> {
         EDGES.iter().find(|(n, _)| name.eq_ignore_ascii_case(n)).map(|&(_, e)| e)
     }
 
@@ -469,10 +470,10 @@ impl Parser {
                 }
                 g.hotkey = Some(combo);
             }
-            "key_size" => g.key_size = number(name, value, 24, 200)?,
-            "opacity" => g.opacity = number(name, value, 10, 100)? as u8,
-            "dim_opacity" => g.dim_opacity = number(name, value, 10, 100)? as u8,
-            "latch_ms" => g.latch_ms = number(name, value, 50, 2000)?,
+            "key_size" => g.key_size = ranged(name, name, value)?,
+            "opacity" => g.opacity = ranged(name, name, value)? as u8,
+            "dim_opacity" => g.dim_opacity = ranged(name, name, value)? as u8,
+            "latch_ms" => g.latch_ms = ranged(name, name, value)?,
             "latch" => {
                 g.latch = match value.to_ascii_lowercase().as_str() {
                     "oneshot" => LatchMode::OneShot,
@@ -489,9 +490,9 @@ impl Parser {
                     _ => return Err(format!("theme は light / dark / auto のどれか（「{value}」）")),
                 }
             }
-            "hover_ms" => g.hover_ms = off_or_number(name, value, 100, 5000)?,
-            "auto_hide_ms" => g.auto_hide_ms = off_or_number(name, value, 1000, 3_600_000)?,
-            "slide_ms" => g.slide_ms = off_or_number(name, value, 50, 500)?,
+            "hover_ms" => g.hover_ms = ranged(name, name, value)?,
+            "auto_hide_ms" => g.auto_hide_ms = ranged(name, name, value)?,
+            "slide_ms" => g.slide_ms = ranged(name, name, value)?,
             "accent" => {
                 g.accent = Accent::parse(value).ok_or_else(|| format!("accent は auto か #RRGGBB（「{value}」）"))?;
             }
@@ -509,8 +510,9 @@ impl Parser {
                 e.monitor = match value.to_ascii_lowercase().as_str() {
                     "primary" => Monitor::Primary,
                     "cursor" => Monitor::Cursor,
-                    _ => Monitor::Number(number(name, value, 1, 16).map_err(|_| {
-                        format!("monitor は primary / cursor / 1〜16 のどれか（「{value}」）")
+                    _ => Monitor::Number(ranged(name, name, value).map_err(|_| {
+                        let r = RANGES.monitor;
+                        format!("monitor は primary / cursor / {}〜{} のどれか（「{value}」）", r.min, r.max)
                     })? as u8),
                 }
             }
@@ -518,22 +520,8 @@ impl Parser {
                 let want = if edge.is_side() { "columns" } else { "rows" };
                 return Err(format!("この辺では「{name}」ではなく「{want}」を使う"));
             }
-            "columns" | "rows" => e.lines = number(name, value, 1, 3)? as u8,
-            "handle" if value.eq_ignore_ascii_case("none") => e.handle = None,
-            "handle" => {
-                let parts: Vec<&str> = value.split(',').map(str::trim).collect();
-                if !(2..=3).contains(&parts.len()) {
-                    return Err(format!("handle は「幅, 長さ%[, 位置%]」で書く（「{value}」）"));
-                }
-                let percent = |p: &str, min| number(name, p.strip_suffix('%').unwrap_or(p).trim(), min, 100);
-                let mut handle = Handle { width: 6, length: 40, position: 50 };
-                handle.width = number(name, parts[0].strip_suffix("px").unwrap_or(parts[0]).trim(), 4, 8)? as u8;
-                handle.length = percent(parts[1], 1)? as u8;
-                if let Some(p) = parts.get(2) {
-                    handle.position = percent(p, 0)? as u8;
-                }
-                e.handle = Some(handle);
-            }
+            "columns" | "rows" => e.lines = ranged(name, name, value)? as u8,
+            "handle" => e.handle = handle(value)?,
             _ => return Err(format!("[edge.*] に知らない設定「{name}」がある")),
         }
         Ok(())
@@ -699,8 +687,175 @@ pub fn run_target(command: &str) -> (&str, &str) {
     (file, rest.trim_start())
 }
 
+/// A handle as `handle =` takes it: none, or `width, length%[, position%]`.
+pub fn handle(value: &str) -> Result<Option<Handle>, String> {
+    let name = "handle";
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+    if !(2..=3).contains(&parts.len()) {
+        return Err(format!("handle は「幅, 長さ%[, 位置%]」で書く（「{value}」）"));
+    }
+    let percent = |p: &str, part| ranged(part, name, p.strip_suffix('%').unwrap_or(p).trim());
+    let mut handle = EdgeConfig::default().handle.unwrap_or(Handle { width: 6, length: 40, position: 50 });
+    handle.width = ranged("handle.width", name, parts[0].strip_suffix("px").unwrap_or(parts[0]).trim())? as u8;
+    handle.length = percent(parts[1], "handle.length")? as u8;
+    if let Some(p) = parts.get(2) {
+        handle.position = percent(p, "handle.position")? as u8;
+    }
+    Ok(Some(handle))
+}
+
+/// Whether `value` reads as setting `name` of `section` (`general`, or an
+/// edge's: `edge.left` and so on) as the parser reads it there; if not,
+/// why not, in the parser's words. The settings window checks a field
+/// with this before writing it.
+pub fn check(section: &str, name: &str, value: &str) -> Result<(), String> {
+    let mut parser = Parser::default();
+    let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
+    match section.split_once('.') {
+        None if section.eq_ignore_ascii_case("general") => parser.general(&name, value),
+        Some((kind, edge)) if kind.eq_ignore_ascii_case("edge") => match Edge::parse(edge) {
+            Some(edge) => parser.edge(edge, &name, value),
+            None => Err(format!("知らないセクション [{section}]")),
+        },
+        _ => Err(format!("[{section}] の設定はここでは確かめない")),
+    }
+}
+
 fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// What a number setting takes: `min` to `max`, and 0 for off with `off`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Range {
+    pub min: u32,
+    pub max: u32,
+    pub off: bool,
+}
+
+const fn range(min: u32, max: u32, off: bool) -> Range {
+    Range { min, max, off }
+}
+
+/// The ranges of the number settings, as the parser takes them. The
+/// settings window shows them beside its fields.
+pub struct Ranges {
+    pub key_size: Range,
+    pub opacity: Range,
+    pub latch_ms: Range,
+    pub hover_ms: Range,
+    pub auto_hide_ms: Range,
+    pub slide_ms: Range,
+    pub monitor: Range,
+    /// columns or rows.
+    pub lines: Range,
+    pub handle_width: Range,
+    pub handle_length: Range,
+    pub handle_position: Range,
+}
+
+pub const RANGES: Ranges = Ranges {
+    key_size: range(24, 200, false),
+    opacity: range(10, 100, false),
+    latch_ms: range(50, 2000, false),
+    hover_ms: range(100, 5000, true),
+    auto_hide_ms: range(1000, 3_600_000, true),
+    slide_ms: range(50, 500, true),
+    monitor: range(1, 16, false),
+    lines: range(1, 3, false),
+    handle_width: range(4, 8, false),
+    handle_length: range(1, 100, false),
+    handle_position: range(0, 100, false),
+};
+
+/// The range of number setting `name`: `opacity`, `columns`, or a part of
+/// the handle, `handle.width`, `handle.length` or `handle.position`.
+pub fn range_of(name: &str) -> Option<Range> {
+    let r = &RANGES;
+    Some(match name {
+        "key_size" => r.key_size,
+        "opacity" | "dim_opacity" => r.opacity,
+        "latch_ms" => r.latch_ms,
+        "hover_ms" => r.hover_ms,
+        "auto_hide_ms" => r.auto_hide_ms,
+        "slide_ms" => r.slide_ms,
+        "monitor" => r.monitor,
+        "columns" | "rows" => r.lines,
+        "handle.width" => r.handle_width,
+        "handle.length" => r.handle_length,
+        "handle.position" => r.handle_position,
+        _ => return None,
+    })
+}
+
+/// `value` as number setting `key` of `range_of` takes it, said to be
+/// `name`'s if not.
+fn ranged(key: &str, name: &str, value: &str) -> Result<u32, String> {
+    match range_of(key) {
+        Some(Range { min, max, off: true }) => off_or_number(name, value, min, max),
+        Some(Range { min, max, off: false }) => number(name, value, min, max),
+        None => Err(format!("{name} は数ではない")),
+    }
+}
+
+/// What setting `name` of `section` (`general`, or an edge's) is when the
+/// file does not have it, written as the file would have it.
+pub fn default_value(section: &str, name: &str) -> Option<String> {
+    let name = name.to_ascii_lowercase();
+    if section.eq_ignore_ascii_case("general") {
+        let g = General::default();
+        let on = |b: bool| if b { "true" } else { "false" }.to_string();
+        return Some(match name.as_str() {
+            "hotkey" => g.hotkey.map_or_else(|| "none".into(), |c| c.to_string()),
+            "key_size" => g.key_size.to_string(),
+            "opacity" => g.opacity.to_string(),
+            "dim_opacity" => g.dim_opacity.to_string(),
+            "latch_ms" => g.latch_ms.to_string(),
+            "latch" => match g.latch {
+                LatchMode::OneShot => "oneshot",
+                LatchMode::Lock => "lock",
+            }
+            .into(),
+            "pen_presses" => on(g.pen_presses),
+            "theme" => match g.theme {
+                Theme::Light => "light",
+                Theme::Dark => "dark",
+                Theme::Auto => "auto",
+            }
+            .into(),
+            "accent" => match g.accent {
+                Accent::Auto => "auto".into(),
+                Accent::Rgb(r, g, b) => format!("#{r:02X}{g:02X}{b:02X}"),
+            },
+            "hover_ms" => g.hover_ms.to_string(),
+            "auto_hide_ms" => g.auto_hide_ms.to_string(),
+            "slide_ms" => g.slide_ms.to_string(),
+            _ => return None,
+        });
+    }
+    let (kind, edge) = section.split_once('.')?;
+    if !kind.eq_ignore_ascii_case("edge") || Edge::parse(edge).is_none() {
+        return None;
+    }
+    let e = EdgeConfig::default();
+    Some(match name.as_str() {
+        "enabled" => e.enabled.to_string(),
+        "dock" => e.dock.to_string(),
+        "monitor" => match e.monitor {
+            Monitor::Primary => "primary".into(),
+            Monitor::Cursor => "cursor".into(),
+            Monitor::Number(n) => n.to_string(),
+        },
+        "columns" | "rows" => e.lines.to_string(),
+        "handle" => match e.handle {
+            Some(h) => format!("{}, {}%, {}%", h.width, h.length, h.position),
+            None => "none".into(),
+        },
+        _ => return None,
+    })
 }
 
 fn number(name: &str, value: &str, min: u32, max: u32) -> Result<u32, String> {

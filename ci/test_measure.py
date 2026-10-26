@@ -1,5 +1,6 @@
 """Checks for Issue #9 (the measurement script reports every figure) and
-Issue #34 (private memory stays within the spec's 2 MiB).
+Issue #34 (private memory stays within the spec's limit, 2.5 MiB since
+Issue #83).
 
 Run from the repo root: python -m unittest ci/test_measure.py
 """
@@ -55,8 +56,8 @@ class MeasureTest(unittest.TestCase):
         self.assertIn("| exe", table.stdout, "markdown table expected without --json")
 
 
-# Spec, chapter 8: private memory 2 MiB or less (MiB as the spec's MB).
-PRIVATE_LIMIT = 2 * 1024 * 1024
+# Spec, chapter 8: private memory 2.5 MiB or less (MiB as the spec's MB).
+PRIVATE_LIMIT = 5 * 1024 * 1024 // 2
 
 
 def measure(*args, env=None):
@@ -88,7 +89,7 @@ class MemoryTest(unittest.TestCase):
         private = result["private_bytes"]
         self.assertLessEqual(
             private, PRIVATE_LIMIT,
-            f"private memory {private / 1024 / 1024:.2f} MiB ({private:,} bytes) is over the spec's 2 MiB",
+            f"private memory {private / 1024 / 1024:.2f} MiB ({private:,} bytes) is over the spec's 2.5 MiB",
         )
 
     # Issue #34, AC2

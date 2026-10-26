@@ -3,9 +3,14 @@
 //! parser reads it. The panels pick the file up as when it is saved by hand.
 //!
 //! Its parts are small windows of its own, drawn in the panels' colours:
-//! tabs, buttons and a status line. A question (the file changed outside,
-//! or changes not saved on closing) shows in the status line, its answers
-//! as buttons in the row below, beside 保存.
+//! tabs, buttons, the rows of fields of the tabs (`fields`), and a status
+//! line. A question (the file changed outside, or changes not saved on
+//! closing) shows in the status line, its answers as buttons in the row
+//! below, beside 保存.
+//!
+//! The keyboard reaches it through `key`, before a key is dispatched: Tab
+//! and Shift+Tab move along the parts, Enter and Space press, the arrows
+//! change a choice, Esc closes and Ctrl+S saves.
 //!
 //! Everything is made when the window opens, and goes when it closes.
 
@@ -21,7 +26,10 @@ use windows_sys::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, FreeLibrary, Ge
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
+    VK_TAB, VK_UP,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
@@ -30,9 +38,12 @@ use crate::log::debug_log;
 use crate::panel::{self, pointer_id};
 use crate::{settings, tray, watch};
 
+mod fields;
+
 const TABS: [&str; 4] = ["一般", "辺", "キーセット", "プロファイル"];
 
 /// Control ids: the tabs from TAB on, 保存, and the answers to questions.
+/// The rows' fields have theirs from `fields::FIELD` on.
 const TAB: usize = 100;
 const SAVE: usize = 200;
 const RELOAD: usize = 300;
@@ -42,11 +53,16 @@ const DISCARD: usize = 303;
 const CANCEL: usize = 304;
 
 /// Sizes in logical pixels (96 DPI).
-const CLIENT_W: i32 = 640;
-const CLIENT_H: i32 = 420;
+const CLIENT_W: i32 = 680;
+const CLIENT_H: i32 = 504;
 const MARGIN: i32 = 8;
 const TAB_W: i32 = 120;
 const ROW_H: i32 = 32;
+/// The status line: two lines of text.
+const STATUS_H: i32 = 40;
+/// Where the rows of a tab start, under the tabs, and the gap between them.
+const ROW_TOP: i32 = MARGIN + ROW_H + MARGIN;
+const ROW_GAP: i32 = 4;
 const BUTTON_W: i32 = 150;
 const FONT_PX: i32 = 15;
 
@@ -55,11 +71,23 @@ const BUTTON: isize = 0;
 const TAB_PART: isize = 1;
 const TAB_SHOWN: isize = 2;
 const STATUS: isize = 3;
+/// A row's name, and its note of what it takes (or 既定値).
+const LABEL: isize = 4;
+const NOTE: isize = 5;
+const CHOICE: isize = 6;
+/// A field's box, round its edit control.
+const FIELD_BOX: isize = 7;
+
+/// Whether a part of `kind` is pressed, and takes the focus.
+fn pressed_part(kind: isize) -> bool {
+    matches!(kind, BUTTON | TAB_PART | TAB_SHOWN | CHOICE)
+}
 
 /// "EdgePadTestEditorSet": sets `[general] opacity` to wParam in the
-/// window's copy of the file, a change for the tests to save until the tabs
-/// have fields of their own. Registered by name, as the tray's test
-/// messages are: the name is the contract with the tests.
+/// window's copy of the file, past the field's check: a change for the
+/// tests to save, which can be one the parser turns away. Registered by
+/// name, as the tray's test messages are: the name is the contract with
+/// the tests.
 #[cfg(feature = "fault-injection")]
 fn test_set() -> u32 {
     thread_local! {
@@ -95,6 +123,13 @@ struct Editor {
     /// The question asked now, if any.
     asked: Option<Ask>,
     tabs: [HWND; 4],
+    /// The tab shown.
+    tab: usize,
+    rows: Vec<fields::Row>,
+    /// The edge the 辺 tab edits, of `fields::EDGES`.
+    edge: usize,
+    /// The part that had the focus when the window was last left.
+    focus: HWND,
     save: HWND,
     status: HWND,
     answers: Vec<HWND>,
@@ -105,6 +140,8 @@ struct Editor {
 thread_local! {
     static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
     static REGISTERED: Cell<bool> = const { Cell::new(false) };
+    // The window's DPI, as `Editor::dpi`; 0 while it is closed.
+    static DPI: Cell<u32> = const { Cell::new(0) };
     // The pointer that went down on a part, and the part: only it answers
     // that pointer's lift. No part takes the capture, which the panels on
     // this thread hold for a mouse pressing a key. One at a time: a second
@@ -132,6 +169,16 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
+/// The DPI the window is drawn at, for a part of it: the window's own, as
+/// it last heard it in WM_DPICHANGED. Kept apart from the window's state,
+/// which is in use when its parts are moved.
+fn part_dpi(part: HWND) -> u32 {
+    match DPI.get() {
+        0 => unsafe { GetDpiForWindow(part) }.max(96),
+        dpi => dpi,
+    }
+}
+
 /// `v` logical pixels at `dpi`.
 fn scale(v: i32, dpi: u32) -> i32 {
     v * dpi as i32 / 96
@@ -153,6 +200,10 @@ unsafe fn register() -> bool {
             (w!("EdgePadSettingsTab"), part_proc, IDC_HAND),
             (w!("EdgePadSettingsButton"), part_proc, IDC_HAND),
             (w!("EdgePadSettingsStatus"), part_proc, IDC_ARROW),
+            (w!("EdgePadSettingsLabel"), part_proc, IDC_ARROW),
+            (w!("EdgePadSettingsNote"), part_proc, IDC_ARROW),
+            (w!("EdgePadSettingsChoice"), part_proc, IDC_HAND),
+            (w!("EdgePadSettingsField"), fields::box_proc, IDC_IBEAM),
         ] {
             let mut wc: WNDCLASSW = zeroed();
             wc.lpfnWndProc = Some(proc_);
@@ -169,16 +220,19 @@ unsafe fn register() -> bool {
     true
 }
 
-/// A part of `parent`: a tab, button or status line, of `kind`. Made
-/// hidden, to be shown once it is in its place.
+/// A part of `parent` of `kind`: a tab, button, status line, or a part of
+/// a row. Made hidden, to be shown once it is in its place. One that is
+/// pressed is a stop of the Tab key; a box holds the edit control that is.
 unsafe fn part(parent: HWND, class: *const u16, text: &str, id: usize, kind: isize) -> HWND {
     unsafe {
         let text = wide(text);
+        let stop = if pressed_part(kind) { WS_TABSTOP } else { 0 };
+        let ex = if kind == FIELD_BOX { WS_EX_CONTROLPARENT } else { 0 };
         let hwnd = CreateWindowExW(
-            0,
+            ex,
             class,
             text.as_ptr(),
-            WS_CHILD,
+            WS_CHILD | stop,
             0,
             0,
             1,
@@ -288,6 +342,10 @@ pub unsafe fn open() {
             outside: None,
             asked: None,
             tabs,
+            tab: 0,
+            rows: Vec::new(),
+            edge: 0,
+            focus: null_mut(),
             save: null_mut(),
             status: null_mut(),
             answers: Vec::new(),
@@ -297,14 +355,21 @@ pub unsafe fn open() {
         for (i, name) in TABS.iter().enumerate() {
             editor.tabs[i] = part(hwnd, w!("EdgePadSettingsTab"), name, TAB + i, TAB_PART);
         }
+        let rows = fields::make(hwnd);
         editor.save = part(hwnd, w!("EdgePadSettingsButton"), "保存", SAVE, BUTTON);
         editor.status = part(hwnd, w!("EdgePadSettingsStatus"), "", 0, STATUS);
-        if editor.tabs.iter().chain([&editor.save, &editor.status]).any(|p| p.is_null()) {
+        let Some(rows) = rows.filter(|_| !editor.tabs.iter().chain([&editor.save, &editor.status]).any(|p| p.is_null()))
+        else {
             debug_log!("設定画面の部品を作れない");
             DestroyWindow(hwnd);
+            tray::notify("設定画面を開けませんでした");
             return;
-        }
+        };
+        editor.rows = rows;
         editor.font = font_for(editor.dpi);
+        DPI.set(editor.dpi);
+        fields::set_font(&editor);
+        fields::refresh(&mut editor);
         let dpi = editor.dpi;
         EDITOR.set(Some(editor));
         title_bar(hwnd);
@@ -317,17 +382,19 @@ pub unsafe fn open() {
 }
 
 /// Size the window for `dpi`, its client area CLIENT_W by CLIENT_H logical
-/// pixels: with `centre`, in the middle of its monitor's work area, else
-/// where it is, moved only as far as keeps it on the monitor it is on.
+/// pixels, or as much of that as its monitor's work area has room for
+/// (the rows then come closer together, `fields::place`): with `centre`,
+/// in the middle of the work area, else where it is, moved only as far as
+/// keeps it on the monitor it is on.
 unsafe fn size_for(hwnd: HWND, dpi: u32, centre: bool) {
     unsafe {
         let mut r = RECT { left: 0, top: 0, right: scale(CLIENT_W, dpi), bottom: scale(CLIENT_H, dpi) };
         AdjustWindowRectExForDpi(&mut r, STYLE, 0, EX_STYLE, dpi);
-        let (w, h) = (r.right - r.left, r.bottom - r.top);
         let mut info: MONITORINFO = zeroed();
         info.cbSize = size_of::<MONITORINFO>() as u32;
         GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
         let a = info.rcWork;
+        let (w, h) = ((r.right - r.left).min(a.right - a.left), (r.bottom - r.top).min(a.bottom - a.top));
         let (x, y) = if centre {
             (a.left + (a.right - a.left - w) / 2, a.top + (a.bottom - a.top - h) / 2)
         } else {
@@ -351,6 +418,11 @@ unsafe fn lay_out() {
         GetClientRect(hwnd, &mut client);
         let s = |v| scale(v, dpi);
         let (m, row, button) = (s(MARGIN), s(ROW_H), s(BUTTON_W));
+        // The rows, down to the status line.
+        let status_top = client.bottom - m - row - m - s(STATUS_H);
+        if with_editor(|e| fields::place(e, client, status_top - m)).is_none() {
+            return;
+        }
         for (i, &tab) in tabs.iter().enumerate() {
             MoveWindow(tab, m + i as i32 * (s(TAB_W) + m), m, s(TAB_W), row, 1);
         }
@@ -363,18 +435,26 @@ unsafe fn lay_out() {
             x -= m + button;
             MoveWindow(answer, x, y, button, row, 1);
         }
-        MoveWindow(status, m, y - m - 2 * row, (client.right - 2 * m).max(0), 2 * row, 1);
-        // In their places now: shown, and not before.
+        MoveWindow(status, m, status_top, (client.right - 2 * m).max(0), s(STATUS_H), 1);
+        // In their places now: shown, and not before; the rows, those of
+        // the tab shown, as they stand.
         for &part in tabs.iter().chain([&save, &status]).chain(&answers) {
             ShowWindow(part, SW_SHOWNA);
         }
+        with_editor(|e| fields::show(e));
         InvalidateRect(hwnd, null(), 1);
     }
 }
 
-/// Show tab `index`.
+/// Show tab `index`, and its rows.
 unsafe fn show_tab(index: usize) {
-    let Some(tabs) = with_editor(|e| e.tabs) else { return };
+    let Some(tabs) = with_editor(|e| {
+        e.tab = index;
+        unsafe { fields::show(e) };
+        e.tabs
+    }) else {
+        return;
+    };
     for (i, &tab) in tabs.iter().enumerate() {
         unsafe {
             SetWindowLongPtrW(tab, GWLP_USERDATA, if i == index { TAB_SHOWN } else { TAB_PART });
@@ -407,6 +487,12 @@ fn tell(e: &Editor, reason: &str) {
         Some(ask) => set_status(e, &format!("{reason}\n{}", question(e, ask))),
         None => set_status(e, reason),
     }
+}
+
+/// A reason told is done with: the status line says only the question
+/// asked now, if any.
+fn ask_reason(e: &Editor) {
+    set_status(e, e.asked.map_or("", |a| question(e, a)));
 }
 
 /// Ask `ask` in the status line, its answers as buttons; or, with none,
@@ -519,6 +605,8 @@ pub unsafe fn may_exit() -> bool {
     if !is_open() {
         return true;
     }
+    // What is typed and not yet entered counts too.
+    unsafe { enter_focused() };
     // Open but in use: not now, rather than past changes.
     let Some((hwnd, unsaved)) = with_editor(|e| (e.hwnd, unsaved(e))) else { return false };
     if !unsaved {
@@ -533,11 +621,31 @@ pub unsafe fn may_exit() -> bool {
     false
 }
 
-/// A part was clicked.
+/// Enter what is typed in the field with the focus, if any: before
+/// saving, or closing.
+unsafe fn enter_focused() {
+    unsafe {
+        let focus = GetFocus();
+        if with_editor(|e| fields::is_edit(e, focus)) == Some(true) {
+            fields::commit(GetDlgCtrlID(GetParent(focus)) as usize);
+        }
+    }
+}
+
+/// A part was clicked, or a field changed.
 unsafe fn command(id: usize) {
     unsafe {
         if (TAB..TAB + TABS.len()).contains(&id) {
             return show_tab(id - TAB);
+        }
+        if fields::is_field(id) {
+            return fields::commit(id);
+        }
+        if fields::is_reset(id) {
+            return fields::reset(id);
+        }
+        if matches!(id, SAVE | SAVE_AND_CLOSE) {
+            enter_focused();
         }
         // What is left to do once the window is let go: close it, or take
         // the question away and say what was done in its place.
@@ -574,6 +682,7 @@ unsafe fn command(id: usize) {
                         e.doc = doc;
                         e.base = bytes.clone();
                         e.known = bytes;
+                        fields::refresh(e);
                         said = "読み直しました";
                         true
                     }
@@ -619,7 +728,12 @@ unsafe fn command(id: usize) {
             if ask_again {
                 ask(Some(Ask::Changed));
             } else {
-                with_editor(|e| set_status(e, said));
+                // Saved with a field's value turned away: that value is not
+                // in the file, which the status line goes on saying.
+                with_editor(|e| match fields::standing_reason(e).filter(|_| id == SAVE) {
+                    Some(reason) => set_status(e, &format!("{said}\n保存していない値があります: {reason}")),
+                    None => set_status(e, said),
+                });
             }
         }
     }
@@ -640,6 +754,24 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 lay_out();
                 0
             }
+            // No smaller than its rows at their closest, with the status
+            // line and buttons below them, and as wide as it opens; or as
+            // much of that as the work area has room for.
+            WM_GETMINMAXINFO => {
+                let dpi = part_dpi(hwnd);
+                let s = |v| scale(v, dpi);
+                let high = ROW_TOP + fields::MIN_ROWS_H + MARGIN + STATUS_H + MARGIN + ROW_H + MARGIN;
+                let mut r = RECT { left: 0, top: 0, right: s(CLIENT_W), bottom: s(high) };
+                AdjustWindowRectExForDpi(&mut r, STYLE, 0, EX_STYLE, dpi);
+                let mut info: MONITORINFO = zeroed();
+                info.cbSize = size_of::<MONITORINFO>() as u32;
+                GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
+                let a = info.rcWork;
+                let m = &mut *(lp as *mut MINMAXINFO);
+                m.ptMinTrackSize.x = (r.right - r.left).min(a.right - a.left);
+                m.ptMinTrackSize.y = (r.bottom - r.top).min(a.bottom - a.top);
+                0
+            }
             // The scale of the window's monitor changed: the window and its
             // parts grow or shrink to it, where it is. The suggested place
             // in lParam is not read: any process can post this message, and
@@ -652,9 +784,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     return 0;
                 }
                 let resized = with_editor(|e| {
-                    DeleteObject(e.font);
+                    let old = e.font;
                     e.font = font_for(dpi);
                     e.dpi = dpi;
+                    DPI.set(dpi);
+                    fields::set_font(e);
+                    DeleteObject(old);
                 });
                 if resized.is_some() {
                     size_for(hwnd, dpi, false);
@@ -666,15 +801,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 command(wp & 0xFFFF);
                 0
             }
-            // Esc closes, Ctrl+S saves. The rest of the keyboard comes with
-            // the fields of the tabs.
-            WM_KEYDOWN if wp == VK_ESCAPE as usize => {
-                PostMessageW(hwnd, WM_CLOSE, 0, 0);
-                0
-            }
-            WM_KEYDOWN if wp == b'S' as usize && GetKeyState(VK_CONTROL as i32) < 0 => {
-                command(SAVE);
-                0
+            // Left, the part with the focus is kept, to have it again on
+            // coming back.
+            WM_ACTIVATE => {
+                if wp & 0xFFFF == WA_INACTIVE as usize {
+                    let focus = GetFocus();
+                    if IsChild(hwnd, focus) != 0 {
+                        with_editor(|e| e.focus = focus);
+                    }
+                } else if let Some(focus) =
+                    with_editor(|e| e.focus).filter(|&f| IsWindowVisible(f) != 0 && IsWindowEnabled(f) != 0)
+                {
+                    SetFocus(focus);
+                    return 0;
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
             // Alt alone opens no menu: the window has none, and the
             // system menu's mode would swallow the next click on a part.
@@ -684,6 +825,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // outside gives way: the answer to this one settles it too).
             // Nothing of the window's to lose, it just closes.
             WM_CLOSE => {
+                enter_focused();
                 match with_editor(|e| unsaved(e)) {
                     Some(true) => ask(Some(Ask::Closing)),
                     Some(false) => {
@@ -699,6 +841,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_DESTROY => {
                 PRESSED.set((0, null_mut()));
+                DPI.set(0);
                 if let Some(e) = EDITOR.take() {
                     DeleteObject(e.font);
                     debug_log!("設定画面を閉じる");
@@ -707,7 +850,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             #[cfg(feature = "fault-injection")]
             _ if msg == test_set() => {
-                with_editor(|e| e.doc.set_value("general", "opacity", Some(&wp.to_string())));
+                with_editor(|e| {
+                    e.doc.set_value("general", "opacity", Some(&wp.to_string()));
+                    fields::refresh(e);
+                });
                 0
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -715,12 +861,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     }
 }
 
-/// A tab, button or status line: drawn in the panels' colours, the tab
-/// shown and the buttons as keys, the status line as the background. A tab
-/// or button tells the window when a pointer lets go on it.
+/// A tab, button, status line, or a row's name, note or choice: drawn in
+/// the panels' colours, the tab shown and the buttons as keys, the rest on
+/// the background; a choice as `fields::draw_choice` has it. A part that is
+/// pressed takes the focus on a pointer going down on it, is framed while
+/// it has it, and tells the window when a pointer lets go on it.
 unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
-        let kind = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        let data = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        let kind = data & !fields::WRONG;
         match msg {
             WM_ERASEBKGND => 1,
             WM_PAINT => {
@@ -729,31 +878,51 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 let c = panel::palette();
                 let (fill, ink) = match kind {
                     TAB_SHOWN => (c.held, c.held_text),
-                    STATUS => (c.background, c.text),
+                    STATUS | LABEL => (c.background, c.text),
+                    NOTE => (c.background, fields::mix(c.text, c.background, 96)),
                     _ => (c.face, c.text),
                 };
                 let mut r: RECT = zeroed();
                 GetClientRect(hwnd, &mut r);
-                let brush = CreateSolidBrush(colorref(fill));
-                FillRect(dc, &r, brush);
-                DeleteObject(brush);
                 let font = EDITOR.with(|e| e.try_borrow().ok().and_then(|e| e.as_ref().map(|e| e.font)));
                 let old = font.map(|f| SelectObject(dc, f));
-                SetBkMode(dc, TRANSPARENT as i32);
-                SetTextColor(dc, colorref(ink));
-                let mut text = [0u16; 256];
-                let n = GetWindowTextW(hwnd, text.as_mut_ptr(), 256);
-                // The status line runs to two lines: a reason, and the
-                // question it is about.
-                let format = match kind {
-                    STATUS => DT_LEFT | DT_BOTTOM | DT_WORDBREAK | DT_END_ELLIPSIS,
-                    _ => DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
-                };
-                DrawTextW(dc, text.as_ptr(), n, &mut r, format);
+                if kind == CHOICE {
+                    fields::draw_choice(hwnd, dc, r, data & fields::WRONG != 0);
+                } else {
+                    let brush = CreateSolidBrush(colorref(fill));
+                    FillRect(dc, &r, brush);
+                    DeleteObject(brush);
+                    // The focus: a frame inside the edge, in the ink.
+                    if pressed_part(kind) && GetFocus() == hwnd {
+                        let brush = CreateSolidBrush(colorref(ink));
+                        let b = scale(2, part_dpi(hwnd));
+                        for i in 0..b {
+                            let f = RECT { left: r.left + i, top: r.top + i, right: r.right - i, bottom: r.bottom - i };
+                            FrameRect(dc, &f, brush);
+                        }
+                        DeleteObject(brush);
+                    }
+                    SetBkMode(dc, TRANSPARENT as i32);
+                    SetTextColor(dc, colorref(ink));
+                    let mut text = [0u16; 256];
+                    let n = GetWindowTextW(hwnd, text.as_mut_ptr(), 256);
+                    // The status line runs to two lines: a reason, and the
+                    // question it is about. Names and notes start at the left.
+                    let format = match kind {
+                        STATUS => DT_LEFT | DT_BOTTOM | DT_WORDBREAK | DT_END_ELLIPSIS,
+                        LABEL | NOTE => DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                        _ => DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                    };
+                    DrawTextW(dc, text.as_ptr(), n, &mut r, format);
+                }
                 if let Some(old) = old {
                     SelectObject(dc, old);
                 }
                 EndPaint(hwnd, &ps);
+                0
+            }
+            WM_SETFOCUS | WM_KILLFOCUS => {
+                InvalidateRect(hwnd, null(), 1);
                 0
             }
             WM_SETTEXT => {
@@ -761,11 +930,12 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 InvalidateRect(hwnd, null(), 1);
                 r
             }
-            WM_POINTERDOWN if kind != STATUS => {
+            WM_POINTERDOWN if pressed_part(kind) => {
                 PRESSED.set((pointer_id(wp), hwnd));
+                SetFocus(hwnd);
                 0
             }
-            WM_POINTERUP if kind != STATUS => {
+            WM_POINTERUP if pressed_part(kind) => {
                 let pressed = PRESSED.get() == (pointer_id(wp), hwnd);
                 if pressed {
                     PRESSED.set((0, null_mut()));
@@ -774,7 +944,11 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 GetWindowRect(hwnd, &mut r);
                 let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
                 let over = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-                if pressed && over {
+                if pressed && over && kind == CHOICE {
+                    if let Some(value) = fields::option_at(hwnd, x) {
+                        fields::choose(hwnd, value);
+                    }
+                } else if pressed && over {
                     let id = GetDlgCtrlID(hwnd) as usize;
                     PostMessageW(GetParent(hwnd), WM_COMMAND, id, 0);
                 }
@@ -783,4 +957,79 @@ unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
     }
+}
+
+/// A key for the settings window, before it is dispatched: Tab and
+/// Shift+Tab move the focus along the parts, Enter enters what is typed,
+/// Enter and Space press a button or tab and turn a choice on to its next
+/// option, the arrows step a choice, Esc closes, Ctrl+S saves, and Ctrl+A
+/// selects what is typed. Whether it took the key; a key for the window it
+/// did not take has its characters made, for the edit controls.
+pub unsafe fn key(msg: &MSG) -> bool {
+    if !(WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message) {
+        return false;
+    }
+    let Some(hwnd) = EDITOR.with(|e| e.try_borrow().ok().and_then(|e| e.as_ref().map(|e| e.hwnd))) else {
+        return false;
+    };
+    unsafe {
+        if msg.hwnd != hwnd && IsChild(hwnd, msg.hwnd) == 0 {
+            return false;
+        }
+        if msg.message == WM_KEYDOWN {
+            let focus = GetFocus();
+            let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
+            let in_edit = with_editor(|e| fields::is_edit(e, focus)) == Some(true);
+            let kind = if IsChild(hwnd, focus) != 0 && !in_edit { GetWindowLongPtrW(focus, GWLP_USERDATA) & !fields::WRONG } else { -1 };
+            let pressed = pressed_part(kind) && GetParent(focus) == hwnd;
+            let took = match msg.wParam as u16 {
+                VK_TAB if !ctrl => {
+                    let from = if IsChild(hwnd, focus) != 0 { focus } else { null_mut() };
+                    let next = GetNextDlgTabItem(hwnd, from, (GetKeyState(VK_SHIFT as i32) < 0).into());
+                    if !next.is_null() {
+                        SetFocus(next);
+                    }
+                    true
+                }
+                VK_ESCAPE => {
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    true
+                }
+                k if k == b'S' as u16 && ctrl => {
+                    PostMessageW(hwnd, WM_COMMAND, SAVE, 0);
+                    true
+                }
+                k if k == b'A' as u16 && ctrl && in_edit => {
+                    SendMessageW(focus, fields::EM_SETSEL, 0, -1);
+                    true
+                }
+                VK_RETURN if in_edit => {
+                    PostMessageW(hwnd, WM_COMMAND, GetDlgCtrlID(GetParent(focus)) as usize, 0);
+                    true
+                }
+                VK_RETURN | VK_SPACE if pressed && kind == CHOICE => {
+                    fields::step(focus, 1, true);
+                    true
+                }
+                VK_RETURN | VK_SPACE if pressed => {
+                    PostMessageW(hwnd, WM_COMMAND, GetDlgCtrlID(focus) as usize, 0);
+                    true
+                }
+                VK_UP | VK_LEFT if pressed && kind == CHOICE => {
+                    fields::step(focus, -1, false);
+                    true
+                }
+                VK_DOWN | VK_RIGHT if pressed && kind == CHOICE => {
+                    fields::step(focus, 1, false);
+                    true
+                }
+                _ => false,
+            };
+            if took {
+                return true;
+            }
+        }
+        TranslateMessage(msg);
+    }
+    false
 }

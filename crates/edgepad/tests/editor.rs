@@ -1,11 +1,13 @@
 //! Acceptance tests for Issue #81: the settings window (spec 7.1), opened
 //! from the tray, with its four tabs, saving, a file changed outside, and
-//! closing with changes not saved. The tabs have no fields yet.
+//! closing with changes not saved. The fields of the tabs have tests of
+//! their own (fields.rs).
 //!
 //! The window's parts are found by class and text, and clicked as a user
-//! would. Until the tabs have fields, a change is made with a message only
-//! the test build has ("EdgePadTestEditorSet"): it sets `[general] opacity`
-//! in the window's copy of the file. A debug build is slow to draw and to
+//! would. A change is made with a message only the test build has
+//! ("EdgePadTestEditorSet"): it sets `[general] opacity` in the window's
+//! copy of the file past the field's check, so a change the parser turns
+//! away can be saved too. A debug build is slow to draw and to
 //! act on a click: what a test checks, it waits for.
 
 mod common;
@@ -394,11 +396,13 @@ fn in_front_the_window_switches_no_profile_and_lets_no_key_go() {
 const DARK: [i32; 3] = [0x20, 0x20, 0x20];
 const LIGHT: [i32; 3] = [0xE4, 0xE4, 0xE4];
 
-/// The colour in the middle of `editor`'s client area, where nothing is.
+/// The colour half way down `editor`'s client area, in the margin on its
+/// left, where nothing is.
 fn middle(editor: HWND) -> [i32; 3] {
     let mut r: RECT = unsafe { std::mem::zeroed() };
     unsafe { GetClientRect(editor, &mut r) };
-    let mut p = POINT { x: r.right / 2, y: r.bottom / 2 };
+    let dpi = unsafe { GetDpiForWindow(editor) } as i32;
+    let mut p = POINT { x: 3 * dpi / 96, y: r.bottom / 2 };
     unsafe { ClientToScreen(editor, &mut p) };
     channels(capture(RECT { left: p.x, top: p.y, right: p.x + 1, bottom: p.y + 1 })[0])
 }
@@ -446,7 +450,12 @@ fn it_follows_the_dpi_of_its_monitor_and_the_theme() {
     pump(300);
     let (h1, w1) = (window_rect(tab).bottom - window_rect(tab).top, window_rect(editor).right - window_rect(editor).left);
     assert!((h1 - h0 * 3 / 2).abs() <= 2, "the tab grows with the DPI: {h0} -> {h1}");
-    assert!((w1 - w0 * 3 / 2).abs() <= 4, "and the window: {w0} -> {w1}");
+    // As far as the work area has room: on CI's 1024 x 768 screen, the
+    // window at 150% is wider than that.
+    let mut work: RECT = unsafe { std::mem::zeroed() };
+    unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut RECT as _, 0) };
+    let want = (w0 * 3 / 2).min(work.right - work.left);
+    assert!((w1 - want).abs() <= 4, "and the window: {w0} -> {w1}, not {want}");
 
     // A DPI no monitor has (0, or far past 500%) changes nothing.
     for bad in [0, 0xFFFF] {
