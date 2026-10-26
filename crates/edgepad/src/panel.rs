@@ -31,7 +31,7 @@ use windows_sys::w;
 
 use crate::colors::{self, colorref};
 use crate::log::debug_log;
-use crate::{editor, launch, pie_menu, send};
+use crate::{launch, pie_menu, send};
 use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
@@ -276,8 +276,7 @@ impl Panel {
     }
 }
 
-/// The colours panels and handles are drawn in now; the settings window's
-/// too.
+/// The colours panels and handles are drawn in now.
 pub fn palette() -> Palette {
     PALETTE.get().unwrap_or_else(|| {
         let (theme, accent) = STYLE.get();
@@ -309,14 +308,12 @@ pub unsafe fn restyle() -> bool {
                 }
             }
         }
-        unsafe { editor::restyle() };
         true
     })
 }
 
-/// Take the theme and accent of `panels`, for the panels and the settings
-/// window alike: with no panel at all, the settings window still draws in
-/// them.
+/// Take the theme and accent of `panels`: the colours the panels and
+/// handles are drawn in.
 pub fn set_style(panels: &Panels) {
     STYLE.set((panels.theme, panels.accent));
     PALETTE.set(Some(colors::palette(panels.theme, panels.accent)));

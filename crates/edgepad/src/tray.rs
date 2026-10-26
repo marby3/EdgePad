@@ -282,6 +282,12 @@ unsafe fn open_settings(hwnd: HWND) {
     };
     // The file may be new, in a folder made just now: watched from now.
     watch::rescan();
+    unsafe { open_file(hwnd, &path) };
+}
+
+/// Open the settings file `path` in its default app: from the tray, or
+/// the settings window's テキストで開く.
+pub unsafe fn open_file(hwnd: HWND, path: &std::path::Path) {
     test_event(&format!("open: {}", path.display()));
     // Test builds stop short of starting an editor.
     #[cfg(not(feature = "fault-injection"))]

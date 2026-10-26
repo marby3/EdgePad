@@ -2,17 +2,23 @@
 //! that edits the settings file through a `Document` and saves it once the
 //! parser reads it. The panels pick the file up as when it is saved by hand.
 //!
-//! Its parts are small windows of its own, drawn in the panels' colours:
-//! tabs, buttons, the rows of fields of the tabs (`fields`), and a status
-//! line. A question (the file changed outside, or changes not saved on
-//! closing) shows in the status line, its answers as buttons in the row
-//! below, beside 保存.
+//! Its parts are Windows's own controls, of the common controls version 6:
+//! a sidebar of the four pages (a list box), the page shown on its right
+//! under its heading, a status line, and a row along the bottom with the
+//! file's path, テキストで開く and 保存. A question (the file changed outside,
+//! or changes not saved on closing) shows in the status line, its answers
+//! as buttons in the row below it. Changes not saved show as a ● before the
+//! title, and 保存 as the default button.
 //!
-//! The keyboard reaches it through `key`, before a key is dispatched: Tab
-//! and Shift+Tab move along the parts, Enter and Space press, the arrows
-//! change a choice, Esc closes and Ctrl+S saves.
+//! It is light or dark as Windows's apps are, whatever the panels' theme.
 //!
-//! Everything is made when the window opens, and goes when it closes.
+//! The keyboard reaches it through `take`, before a key is dispatched: Tab
+//! and Shift+Tab move along the parts, Enter presses a button (Space and
+//! the arrows are the controls' own), Esc closes and Ctrl+S saves. So does
+//! a finger, while a panel holds the mouse for a key it presses.
+//!
+//! Everything is made when the window opens, and goes when it closes; but
+//! comctl32, once loaded, stays (spec 8).
 
 use std::cell::{Cell, RefCell};
 use std::io::Read;
@@ -20,31 +26,41 @@ use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 
-use edgepad_core::config;
+use edgepad_core::config::{self, Accent, Theme};
 use edgepad_core::document::Document;
-use windows_sys::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, FreeLibrary, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
-use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
-    VK_TAB, VK_UP,
+use edgepad_core::theme::Rgb;
+use windows_sys::Win32::Foundation::{
+    ERROR_CLASS_ALREADY_EXISTS, FreeLibrary, GetLastError, HANDLE, HMODULE, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, POINT, RECT,
+    WPARAM,
 };
+use windows_sys::Win32::Graphics::Gdi::*;
+use windows_sys::Win32::System::ApplicationInstallationAndServicing::{
+    ACTCTXW, ActivateActCtx, CreateActCtxW, DeactivateActCtx, ReleaseActCtx,
+};
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
+use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetCapture, GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_TAB,
+};
+use windows_sys::Win32::UI::Input::Pointer::GetPointerType;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
-use crate::colors::colorref;
+use crate::colors::{self, colorref};
 use crate::log::debug_log;
-use crate::panel::{self, pointer_id};
+use crate::panel::{pointer_at, pointer_id};
 use crate::{settings, tray, watch};
 
-mod fields;
+const PAGES: [&str; 4] = ["キー配置", "アプリ別", "辺と表示", "操作"];
 
-const TABS: [&str; 4] = ["一般", "辺", "キーセット", "プロファイル"];
-
-/// Control ids: the tabs from TAB on, 保存, and the answers to questions.
-/// The rows' fields have theirs from `fields::FIELD` on.
-const TAB: usize = 100;
+/// Control ids: the sidebar, the page's heading, the status line, the
+/// file's path, テキストで開く, 保存, and the answers to questions. Clear of
+/// IDOK and IDCANCEL. The tests find the parts by these.
+const SIDEBAR: usize = 10;
+const HEADING: usize = 11;
+const STATUS: usize = 12;
+const PATH: usize = 13;
+const OPEN_TEXT: usize = 14;
 const SAVE: usize = 200;
 const RELOAD: usize = 300;
 const KEEP: usize = 301;
@@ -53,41 +69,51 @@ const DISCARD: usize = 303;
 const CANCEL: usize = 304;
 
 /// Sizes in logical pixels (96 DPI).
-const CLIENT_W: i32 = 680;
-const CLIENT_H: i32 = 504;
-const MARGIN: i32 = 8;
-const TAB_W: i32 = 120;
-const ROW_H: i32 = 32;
+const CLIENT_W: i32 = 760;
+const CLIENT_H: i32 = 520;
+/// The least the client area may be: the sidebar, and room beside it for
+/// three answers in a row.
+const MIN_W: i32 = 680;
+const MIN_H: i32 = 400;
+const MARGIN: i32 = 12;
+const SIDEBAR_W: i32 = 168;
+const ITEM_H: i32 = 36;
+/// The space before a sidebar item's text.
+const ITEM_PAD: i32 = 12;
+const HEADING_H: i32 = 36;
 /// The status line: two lines of text.
 const STATUS_H: i32 = 40;
-/// Where the rows of a tab start, under the tabs, and the gap between them.
-const ROW_TOP: i32 = MARGIN + ROW_H + MARGIN;
-const ROW_GAP: i32 = 4;
-const BUTTON_W: i32 = 150;
-const FONT_PX: i32 = 15;
+const BUTTON_H: i32 = 30;
+const BUTTON_W: i32 = 120;
+const ANSWER_W: i32 = 136;
 
-/// What a part of the window is, kept in its GWLP_USERDATA.
-const BUTTON: isize = 0;
-const TAB_PART: isize = 1;
-const TAB_SHOWN: isize = 2;
-const STATUS: isize = 3;
-/// A row's name, and its note of what it takes (or 既定値).
-const LABEL: isize = 4;
-const NOTE: isize = 5;
-const CHOICE: isize = 6;
-/// A field's box, round its edit control.
-const FIELD_BOX: isize = 7;
+/// Styles of Win32_System_SystemServices and Win32_UI_Controls, features
+/// taken for these alone otherwise.
+const SS_NOPREFIX: u32 = 0x80;
+const SS_CENTERIMAGE: u32 = 0x200;
+const SS_PATHELLIPSIS: u32 = 0x8000;
+const ODS_SELECTED: u32 = 0x1;
+const ODS_FOCUS: u32 = 0x10;
+const ODS_NOFOCUSRECT: u32 = 0x200;
 
-/// Whether a part of `kind` is pressed, and takes the focus.
-fn pressed_part(kind: isize) -> bool {
-    matches!(kind, BUTTON | TAB_PART | TAB_SHOWN | CHOICE)
+/// DRAWITEMSTRUCT, of Win32_UI_Controls.
+#[repr(C)]
+struct DrawItem {
+    kind: u32,
+    id: u32,
+    item: u32,
+    action: u32,
+    state: u32,
+    hwnd: HWND,
+    dc: HDC,
+    rect: RECT,
+    data: usize,
 }
 
 /// "EdgePadTestEditorSet": sets `[general] opacity` to wParam in the
-/// window's copy of the file, past the field's check: a change for the
-/// tests to save, which can be one the parser turns away. Registered by
-/// name, as the tray's test messages are: the name is the contract with
-/// the tests.
+/// window's copy of the file, past any check: a change for the tests to
+/// save, which can be one the parser turns away. Registered by name, as the
+/// tray's test messages are: the name is the contract with the tests.
 #[cfg(feature = "fault-injection")]
 fn test_set() -> u32 {
     thread_local! {
@@ -98,6 +124,7 @@ fn test_set() -> u32 {
 
 const STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
 const EX_STYLE: WINDOW_EX_STYLE = WS_EX_APPWINDOW;
+const TITLE: &str = "EdgePad の設定";
 
 /// A question the window asks.
 #[derive(Clone, Copy)]
@@ -106,6 +133,35 @@ enum Ask {
     Changed,
     /// Closing with changes not saved.
     Closing,
+}
+
+/// The colours the window is drawn in, light or dark as Windows's apps.
+#[derive(Clone, Copy, PartialEq)]
+struct Look {
+    dark: bool,
+    background: Rgb,
+    sidebar: Rgb,
+    text: Rgb,
+    /// The path's text: quieter than the rest.
+    dim: Rgb,
+    /// The page chosen in the sidebar: Windows's accent.
+    accent: Rgb,
+    accent_text: Rgb,
+}
+
+fn look() -> Look {
+    let dark = colors::apps_dark();
+    let (background, sidebar, text) = match dark {
+        true => ([0x20, 0x20, 0x20], [0x2B, 0x2B, 0x2B], [0xF0, 0xF0, 0xF0]),
+        false => ([0xF3, 0xF3, 0xF3], [0xE6, 0xE6, 0xE6], [0x1A, 0x1A, 0x1A]),
+    };
+    let accent = colors::palette(Theme::Auto, Accent::Auto);
+    Look { dark, background, sidebar, text, dim: mix(text, background, 96), accent: accent.held, accent_text: accent.held_text }
+}
+
+/// `a` mixed with `b`, `part` of 256 of `b`.
+fn mix(a: Rgb, b: Rgb, part: u16) -> Rgb {
+    std::array::from_fn(|i| ((a[i] as u16 * (256 - part) + b[i] as u16 * part) / 256) as u8)
 }
 
 struct Editor {
@@ -122,31 +178,48 @@ struct Editor {
     outside: Option<Vec<u8>>,
     /// The question asked now, if any.
     asked: Option<Ask>,
-    tabs: [HWND; 4],
-    /// The tab shown.
-    tab: usize,
-    rows: Vec<fields::Row>,
-    /// The edge the 辺 tab edits, of `fields::EDGES`.
-    edge: usize,
-    /// The part that had the focus when the window was last left.
-    focus: HWND,
-    save: HWND,
+    sidebar: HWND,
+    heading: HWND,
     status: HWND,
+    path_part: HWND,
+    open_text: HWND,
+    save: HWND,
     answers: Vec<HWND>,
+    /// The part that had the focus when the window was last left, to have
+    /// it again on coming back.
+    focus: HWND,
+    /// Whether the title and 保存 show changes not saved.
+    marked: bool,
     font: HFONT,
+    heading_font: HFONT,
     dpi: u32,
+    /// The activation context of the manifest asking for comctl32 v6, made
+    /// active while parts are made; invalid if it could not be made.
+    context: HANDLE,
+}
+
+/// What the window is painted with, and the path's part, drawn quieter.
+#[derive(Clone, Copy)]
+struct Paint {
+    look: Look,
+    background: HBRUSH,
+    sidebar: HBRUSH,
+    font: HFONT,
+    path: HWND,
 }
 
 thread_local! {
     static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
+    // Kept apart from the window's state, which is in use when a part
+    // repaints at once (a status line given text, the sidebar a choice);
+    // None while the window is closed.
+    static PAINT: Cell<Option<Paint>> = const { Cell::new(None) };
     static REGISTERED: Cell<bool> = const { Cell::new(false) };
     // The window's DPI, as `Editor::dpi`; 0 while it is closed.
     static DPI: Cell<u32> = const { Cell::new(0) };
-    // The pointer that went down on a part, and the part: only it answers
-    // that pointer's lift. No part takes the capture, which the panels on
-    // this thread hold for a mouse pressing a key. One at a time: a second
-    // finger on another part takes over from the first.
-    static PRESSED: Cell<(u32, HWND)> = const { Cell::new((0, null_mut())) };
+    // The finger that went down on a part while a panel held the mouse,
+    // and the part: only it answers that finger's lift (`finger`).
+    static TAPPED: Cell<(u32, HWND)> = const { Cell::new((0, null_mut())) };
 }
 
 /// Whether the window is open: in use further up the stack, it is.
@@ -169,12 +242,12 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
-/// The DPI the window is drawn at, for a part of it: the window's own, as
-/// it last heard it in WM_DPICHANGED. Kept apart from the window's state,
-/// which is in use when its parts are moved.
-fn part_dpi(part: HWND) -> u32 {
+/// The DPI the window is drawn at: its own, as it last heard it in
+/// WM_DPICHANGED. Kept apart from the window's state, which is in use when
+/// its parts are moved.
+fn window_dpi(hwnd: HWND) -> u32 {
     match DPI.get() {
-        0 => unsafe { GetDpiForWindow(part) }.max(96),
+        0 => unsafe { GetDpiForWindow(hwnd) }.max(96),
         dpi => dpi,
     }
 }
@@ -184,9 +257,106 @@ fn scale(v: i32, dpi: u32) -> i32 {
     v * dpi as i32 / 96
 }
 
-unsafe fn font_for(dpi: u32) -> HFONT {
-    let (normal, charset, quality) = (FW_NORMAL as i32, DEFAULT_CHARSET as u32, CLEARTYPE_QUALITY as u32);
-    unsafe { CreateFontW(-scale(FONT_PX, dpi), 0, 0, 0, normal, 0, 0, 0, charset, 0, 0, quality, 0, w!("Segoe UI")) }
+/// Windows's font for dialogs at `dpi`, and the same larger and bolder
+/// for a heading.
+unsafe fn fonts_for(dpi: u32) -> (HFONT, HFONT) {
+    unsafe {
+        let mut m: NONCLIENTMETRICSW = zeroed();
+        m.cbSize = size_of::<NONCLIENTMETRICSW>() as u32;
+        let got = SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, m.cbSize, &mut m as *mut _ as _, 0, dpi);
+        let mut f = m.lfMessageFont;
+        if got == 0 {
+            f = zeroed();
+            f.lfHeight = -scale(12, dpi);
+            f.lfCharSet = DEFAULT_CHARSET as u8;
+            f.lfQuality = CLEARTYPE_QUALITY as u8;
+        }
+        let font = CreateFontIndirectW(&f);
+        f.lfHeight = f.lfHeight * 3 / 2;
+        f.lfWeight = FW_SEMIBOLD as i32;
+        (font, CreateFontIndirectW(&f))
+    }
+}
+
+/// A function of a system DLL, by name: loaded here, not imported, so the
+/// DLL is in EdgePad only once the window is open (spec 8). With the DLL,
+/// to free once done with the function.
+unsafe fn system_proc(dll: *const u16, name: &[u8]) -> Option<(HMODULE, unsafe extern "system" fn() -> isize)> {
+    unsafe {
+        let module = LoadLibraryExW(dll, null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if module.is_null() {
+            return None;
+        }
+        match GetProcAddress(module, name.as_ptr()) {
+            Some(f) => Some((module, f)),
+            None => {
+                FreeLibrary(module);
+                None
+            }
+        }
+    }
+}
+
+/// Make the title bar dark or light.
+unsafe fn title_bar(hwnd: HWND, dark: bool) {
+    type SetAttribute = unsafe extern "system" fn(HWND, u32, *const core::ffi::c_void, u32) -> i32;
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    let dark: i32 = dark.into();
+    unsafe {
+        let Some((dwm, f)) = system_proc(w!("dwmapi.dll"), b"DwmSetWindowAttribute\0") else { return };
+        let set: SetAttribute = std::mem::transmute(f);
+        set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const i32 as _, 4);
+        FreeLibrary(dwm);
+    }
+}
+
+/// Draw `buttons` dark or light. The dark look of Windows's own controls
+/// is the theme File Explorer uses, "DarkMode_Explorer", which Windows
+/// does not document; light, they keep their own theme, the default, which
+/// costs no more memory to load.
+unsafe fn button_theme(buttons: &[HWND], dark: bool) {
+    type SetTheme = unsafe extern "system" fn(HWND, *const u16, *const u16) -> i32;
+    unsafe {
+        let Some((uxtheme, f)) = system_proc(w!("uxtheme.dll"), b"SetWindowTheme\0") else { return };
+        let set: SetTheme = std::mem::transmute(f);
+        let name = if dark { w!("DarkMode_Explorer") } else { null() };
+        for &b in buttons {
+            set(b, name, null());
+        }
+        FreeLibrary(uxtheme);
+    }
+}
+
+/// The activation context of the manifest embedded as resource 2 (see
+/// build.rs), which asks for comctl32 v6.
+unsafe fn make_context() -> HANDLE {
+    const ACTCTX_FLAG_RESOURCE_NAME_VALID: u32 = 0x8;
+    const ACTCTX_FLAG_HMODULE_VALID: u32 = 0x80;
+    unsafe {
+        let mut c: ACTCTXW = zeroed();
+        c.cbSize = size_of::<ACTCTXW>() as u32;
+        c.dwFlags = ACTCTX_FLAG_RESOURCE_NAME_VALID | ACTCTX_FLAG_HMODULE_VALID;
+        c.hModule = GetModuleHandleW(null());
+        c.lpResourceName = 2 as *const u16;
+        let context = CreateActCtxW(&c);
+        if context == INVALID_HANDLE_VALUE {
+            debug_log!("設定画面: comctl32 v6 を使えない（旧来の見た目で開く）");
+        }
+        context
+    }
+}
+
+/// Run `f` with `context` active: the parts it makes are comctl32 v6's.
+unsafe fn in_context<R>(context: HANDLE, f: impl FnOnce() -> R) -> R {
+    unsafe {
+        let mut cookie = 0;
+        let on = context != INVALID_HANDLE_VALUE && ActivateActCtx(context, &mut cookie) != 0;
+        let r = f();
+        if on {
+            DeactivateActCtx(0, cookie);
+        }
+        r
+    }
 }
 
 unsafe fn register() -> bool {
@@ -194,57 +364,31 @@ unsafe fn register() -> bool {
         return true;
     }
     unsafe {
-        let instance = GetModuleHandleW(null());
-        for (class, proc_, cursor) in [
-            (w!("EdgePadSettings"), wnd_proc as unsafe extern "system" fn(_, _, _, _) -> _, IDC_ARROW),
-            (w!("EdgePadSettingsTab"), part_proc, IDC_HAND),
-            (w!("EdgePadSettingsButton"), part_proc, IDC_HAND),
-            (w!("EdgePadSettingsStatus"), part_proc, IDC_ARROW),
-            (w!("EdgePadSettingsLabel"), part_proc, IDC_ARROW),
-            (w!("EdgePadSettingsNote"), part_proc, IDC_ARROW),
-            (w!("EdgePadSettingsChoice"), part_proc, IDC_HAND),
-            (w!("EdgePadSettingsField"), fields::box_proc, IDC_IBEAM),
-        ] {
-            let mut wc: WNDCLASSW = zeroed();
-            wc.lpfnWndProc = Some(proc_);
-            wc.hInstance = instance;
-            wc.hCursor = LoadCursorW(null_mut(), cursor);
-            wc.lpszClassName = class;
-            if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
-                debug_log!("設定画面の窓クラスを登録できない");
-                return false;
-            }
+        let mut wc: WNDCLASSW = zeroed();
+        wc.lpfnWndProc = Some(wnd_proc);
+        wc.hInstance = GetModuleHandleW(null());
+        wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+        wc.lpszClassName = w!("EdgePadSettings");
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            debug_log!("設定画面の窓クラスを登録できない");
+            return false;
         }
     }
     REGISTERED.set(true);
     true
 }
 
-/// A part of `parent` of `kind`: a tab, button, status line, or a part of
-/// a row. Made hidden, to be shown once it is in its place. One that is
-/// pressed is a stop of the Tab key; a box holds the edit control that is.
-unsafe fn part(parent: HWND, class: *const u16, text: &str, id: usize, kind: isize) -> HWND {
+/// A part of `parent` of `class` and `style`, with `text` and `id`; made
+/// hidden, to be shown once it is in its place.
+unsafe fn part(parent: HWND, class: *const u16, text: &str, id: usize, style: u32) -> HWND {
     unsafe {
         let text = wide(text);
-        let stop = if pressed_part(kind) { WS_TABSTOP } else { 0 };
-        let ex = if kind == FIELD_BOX { WS_EX_CONTROLPARENT } else { 0 };
-        let hwnd = CreateWindowExW(
-            ex,
-            class,
-            text.as_ptr(),
-            WS_CHILD | stop,
-            0,
-            0,
-            1,
-            1,
-            parent,
-            id as HMENU,
-            GetModuleHandleW(null()),
-            null(),
-        );
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, kind);
-        hwnd
+        CreateWindowExW(0, class, text.as_ptr(), WS_CHILD | style, 0, 0, 1, 1, parent, id as HMENU, GetModuleHandleW(null()), null())
     }
+}
+
+unsafe fn button(parent: HWND, text: &str, id: usize) -> HWND {
+    unsafe { part(parent, w!("Button"), text, id, WS_TABSTOP | BS_PUSHBUTTON as u32) }
 }
 
 /// The settings file, read no further than one byte past what the parser
@@ -255,34 +399,26 @@ fn read_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Make the title bar dark with a dark palette, light with a light one.
-///
-/// dwmapi.dll is loaded here, not imported: imported, it would sit in every
-/// EdgePad from the start, settings opened or not, its pages counted
-/// against the idle memory target (spec 8).
-unsafe fn title_bar(hwnd: HWND) {
-    type SetAttribute = unsafe extern "system" fn(HWND, u32, *const core::ffi::c_void, u32) -> i32;
-    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
-    let dark: i32 = edgepad_core::theme::is_dark(panel::palette().background).into();
+/// Windows's colours may have changed: draw the window again in them.
+unsafe fn restyle() {
+    let now = look();
+    let Some(old) = PAINT.get().filter(|p| p.look != now) else { return };
+    let Some((hwnd, buttons)) = with_editor(|e| {
+        let buttons: Vec<HWND> = [e.open_text, e.save].into_iter().chain(e.answers.iter().copied()).collect();
+        (e.hwnd, buttons)
+    }) else {
+        return;
+    };
+    debug_log!("設定画面: 配色の変更");
     unsafe {
-        let dwm = LoadLibraryExW(w!("dwmapi.dll"), null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if dwm.is_null() {
-            return;
-        }
-        if let Some(f) = GetProcAddress(dwm, b"DwmSetWindowAttribute\0".as_ptr()) {
-            let set: SetAttribute = std::mem::transmute(f);
-            set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const i32 as _, 4);
-        }
-        FreeLibrary(dwm);
-    }
-}
-
-/// The panels' colours changed: draw the window again in them.
-pub unsafe fn restyle() {
-    let Some(hwnd) = with_editor(|e| e.hwnd) else { return };
-    unsafe {
-        title_bar(hwnd);
-        RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+        let background = CreateSolidBrush(colorref(now.background));
+        let sidebar = CreateSolidBrush(colorref(now.sidebar));
+        PAINT.set(Some(Paint { look: now, background, sidebar, ..old }));
+        DeleteObject(old.background);
+        DeleteObject(old.sidebar);
+        title_bar(hwnd, now.dark);
+        button_theme(&buttons, now.dark);
+        RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
     }
 }
 
@@ -313,10 +449,11 @@ pub unsafe fn open() {
         if !register() {
             return;
         }
+        let title = wide(TITLE);
         let hwnd = CreateWindowExW(
             EX_STYLE,
             w!("EdgePadSettings"),
-            w!("EdgePad の設定"),
+            title.as_ptr(),
             STYLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -332,8 +469,39 @@ pub unsafe fn open() {
             tray::notify("設定画面を開けませんでした");
             return;
         }
-        let tabs = TABS.map(|_| null_mut());
-        let mut editor = Editor {
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        DPI.set(dpi);
+        let context = make_context();
+        let parts = in_context(context, || {
+            let list = LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT;
+            let sidebar = part(hwnd, w!("ListBox"), "", SIDEBAR, WS_TABSTOP | list as u32);
+            let heading = part(hwnd, w!("Static"), PAGES[0], HEADING, SS_NOPREFIX);
+            let status = part(hwnd, w!("Static"), "", STATUS, SS_NOPREFIX);
+            let shown = path.display().to_string();
+            let path_part = part(hwnd, w!("Static"), &shown, PATH, SS_NOPREFIX | SS_CENTERIMAGE | SS_PATHELLIPSIS);
+            let open_text = button(hwnd, "テキストで開く", OPEN_TEXT);
+            let save = button(hwnd, "保存", SAVE);
+            [sidebar, heading, status, path_part, open_text, save]
+        });
+        if parts.iter().any(|p| p.is_null()) {
+            debug_log!("設定画面の部品を作れない");
+            DestroyWindow(hwnd);
+            if context != INVALID_HANDLE_VALUE {
+                ReleaseActCtx(context);
+            }
+            DPI.set(0);
+            tray::notify("設定画面を開けませんでした");
+            return;
+        }
+        let [sidebar, heading, status, path_part, open_text, save] = parts;
+        for page in PAGES {
+            let text = wide(page);
+            SendMessageW(sidebar, LB_ADDSTRING, 0, text.as_ptr() as LPARAM);
+        }
+        SendMessageW(sidebar, LB_SETCURSEL, 0, 0);
+        let (font, heading_font) = fonts_for(dpi);
+        let look = look();
+        let editor = Editor {
             hwnd,
             path,
             doc,
@@ -341,59 +509,62 @@ pub unsafe fn open() {
             known,
             outside: None,
             asked: None,
-            tabs,
-            tab: 0,
-            rows: Vec::new(),
-            edge: 0,
-            focus: null_mut(),
-            save: null_mut(),
-            status: null_mut(),
+            sidebar,
+            heading,
+            status,
+            path_part,
+            open_text,
+            save,
             answers: Vec::new(),
-            font: null_mut(),
-            dpi: GetDpiForWindow(hwnd).max(96),
+            focus: sidebar,
+            marked: false,
+            font,
+            heading_font,
+            dpi,
+            context,
         };
-        for (i, name) in TABS.iter().enumerate() {
-            editor.tabs[i] = part(hwnd, w!("EdgePadSettingsTab"), name, TAB + i, TAB_PART);
-        }
-        let rows = fields::make(hwnd);
-        editor.save = part(hwnd, w!("EdgePadSettingsButton"), "保存", SAVE, BUTTON);
-        editor.status = part(hwnd, w!("EdgePadSettingsStatus"), "", 0, STATUS);
-        let Some(rows) = rows.filter(|_| !editor.tabs.iter().chain([&editor.save, &editor.status]).any(|p| p.is_null()))
-        else {
-            debug_log!("設定画面の部品を作れない");
-            DestroyWindow(hwnd);
-            tray::notify("設定画面を開けませんでした");
-            return;
-        };
-        editor.rows = rows;
-        editor.font = font_for(editor.dpi);
-        DPI.set(editor.dpi);
-        fields::set_font(&editor);
-        fields::refresh(&mut editor);
-        let dpi = editor.dpi;
+        PAINT.set(Some(Paint {
+            look,
+            background: CreateSolidBrush(colorref(look.background)),
+            sidebar: CreateSolidBrush(colorref(look.sidebar)),
+            font,
+            path: path_part,
+        }));
+        set_fonts(&editor);
         EDITOR.set(Some(editor));
-        title_bar(hwnd);
+        title_bar(hwnd, look.dark);
+        button_theme(&[open_text, save], look.dark);
+        // The focus shows from the start, not only once a key is pressed.
+        SendMessageW(hwnd, WM_CHANGEUISTATE, (UIS_CLEAR | UISF_HIDEFOCUS << 16) as usize, 0);
         debug_log!("設定画面を開く");
         size_for(hwnd, dpi, true);
-        show_tab(0);
+        show_page(0);
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
+        SetFocus(sidebar);
+    }
+}
+
+/// Give the parts the window's fonts, and the sidebar's items their height.
+unsafe fn set_fonts(e: &Editor) {
+    unsafe {
+        for p in [e.sidebar, e.status, e.path_part, e.open_text, e.save].iter().chain(&e.answers) {
+            SendMessageW(*p, WM_SETFONT, e.font as WPARAM, 1);
+        }
+        SendMessageW(e.heading, WM_SETFONT, e.heading_font as WPARAM, 1);
+        SendMessageW(e.sidebar, LB_SETITEMHEIGHT, 0, scale(ITEM_H, e.dpi) as LPARAM);
     }
 }
 
 /// Size the window for `dpi`, its client area CLIENT_W by CLIENT_H logical
-/// pixels, or as much of that as its monitor's work area has room for
-/// (the rows then come closer together, `fields::place`): with `centre`,
-/// in the middle of the work area, else where it is, moved only as far as
-/// keeps it on the monitor it is on.
+/// pixels, or as much of that as its monitor's work area has room for:
+/// with `centre`, in the middle of the work area, else where it is, moved
+/// only as far as keeps it on the monitor it is on.
 unsafe fn size_for(hwnd: HWND, dpi: u32, centre: bool) {
     unsafe {
         let mut r = RECT { left: 0, top: 0, right: scale(CLIENT_W, dpi), bottom: scale(CLIENT_H, dpi) };
         AdjustWindowRectExForDpi(&mut r, STYLE, 0, EX_STYLE, dpi);
-        let mut info: MONITORINFO = zeroed();
-        info.cbSize = size_of::<MONITORINFO>() as u32;
-        GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
-        let a = info.rcWork;
+        let a = work_area(hwnd);
         let (w, h) = ((r.right - r.left).min(a.right - a.left), (r.bottom - r.top).min(a.bottom - a.top));
         let (x, y) = if centre {
             (a.left + (a.right - a.left - w) / 2, a.top + (a.bottom - a.top - h) / 2)
@@ -406,67 +577,98 @@ unsafe fn size_for(hwnd: HWND, dpi: u32, centre: bool) {
     }
 }
 
-/// Place the parts in the window as large as it is now.
+/// The work area of the monitor `hwnd` is on.
+unsafe fn work_area(hwnd: HWND) -> RECT {
+    unsafe {
+        let mut info: MONITORINFO = zeroed();
+        info.cbSize = size_of::<MONITORINFO>() as u32;
+        GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
+        info.rcWork
+    }
+}
+
+/// Place the parts in the window as large as it is now: the sidebar down
+/// the left; the heading top right; the status line, and any answers in a
+/// row under it, above the bottom row; along the bottom, the path, then
+/// テキストで開く and 保存 in the right corner.
 unsafe fn lay_out() {
-    let Some((hwnd, dpi, tabs, save, status, answers)) =
-        with_editor(|e| (e.hwnd, e.dpi, e.tabs, e.save, e.status, e.answers.clone()))
-    else {
+    let Some((hwnd, dpi, parts, answers)) = with_editor(|e| {
+        (e.hwnd, e.dpi, [e.sidebar, e.heading, e.status, e.path_part, e.open_text, e.save], e.answers.clone())
+    }) else {
         return;
     };
+    let [sidebar, heading, status, path_part, open_text, save] = parts;
     unsafe {
         let mut client: RECT = zeroed();
         GetClientRect(hwnd, &mut client);
         let s = |v| scale(v, dpi);
-        let (m, row, button) = (s(MARGIN), s(ROW_H), s(BUTTON_W));
-        // The rows, down to the status line.
-        let status_top = client.bottom - m - row - m - s(STATUS_H);
-        if with_editor(|e| fields::place(e, client, status_top - m)).is_none() {
-            return;
+        let (m, bh) = (s(MARGIN), s(BUTTON_H));
+        let bottom = client.bottom - m - bh;
+        let mut x = client.right - m - s(BUTTON_W);
+        MoveWindow(save, x, bottom, s(BUTTON_W), bh, 1);
+        x -= m + s(BUTTON_W);
+        MoveWindow(open_text, x, bottom, s(BUTTON_W), bh, 1);
+        MoveWindow(path_part, m, bottom, (x - 2 * m).max(0), bh, 1);
+
+        let side_bottom = bottom - m;
+        MoveWindow(sidebar, m, m, s(SIDEBAR_W), (side_bottom - m).max(0), 1);
+        let left = m + s(SIDEBAR_W) + 2 * m;
+        let width = (client.right - m - left).max(0);
+        MoveWindow(heading, left, m, width, s(HEADING_H), 1);
+
+        // The answers right aligned in their row; the status line above.
+        let mut above = side_bottom;
+        if !answers.is_empty() {
+            above -= bh;
+            let mut x = client.right - m;
+            for &answer in answers.iter().rev() {
+                x -= s(ANSWER_W);
+                MoveWindow(answer, x, above, s(ANSWER_W), bh, 1);
+                x -= m;
+            }
+            above -= m;
         }
-        for (i, &tab) in tabs.iter().enumerate() {
-            MoveWindow(tab, m + i as i32 * (s(TAB_W) + m), m, s(TAB_W), row, 1);
-        }
-        // The buttons along the bottom, 保存 on the right; the status line,
-        // and any question, the whole width above them.
-        let y = client.bottom - m - row;
-        let mut x = client.right - m - button;
-        MoveWindow(save, x, y, button, row, 1);
-        for &answer in answers.iter().rev() {
-            x -= m + button;
-            MoveWindow(answer, x, y, button, row, 1);
-        }
-        MoveWindow(status, m, status_top, (client.right - 2 * m).max(0), s(STATUS_H), 1);
-        // In their places now: shown, and not before; the rows, those of
-        // the tab shown, as they stand.
-        for &part in tabs.iter().chain([&save, &status]).chain(&answers) {
+        MoveWindow(status, left, above - s(STATUS_H), width, s(STATUS_H), 1);
+        // In their places now: shown, and not before.
+        for &part in parts.iter().chain(&answers) {
             ShowWindow(part, SW_SHOWNA);
         }
-        with_editor(|e| fields::show(e));
         InvalidateRect(hwnd, null(), 1);
     }
 }
 
-/// Show tab `index`, and its rows.
-unsafe fn show_tab(index: usize) {
-    let Some(tabs) = with_editor(|e| {
-        e.tab = index;
-        unsafe { fields::show(e) };
-        e.tabs
-    }) else {
-        return;
-    };
-    for (i, &tab) in tabs.iter().enumerate() {
-        unsafe {
-            SetWindowLongPtrW(tab, GWLP_USERDATA, if i == index { TAB_SHOWN } else { TAB_PART });
-            InvalidateRect(tab, null(), 1);
+/// Show page `index`, under its heading, and choose it in the sidebar.
+unsafe fn show_page(index: usize) {
+    let Some((sidebar, heading)) = with_editor(|e| (e.sidebar, e.heading)) else { return };
+    unsafe {
+        if SendMessageW(sidebar, LB_GETCURSEL, 0, 0) != index as LRESULT {
+            SendMessageW(sidebar, LB_SETCURSEL, index, 0);
         }
+        let text = wide(PAGES[index]);
+        SetWindowTextW(heading, text.as_ptr());
     }
-    tray::test_event(&format!("settings: tab {}", TABS[index]));
+    tray::test_event(&format!("settings: page {}", PAGES[index]));
 }
 
 fn set_status(e: &Editor, text: &str) {
     let text = wide(text);
     unsafe { SetWindowTextW(e.status, text.as_ptr()) };
+}
+
+/// Show whether the window holds changes it has not saved: a ● before the
+/// title, and 保存 the default button.
+unsafe fn mark_unsaved(e: &mut Editor) {
+    let now = unsaved(e);
+    if now == e.marked {
+        return;
+    }
+    e.marked = now;
+    let title = wide(&if now { format!("● {TITLE}") } else { TITLE.into() });
+    let style = if now { BS_DEFPUSHBUTTON } else { BS_PUSHBUTTON };
+    unsafe {
+        SetWindowTextW(e.hwnd, title.as_ptr());
+        SendMessageW(e.save, BM_SETSTYLE, style as WPARAM, 1);
+    }
 }
 
 /// Question `ask`, as the status line puts it.
@@ -489,12 +691,6 @@ fn tell(e: &Editor, reason: &str) {
     }
 }
 
-/// A reason told is done with: the status line says only the question
-/// asked now, if any.
-fn ask_reason(e: &Editor) {
-    set_status(e, e.asked.map_or("", |a| question(e, a)));
-}
-
 /// Ask `ask` in the status line, its answers as buttons; or, with none,
 /// take a question away.
 unsafe fn ask(ask: Option<Ask>) {
@@ -510,13 +706,15 @@ unsafe fn ask(ask: Option<Ask>) {
         };
         set_status(e, ask.map_or("", |a| question(e, a)));
         for &(label, id) in answers {
-            let answer = part(e.hwnd, w!("EdgePadSettingsButton"), label, id, BUTTON);
+            let answer = in_context(e.context, || button(e.hwnd, label, id));
             if answer.is_null() {
                 debug_log!("設定画面の答えのボタンを作れない: {label}");
                 continue;
             }
+            SendMessageW(answer, WM_SETFONT, e.font as WPARAM, 1);
             e.answers.push(answer);
         }
+        button_theme(&e.answers, PAINT.get().is_some_and(|p| p.look.dark));
     });
     if made.is_some() {
         unsafe { lay_out() };
@@ -565,6 +763,7 @@ fn save(e: &mut Editor) -> Result<(), String> {
     e.known = bytes;
     // Saved, the window's is the file: a change outside is answered.
     e.outside = None;
+    unsafe { mark_unsaved(e) };
     Ok(())
 }
 
@@ -605,8 +804,6 @@ pub unsafe fn may_exit() -> bool {
     if !is_open() {
         return true;
     }
-    // What is typed and not yet entered counts too.
-    unsafe { enter_focused() };
     // Open but in use: not now, rather than past changes.
     let Some((hwnd, unsaved)) = with_editor(|e| (e.hwnd, unsaved(e))) else { return false };
     if !unsaved {
@@ -621,31 +818,14 @@ pub unsafe fn may_exit() -> bool {
     false
 }
 
-/// Enter what is typed in the field with the focus, if any: before
-/// saving, or closing.
-unsafe fn enter_focused() {
-    unsafe {
-        let focus = GetFocus();
-        if with_editor(|e| fields::is_edit(e, focus)) == Some(true) {
-            fields::commit(GetDlgCtrlID(GetParent(focus)) as usize);
-        }
-    }
-}
-
-/// A part was clicked, or a field changed.
+/// A button was pressed.
 unsafe fn command(id: usize) {
     unsafe {
-        if (TAB..TAB + TABS.len()).contains(&id) {
-            return show_tab(id - TAB);
-        }
-        if fields::is_field(id) {
-            return fields::commit(id);
-        }
-        if fields::is_reset(id) {
-            return fields::reset(id);
-        }
-        if matches!(id, SAVE | SAVE_AND_CLOSE) {
-            enter_focused();
+        if id == OPEN_TEXT {
+            if let Some((hwnd, path)) = with_editor(|e| (e.hwnd, e.path.clone())) {
+                tray::open_file(hwnd, &path);
+            }
+            return;
         }
         // What is left to do once the window is let go: close it, or take
         // the question away and say what was done in its place.
@@ -682,7 +862,7 @@ unsafe fn command(id: usize) {
                         e.doc = doc;
                         e.base = bytes.clone();
                         e.known = bytes;
-                        fields::refresh(e);
+                        mark_unsaved(e);
                         said = "読み直しました";
                         true
                     }
@@ -728,15 +908,61 @@ unsafe fn command(id: usize) {
             if ask_again {
                 ask(Some(Ask::Changed));
             } else {
-                // Saved with a field's value turned away: that value is not
-                // in the file, which the status line goes on saying.
-                with_editor(|e| match fields::standing_reason(e).filter(|_| id == SAVE) {
-                    Some(reason) => set_status(e, &format!("{said}\n保存していない値があります: {reason}")),
-                    None => set_status(e, said),
-                });
+                with_editor(|e| set_status(e, said));
             }
         }
     }
+}
+
+/// Paint sidebar item `d`: on the sidebar's colour, or the accent when
+/// chosen; its text inset from the left; framed while it has the focus,
+/// as the list box shows it.
+unsafe fn draw_item(d: &DrawItem) {
+    let Some(Paint { look, font, .. }) = PAINT.get() else { return };
+    let Some(&page) = PAGES.get(d.item as usize) else { return };
+    unsafe {
+        let chosen = d.state & ODS_SELECTED != 0;
+        let (fill, ink) = if chosen { (look.accent, look.accent_text) } else { (look.sidebar, look.text) };
+        let brush = CreateSolidBrush(colorref(fill));
+        FillRect(d.dc, &d.rect, brush);
+        DeleteObject(brush);
+        let old = SelectObject(d.dc, font);
+        SetBkMode(d.dc, TRANSPARENT as i32);
+        SetTextColor(d.dc, colorref(ink));
+        let pad = scale(ITEM_PAD, window_dpi(d.hwnd));
+        let mut r = RECT { left: d.rect.left + pad, ..d.rect };
+        let text = wide(page);
+        DrawTextW(d.dc, text.as_ptr(), -1, &mut r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(d.dc, old);
+        if d.state & ODS_FOCUS != 0 && d.state & ODS_NOFOCUSRECT == 0 {
+            let b = scale(2, window_dpi(d.hwnd));
+            let r = RECT { left: d.rect.left + b, top: d.rect.top + b, right: d.rect.right - b, bottom: d.rect.bottom - b };
+            SetTextColor(d.dc, colorref(ink));
+            SetBkColor(d.dc, colorref(fill));
+            DrawFocusRect(d.dc, &r);
+        }
+    }
+}
+
+/// The colours of a part, for WM_CTLCOLOR*: its text, and its background
+/// as a brush.
+unsafe fn part_colours(dc: HDC, part: HWND) -> LRESULT {
+    let Some(Paint { look, background: brush, sidebar: side, path, .. }) = PAINT.get() else { return 0 };
+    let class = unsafe {
+        let mut name = [0u16; 16];
+        let n = GetClassNameW(part, name.as_mut_ptr(), 16);
+        String::from_utf16_lossy(&name[..n.max(0) as usize])
+    };
+    let (ink, fill, brush) = match class.as_str() {
+        "ListBox" => (look.text, look.sidebar, side),
+        _ if part == path => (look.dim, look.background, brush),
+        _ => (look.text, look.background, brush),
+    };
+    unsafe {
+        SetTextColor(dc, colorref(ink));
+        SetBkColor(dc, colorref(fill));
+    }
+    brush as LRESULT
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -745,28 +971,32 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_ERASEBKGND => {
                 let mut r: RECT = zeroed();
                 GetClientRect(hwnd, &mut r);
-                let brush = CreateSolidBrush(colorref(panel::palette().background));
-                FillRect(wp as HDC, &r, brush);
-                DeleteObject(brush);
+                match PAINT.get().map(|p| p.background) {
+                    Some(brush) => {
+                        FillRect(wp as HDC, &r, brush);
+                    }
+                    None => {
+                        FillRect(wp as HDC, &r, GetSysColorBrush(COLOR_WINDOW));
+                    }
+                }
+                1
+            }
+            WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLORLISTBOX => part_colours(wp as HDC, lp as HWND),
+            WM_DRAWITEM if wp == SIDEBAR => {
+                draw_item(&*(lp as *const DrawItem));
                 1
             }
             WM_SIZE => {
                 lay_out();
                 0
             }
-            // No smaller than its rows at their closest, with the status
-            // line and buttons below them, and as wide as it opens; or as
-            // much of that as the work area has room for.
+            // No smaller than MIN_W by MIN_H, or as much of that as the
+            // work area has room for.
             WM_GETMINMAXINFO => {
-                let dpi = part_dpi(hwnd);
-                let s = |v| scale(v, dpi);
-                let high = ROW_TOP + fields::MIN_ROWS_H + MARGIN + STATUS_H + MARGIN + ROW_H + MARGIN;
-                let mut r = RECT { left: 0, top: 0, right: s(CLIENT_W), bottom: s(high) };
+                let dpi = window_dpi(hwnd);
+                let mut r = RECT { left: 0, top: 0, right: scale(MIN_W, dpi), bottom: scale(MIN_H, dpi) };
                 AdjustWindowRectExForDpi(&mut r, STYLE, 0, EX_STYLE, dpi);
-                let mut info: MONITORINFO = zeroed();
-                info.cbSize = size_of::<MONITORINFO>() as u32;
-                GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
-                let a = info.rcWork;
+                let a = work_area(hwnd);
                 let m = &mut *(lp as *mut MINMAXINFO);
                 m.ptMinTrackSize.x = (r.right - r.left).min(a.right - a.left);
                 m.ptMinTrackSize.y = (r.bottom - r.top).min(a.bottom - a.top);
@@ -784,12 +1014,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     return 0;
                 }
                 let resized = with_editor(|e| {
-                    let old = e.font;
-                    e.font = font_for(dpi);
+                    let old = (e.font, e.heading_font);
+                    (e.font, e.heading_font) = fonts_for(dpi);
+                    if let Some(p) = PAINT.get() {
+                        PAINT.set(Some(Paint { font: e.font, ..p }));
+                    }
                     e.dpi = dpi;
                     DPI.set(dpi);
-                    fields::set_font(e);
-                    DeleteObject(old);
+                    set_fonts(e);
+                    DeleteObject(old.0);
+                    DeleteObject(old.1);
                 });
                 if resized.is_some() {
                     size_for(hwnd, dpi, false);
@@ -797,7 +1031,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 0
             }
-            WM_COMMAND if wp >> 16 & 0xFFFF == 0 => {
+            // Windows's light or dark, or its accent, may have changed.
+            WM_SETTINGCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED => {
+                restyle();
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_COMMAND if wp & 0xFFFF == SIDEBAR => {
+                if (wp >> 16 & 0xFFFF) as u32 == LBN_SELCHANGE {
+                    let chosen = SendMessageW(lp as HWND, LB_GETCURSEL, 0, 0);
+                    if (0..PAGES.len() as LRESULT).contains(&chosen) {
+                        show_page(chosen as usize);
+                    }
+                }
+                0
+            }
+            WM_COMMAND if (wp >> 16 & 0xFFFF) as u32 == BN_CLICKED => {
                 command(wp & 0xFFFF);
                 0
             }
@@ -817,15 +1065,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 }
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
-            // Alt alone opens no menu: the window has none, and the
-            // system menu's mode would swallow the next click on a part.
+            // Alt alone opens no menu: the window has none, and the system
+            // menu's mode would hold the thread in its own loop, the panels'
+            // settings file unwatched and the next click on a part swallowed.
             // Alt+Space still opens the system menu.
             WM_SYSCOMMAND if wp & 0xFFF0 == SC_KEYMENU as usize && lp == 0 => 0,
             // With changes not saved, ask first (a question about a change
             // outside gives way: the answer to this one settles it too).
             // Nothing of the window's to lose, it just closes.
             WM_CLOSE => {
-                enter_focused();
                 match with_editor(|e| unsaved(e)) {
                     Some(true) => ask(Some(Ask::Closing)),
                     Some(false) => {
@@ -840,10 +1088,19 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_DESTROY => {
-                PRESSED.set((0, null_mut()));
                 DPI.set(0);
+                if let Some(p) = PAINT.take() {
+                    DeleteObject(p.background);
+                    DeleteObject(p.sidebar);
+                }
+                TAPPED.set((0, null_mut()));
                 if let Some(e) = EDITOR.take() {
-                    DeleteObject(e.font);
+                    for object in [e.font, e.heading_font] {
+                        DeleteObject(object);
+                    }
+                    if e.context != INVALID_HANDLE_VALUE {
+                        ReleaseActCtx(e.context);
+                    }
                     debug_log!("設定画面を閉じる");
                 }
                 0
@@ -852,7 +1109,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             _ if msg == test_set() => {
                 with_editor(|e| {
                     e.doc.set_value("general", "opacity", Some(&wp.to_string()));
-                    fields::refresh(e);
+                    mark_unsaved(e);
                 });
                 0
             }
@@ -861,112 +1118,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     }
 }
 
-/// A tab, button, status line, or a row's name, note or choice: drawn in
-/// the panels' colours, the tab shown and the buttons as keys, the rest on
-/// the background; a choice as `fields::draw_choice` has it. A part that is
-/// pressed takes the focus on a pointer going down on it, is framed while
-/// it has it, and tells the window when a pointer lets go on it.
-unsafe extern "system" fn part_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    unsafe {
-        let data = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-        let kind = data & !fields::WRONG;
-        match msg {
-            WM_ERASEBKGND => 1,
-            WM_PAINT => {
-                let mut ps: PAINTSTRUCT = zeroed();
-                let dc = BeginPaint(hwnd, &mut ps);
-                let c = panel::palette();
-                let (fill, ink) = match kind {
-                    TAB_SHOWN => (c.held, c.held_text),
-                    STATUS | LABEL => (c.background, c.text),
-                    NOTE => (c.background, fields::mix(c.text, c.background, 96)),
-                    _ => (c.face, c.text),
-                };
-                let mut r: RECT = zeroed();
-                GetClientRect(hwnd, &mut r);
-                let font = EDITOR.with(|e| e.try_borrow().ok().and_then(|e| e.as_ref().map(|e| e.font)));
-                let old = font.map(|f| SelectObject(dc, f));
-                if kind == CHOICE {
-                    fields::draw_choice(hwnd, dc, r, data & fields::WRONG != 0);
-                } else {
-                    let brush = CreateSolidBrush(colorref(fill));
-                    FillRect(dc, &r, brush);
-                    DeleteObject(brush);
-                    // The focus: a frame inside the edge, in the ink.
-                    if pressed_part(kind) && GetFocus() == hwnd {
-                        let brush = CreateSolidBrush(colorref(ink));
-                        let b = scale(2, part_dpi(hwnd));
-                        for i in 0..b {
-                            let f = RECT { left: r.left + i, top: r.top + i, right: r.right - i, bottom: r.bottom - i };
-                            FrameRect(dc, &f, brush);
-                        }
-                        DeleteObject(brush);
-                    }
-                    SetBkMode(dc, TRANSPARENT as i32);
-                    SetTextColor(dc, colorref(ink));
-                    let mut text = [0u16; 256];
-                    let n = GetWindowTextW(hwnd, text.as_mut_ptr(), 256);
-                    // The status line runs to two lines: a reason, and the
-                    // question it is about. Names and notes start at the left.
-                    let format = match kind {
-                        STATUS => DT_LEFT | DT_BOTTOM | DT_WORDBREAK | DT_END_ELLIPSIS,
-                        LABEL | NOTE => DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
-                        _ => DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
-                    };
-                    DrawTextW(dc, text.as_ptr(), n, &mut r, format);
-                }
-                if let Some(old) = old {
-                    SelectObject(dc, old);
-                }
-                EndPaint(hwnd, &ps);
-                0
-            }
-            WM_SETFOCUS | WM_KILLFOCUS => {
-                InvalidateRect(hwnd, null(), 1);
-                0
-            }
-            WM_SETTEXT => {
-                let r = DefWindowProcW(hwnd, msg, wp, lp);
-                InvalidateRect(hwnd, null(), 1);
-                r
-            }
-            WM_POINTERDOWN if pressed_part(kind) => {
-                PRESSED.set((pointer_id(wp), hwnd));
-                SetFocus(hwnd);
-                0
-            }
-            WM_POINTERUP if pressed_part(kind) => {
-                let pressed = PRESSED.get() == (pointer_id(wp), hwnd);
-                if pressed {
-                    PRESSED.set((0, null_mut()));
-                }
-                let mut r: RECT = zeroed();
-                GetWindowRect(hwnd, &mut r);
-                let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32);
-                let over = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-                if pressed && over && kind == CHOICE {
-                    if let Some(value) = fields::option_at(hwnd, x) {
-                        fields::choose(hwnd, value);
-                    }
-                } else if pressed && over {
-                    let id = GetDlgCtrlID(hwnd) as usize;
-                    PostMessageW(GetParent(hwnd), WM_COMMAND, id, 0);
-                }
-                0
-            }
-            _ => DefWindowProcW(hwnd, msg, wp, lp),
-        }
-    }
-}
-
-/// A key for the settings window, before it is dispatched: Tab and
-/// Shift+Tab move the focus along the parts, Enter enters what is typed,
-/// Enter and Space press a button or tab and turn a choice on to its next
-/// option, the arrows step a choice, Esc closes, Ctrl+S saves, and Ctrl+A
-/// selects what is typed. Whether it took the key; a key for the window it
-/// did not take has its characters made, for the edit controls.
-pub unsafe fn key(msg: &MSG) -> bool {
-    if !(WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message) {
+/// A message for the settings window, before it is dispatched: a key, or a
+/// finger while a panel holds the mouse. Whether it took the message.
+pub unsafe fn take(msg: &MSG) -> bool {
+    let keyed = (WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message);
+    let pointed = matches!(msg.message, WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP);
+    if !keyed && !pointed {
         return false;
     }
     let Some(hwnd) = EDITOR.with(|e| e.try_borrow().ok().and_then(|e| e.as_ref().map(|e| e.hwnd))) else {
@@ -976,12 +1133,75 @@ pub unsafe fn key(msg: &MSG) -> bool {
         if msg.hwnd != hwnd && IsChild(hwnd, msg.hwnd) == 0 {
             return false;
         }
+        if keyed { key(hwnd, msg) } else { finger(hwnd, msg) }
+    }
+}
+
+/// A finger on a part of the settings window while a panel holds the
+/// mouse, for a key it presses: taken as a tap here, not passed on.
+/// Passed on, Windows would make mouse input of it, and the mouse's own
+/// press would end there, its key left held with no lift to come.
+unsafe fn finger(hwnd: HWND, msg: &MSG) -> bool {
+    let id = pointer_id(msg.wParam);
+    unsafe {
+        match msg.message {
+            WM_POINTERDOWN => {
+                let held = GetCapture();
+                let mut kind = 0;
+                let mouse = GetPointerType(id, &mut kind) == 0 || kind == PT_MOUSE;
+                if mouse || held.is_null() || held == hwnd || IsChild(hwnd, held) != 0 {
+                    return false;
+                }
+                TAPPED.set((id, msg.hwnd));
+                SetFocus(msg.hwnd);
+                true
+            }
+            WM_POINTERUPDATE => TAPPED.get().0 == id && id != 0,
+            _ => {
+                let (tapped, part) = TAPPED.get();
+                if tapped != id || id == 0 {
+                    return false;
+                }
+                TAPPED.set((0, null_mut()));
+                let (x, y) = pointer_at(msg.lParam);
+                if WindowFromPoint(POINT { x, y }) == part {
+                    tap(hwnd, part, x, y);
+                }
+                true
+            }
+        }
+    }
+}
+
+/// A finger tapped `part` at screen `x`, `y`: choose the page there, or
+/// press the button.
+unsafe fn tap(hwnd: HWND, part: HWND, x: i32, y: i32) {
+    unsafe {
+        let id = GetDlgCtrlID(part) as usize;
+        if id == SIDEBAR {
+            let mut p = POINT { x, y };
+            ScreenToClient(part, &mut p);
+            let at = SendMessageW(part, LB_ITEMFROMPOINT, 0, (p.x & 0xFFFF | p.y << 16) as LPARAM);
+            // The high word says the point is past the last item.
+            let item = (at & 0xFFFF) as usize;
+            if at >> 16 & 0xFFFF == 0 && item < PAGES.len() {
+                show_page(item);
+            }
+        } else if is_button(part) {
+            PostMessageW(hwnd, WM_COMMAND, id, part as LPARAM);
+        }
+    }
+}
+
+/// A key for the settings window: Tab and Shift+Tab move the focus along
+/// the parts, Enter presses the button with the focus, Esc closes and
+/// Ctrl+S saves. Whether it took the key; a key it did not take has its
+/// characters made, for the parts that take text.
+unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
+    unsafe {
         if msg.message == WM_KEYDOWN {
             let focus = GetFocus();
             let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
-            let in_edit = with_editor(|e| fields::is_edit(e, focus)) == Some(true);
-            let kind = if IsChild(hwnd, focus) != 0 && !in_edit { GetWindowLongPtrW(focus, GWLP_USERDATA) & !fields::WRONG } else { -1 };
-            let pressed = pressed_part(kind) && GetParent(focus) == hwnd;
             let took = match msg.wParam as u16 {
                 VK_TAB if !ctrl => {
                     let from = if IsChild(hwnd, focus) != 0 { focus } else { null_mut() };
@@ -999,28 +1219,8 @@ pub unsafe fn key(msg: &MSG) -> bool {
                     PostMessageW(hwnd, WM_COMMAND, SAVE, 0);
                     true
                 }
-                k if k == b'A' as u16 && ctrl && in_edit => {
-                    SendMessageW(focus, fields::EM_SETSEL, 0, -1);
-                    true
-                }
-                VK_RETURN if in_edit => {
-                    PostMessageW(hwnd, WM_COMMAND, GetDlgCtrlID(GetParent(focus)) as usize, 0);
-                    true
-                }
-                VK_RETURN | VK_SPACE if pressed && kind == CHOICE => {
-                    fields::step(focus, 1, true);
-                    true
-                }
-                VK_RETURN | VK_SPACE if pressed => {
-                    PostMessageW(hwnd, WM_COMMAND, GetDlgCtrlID(focus) as usize, 0);
-                    true
-                }
-                VK_UP | VK_LEFT if pressed && kind == CHOICE => {
-                    fields::step(focus, -1, false);
-                    true
-                }
-                VK_DOWN | VK_RIGHT if pressed && kind == CHOICE => {
-                    fields::step(focus, 1, false);
+                VK_RETURN if GetParent(focus) == hwnd && is_button(focus) => {
+                    PostMessageW(hwnd, WM_COMMAND, GetDlgCtrlID(focus) as usize, focus as LPARAM);
                     true
                 }
                 _ => false,
@@ -1032,4 +1232,11 @@ pub unsafe fn key(msg: &MSG) -> bool {
         TranslateMessage(msg);
     }
     false
+}
+
+/// Whether `hwnd` is a button.
+unsafe fn is_button(hwnd: HWND) -> bool {
+    let mut name = [0u16; 8];
+    let n = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), 8) };
+    String::from_utf16_lossy(&name[..n.max(0) as usize]) == "Button"
 }

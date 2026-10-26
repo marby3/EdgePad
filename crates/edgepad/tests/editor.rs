@@ -244,8 +244,8 @@ fn in_front_the_window_switches_no_profile_and_lets_no_key_go() {
     touch.up(1);
 
     // A mouse holding a key on the panel and dragged off it, a finger
-    // tapping the sidebar meanwhile: the key comes up when the mouse lets go,
-    // off the panel as it is, as ever.
+    // tapping the sidebar meanwhile: the key comes up when the mouse lets
+    // go, off the panel as it is, as ever; and the tap chose a page.
     let before = log.keys().len();
     let m = primary_monitor();
     let off = test_window("EdgePadTestEditorOff", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, RECT { left: m.left + 200, top: m.bottom - 200, right: m.left + 400, bottom: m.bottom - 100 });
@@ -262,5 +262,6 @@ fn in_front_the_window_switches_no_profile_and_lets_no_key_go() {
     mouse_up_at(away);
     let _ = within_3s(|| log.keys().len() >= before + 2);
     assert_eq!(log.keys()[before..], [(b'B' as u16, false), (b'B' as u16, true)], "B down, and up with the mouse");
+    assert_eq!(heading(editor), "辺と表示", "the page tapped");
 }
 

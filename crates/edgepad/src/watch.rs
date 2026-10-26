@@ -80,11 +80,7 @@ pub unsafe fn reload(force: bool) {
             UNREADABLE.set(None);
             let panels = unsafe { profile::use_config(Some(config)) };
             let built = unsafe { panel::rebuild(&panels) };
-            unsafe {
-                tray::set_hotkey(panels.hotkey);
-                // The theme may have changed with the file.
-                editor::restyle();
-            }
+            unsafe { tray::set_hotkey(panels.hotkey) };
             match built {
                 true => debug_log!("再読込: パネル {} 枚", panels.edges.len()),
                 false => debug_log!("再読込: パネルを作れないものがあった"),
@@ -139,7 +135,7 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
                     close(&watches);
                     return;
                 }
-                if unsafe { editor::key(&msg) } {
+                if unsafe { editor::take(&msg) } {
                     continue;
                 }
                 unsafe { DispatchMessageW(&msg) };
@@ -159,7 +155,7 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
             close(&watches);
             let mut msg: MSG = unsafe { zeroed() };
             while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {
-                if unsafe { editor::key(&msg) } {
+                if unsafe { editor::take(&msg) } {
                     continue;
                 }
                 unsafe { DispatchMessageW(&msg) };

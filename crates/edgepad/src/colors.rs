@@ -23,12 +23,12 @@ fn dword(key: *const u16, name: *const u16) -> Option<u32> {
 
 /// Whether apps are to be dark ("既定のアプリ モード"). Light when unset,
 /// as in Windows.
-fn apps_dark() -> bool {
+pub fn apps_dark() -> bool {
     dword(w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"), w!("AppsUseLightTheme")) == Some(0)
 }
 
 /// Windows' accent colour, kept as 0xAABBGGRR.
-fn windows_accent() -> Rgb {
+pub fn windows_accent() -> Rgb {
     dword(w!(r"Software\Microsoft\Windows\DWM"), w!("AccentColor"))
         .map_or(DEFAULT_ACCENT, |c| [c as u8, (c >> 8) as u8, (c >> 16) as u8])
 }
