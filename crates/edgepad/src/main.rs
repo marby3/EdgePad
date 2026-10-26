@@ -4,6 +4,7 @@
 
 mod autostart;
 mod colors;
+mod editor;
 mod instance;
 mod launch;
 mod log;

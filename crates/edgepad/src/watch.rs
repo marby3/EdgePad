@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::log::debug_log;
-use crate::{panel, profile, settings, tray};
+use crate::{editor, panel, profile, settings, tray};
 
 /// An editor may write a file several times for one save: read it once the
 /// folder has been quiet this long.
@@ -118,7 +118,10 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
             }
         } else if woke == WAIT_TIMEOUT {
             due = None;
-            unsafe { reload(false) };
+            unsafe {
+                reload(false);
+                editor::file_changed();
+            }
         } else {
             // WAIT_FAILED: nothing sensible to wait on; keep the app alive
             // on messages alone.

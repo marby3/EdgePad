@@ -276,8 +276,9 @@ impl Panel {
     }
 }
 
-/// The colours panels and handles are drawn in now.
-fn palette() -> Palette {
+/// The colours panels and handles are drawn in now; the settings window's
+/// too.
+pub fn palette() -> Palette {
     PALETTE.get().unwrap_or_else(|| {
         let (theme, accent) = STYLE.get();
         let p = colors::palette(theme, accent);
