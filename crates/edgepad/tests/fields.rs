@@ -314,6 +314,8 @@ fn the_edge_tab_has_a_field_for_every_setting_of_the_edge_chosen() {
         assert!(within_3s(|| label(editor, lines).is_some()), "{edge}: {lines}");
         assert!(label(editor, not).is_none(), "{edge}: no {not}");
         assert!(note(editor, lines).contains("1〜3"), "{edge}: {lines} takes 1〜3");
+        let _ = edit(editor, lines);
+        let _ = edit(editor, "monitor");
         for name in ["enabled", "dock", "handle"] {
             assert_eq!(class_of(field(editor, name)), CHOICE_CLASS, "{edge}: 「{name}」 is chosen");
         }
@@ -446,6 +448,7 @@ fn a_value_out_of_range_or_malformed_stops_at_its_field() {
     save(editor);
     let _ = within_3s(|| status(editor).contains("保存しました"));
     assert_eq!(file(&app), before, "none of them written");
+    assert!(status(editor).contains("保存していない"), "saved, still told of what was not: {:?}", status(editor));
 
     enter(editor, "opacity", "80");
     let _ = within_3s(|| inside(editor, "opacity") == fine);
@@ -544,12 +547,14 @@ fn the_fields_follow_the_theme_and_the_dpi() {
     let dpi = unsafe { GetDpiForWindow(editor) } as i32;
     let height = |hwnd: HWND| window_rect(hwnd).bottom - window_rect(hwnd).top;
     let (box0, edit0, choice0) = (height(field(editor, "key_size")), height(edit(editor, "key_size")), height(field(editor, "latch")));
-    let new = dpi * 3 / 2;
+    // Half as large again, as far as the window takes (to 480).
+    let new = (dpi * 3 / 2).min(480);
+    let grown = |v: i32| v * new / dpi;
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
     pump(300);
     let (box1, edit1, choice1) = (height(field(editor, "key_size")), height(edit(editor, "key_size")), height(field(editor, "latch")));
-    assert!((box1 - box0 * 3 / 2).abs() <= 2, "the field grows with the DPI: {box0} -> {box1}");
-    assert!((edit1 - edit0 * 3 / 2).abs() <= 3, "and its text: {edit0} -> {edit1}");
-    assert!((choice1 - choice0 * 3 / 2).abs() <= 2, "and a choice: {choice0} -> {choice1}");
+    assert!((box1 - grown(box0)).abs() <= 2, "the field grows with the DPI: {box0} -> {box1}");
+    assert!((edit1 - grown(edit0)).abs() <= 3, "and its text: {edit0} -> {edit1}");
+    assert!((choice1 - grown(choice0)).abs() <= 2, "and a choice: {choice0} -> {choice1}");
 }

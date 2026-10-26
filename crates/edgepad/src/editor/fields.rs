@@ -41,6 +41,8 @@ pub(super) const RESET: usize = 500;
 /// and then lower, down to MIN_FIELD_H.
 const FIELD_H: i32 = 26;
 const MIN_FIELD_H: i32 = 20;
+/// The most rows a tab has, at their closest: the least height they take.
+pub(super) const MIN_ROWS_H: i32 = 12 * MIN_FIELD_H;
 const LABEL_W: i32 = 150;
 const FIELD_W: i32 = 150;
 const NOTE_W: i32 = 230;
@@ -398,12 +400,17 @@ unsafe fn refresh_rows(e: &mut Editor, rows: impl IntoIterator<Item = usize>) {
         had |= unsafe { refresh_row(e, i) };
     }
     if had {
-        match e.rows.iter().find_map(|r| r.reason.clone()) {
+        match standing_reason(e) {
             Some(reason) => tell(e, &reason),
             None => ask_reason(e),
         }
     }
     unsafe { show(e) };
+}
+
+/// The reason a field's value was turned away, of one still standing.
+pub(super) fn standing_reason(e: &Editor) -> Option<String> {
+    e.rows.iter().find_map(|r| r.reason.clone())
 }
 
 /// Show every row as the window's copy of the file has it.
@@ -461,7 +468,9 @@ pub(super) unsafe fn commit(id: usize) {
         match checked {
             Err(why) => {
                 set_wrong(e.rows[i].field, true);
-                let reason = if why.contains(name) { why } else { format!("{name}: {why}") };
+                // Named as its label is: a part of the handle as that part.
+                let label = if let HandlePart(_) = spec.kind { spec.name } else { name };
+                let reason = if why.contains(label) { why } else { format!("{label}: {why}") };
                 tell(e, &reason);
                 e.rows[i].reason = Some(reason);
             }

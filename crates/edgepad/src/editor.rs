@@ -27,7 +27,7 @@ use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
+    GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
     VK_TAB, VK_UP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -728,7 +728,12 @@ unsafe fn command(id: usize) {
             if ask_again {
                 ask(Some(Ask::Changed));
             } else {
-                with_editor(|e| set_status(e, said));
+                // Saved with a field's value turned away: that value is not
+                // in the file, which the status line goes on saying.
+                with_editor(|e| match fields::standing_reason(e).filter(|_| id == SAVE) {
+                    Some(reason) => set_status(e, &format!("{said}\n保存していない値があります: {reason}")),
+                    None => set_status(e, said),
+                });
             }
         }
     }
@@ -747,6 +752,24 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_SIZE => {
                 lay_out();
+                0
+            }
+            // No smaller than its rows at their closest, with the status
+            // line and buttons below them, and as wide as it opens; or as
+            // much of that as the work area has room for.
+            WM_GETMINMAXINFO => {
+                let dpi = part_dpi(hwnd);
+                let s = |v| scale(v, dpi);
+                let high = ROW_TOP + fields::MIN_ROWS_H + MARGIN + STATUS_H + MARGIN + ROW_H + MARGIN;
+                let mut r = RECT { left: 0, top: 0, right: s(CLIENT_W), bottom: s(high) };
+                AdjustWindowRectExForDpi(&mut r, STYLE, 0, EX_STYLE, dpi);
+                let mut info: MONITORINFO = zeroed();
+                info.cbSize = size_of::<MONITORINFO>() as u32;
+                GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
+                let a = info.rcWork;
+                let m = &mut *(lp as *mut MINMAXINFO);
+                m.ptMinTrackSize.x = (r.right - r.left).min(a.right - a.left);
+                m.ptMinTrackSize.y = (r.bottom - r.top).min(a.bottom - a.top);
                 0
             }
             // The scale of the window's monitor changed: the window and its
@@ -786,7 +809,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     if IsChild(hwnd, focus) != 0 {
                         with_editor(|e| e.focus = focus);
                     }
-                } else if let Some(focus) = with_editor(|e| e.focus).filter(|&f| IsWindowVisible(f) != 0) {
+                } else if let Some(focus) =
+                    with_editor(|e| e.focus).filter(|&f| IsWindowVisible(f) != 0 && IsWindowEnabled(f) != 0)
+                {
                     SetFocus(focus);
                     return 0;
                 }
@@ -825,7 +850,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             #[cfg(feature = "fault-injection")]
             _ if msg == test_set() => {
-                with_editor(|e| e.doc.set_value("general", "opacity", Some(&wp.to_string())));
+                with_editor(|e| {
+                    e.doc.set_value("general", "opacity", Some(&wp.to_string()));
+                    fields::refresh(e);
+                });
                 0
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),

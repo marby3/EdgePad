@@ -1,11 +1,13 @@
 //! Acceptance tests for Issue #81: the settings window (spec 7.1), opened
 //! from the tray, with its four tabs, saving, a file changed outside, and
-//! closing with changes not saved. The tabs have no fields yet.
+//! closing with changes not saved. The fields of the tabs have tests of
+//! their own (fields.rs).
 //!
 //! The window's parts are found by class and text, and clicked as a user
-//! would. Until the tabs have fields, a change is made with a message only
-//! the test build has ("EdgePadTestEditorSet"): it sets `[general] opacity`
-//! in the window's copy of the file. A debug build is slow to draw and to
+//! would. A change is made with a message only the test build has
+//! ("EdgePadTestEditorSet"): it sets `[general] opacity` in the window's
+//! copy of the file past the field's check, so a change the parser turns
+//! away can be saved too. A debug build is slow to draw and to
 //! act on a click: what a test checks, it waits for.
 
 mod common;
