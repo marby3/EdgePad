@@ -442,15 +442,19 @@ fn the_keyboard_alone_moves_along_its_parts_and_the_focus_shows() {
     assert!(within_3s(|| heading(editor) == "操作"), "down twice more: 操作");
     press(VK_UP);
     assert!(within_3s(|| heading(editor) == "辺と表示"), "up: 辺と表示");
-    // Back to キー配置, which has no fields yet: Tab goes on to the bottom row.
+    // Back to キー配置. From the sidebar, Shift+Tab goes back round to the
+    // bottom row, past the page's fields.
     press(VK_UP);
     press(VK_UP);
     assert!(within_3s(|| heading(editor) == "キー配置"), "up twice: キー配置");
 
     let open_text = child(editor, "Button", "テキストで開く").expect("テキストで開く");
     let save = child(editor, "Button", "保存").expect("保存");
+    keyboard(VK_SHIFT, true);
     press(VK_TAB);
-    assert!(within_3s(|| focus_of(editor) == open_text), "Tab: テキストで開く");
+    press(VK_TAB);
+    keyboard(VK_SHIFT, false);
+    assert!(within_3s(|| focus_of(editor) == open_text), "Shift+Tab twice: テキストで開く");
     assert!(shows_focus(open_text), "its focus shows");
     press(VK_TAB);
     assert!(within_3s(|| focus_of(editor) == save), "Tab: 保存");
