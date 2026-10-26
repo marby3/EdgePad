@@ -167,9 +167,11 @@ fn its_parts_are_windows_own_controls_of_comctl32_v6_asking_as_before() {
     for c in children(editor) {
         let class = class_of(c);
         // Since Issue #83 the fields too, and the figure of the edges, drawn
-        // as the spec has the window's own drawings.
+        // as the spec has the window's own drawings; since Issue #87 the
+        // sample of the panel and the pie's figure.
         let own = ["Button", "ListBox", "Static", "SysLink", "Edit", "ComboBox"].contains(&class.as_str());
-        assert!(own || class == "EdgePadSettingsEdges", "a part of Windows's own, not {class:?}");
+        let drawn = ["EdgePadSettingsEdges", "EdgePadSettingsSample", "EdgePadSettingsPie"].contains(&class.as_str());
+        assert!(own || drawn, "a part of Windows's own, not {class:?}");
     }
 
     // The questions, with Windows's buttons, as before.

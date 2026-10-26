@@ -322,7 +322,7 @@ fn key_of(saved: &str, name: &str, label: &str) -> Vec<String> {
 /// Save, and wait for the file to have `line`.
 fn save_until(app: &Running, editor: HWND, line: &str) -> String {
     save(editor);
-    assert!(within_3s(|| file(app).contains(line)), "saved with {line:?}:\n{}", file(app));
+    assert!(within_3s(|| file(app).contains(line)), "saved with {line:?}, said {:?}:\n{}", status(editor), file(app));
     file(app)
 }
 
@@ -531,7 +531,8 @@ fn nine_kinds_show_their_description_and_only_their_fields() {
     let fields = [
         (SHORTCUT, vec![KEYS]),
         (REPEAT, vec![KEYS, INTERVAL]),
-        (MACRO, vec![STEPS]),
+        // A step of keys chosen: its keys, as a shortcut's.
+        (MACRO, vec![STEPS, KEYS]),
         (TEXT, vec![CONTENT]),
         (RUN, vec![CONTENT]),
         (PAGE, vec![TARGET]),

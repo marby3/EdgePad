@@ -127,7 +127,7 @@ pub enum Accent {
 
 impl Accent {
     /// `auto` or `#RRGGBB`.
-    fn parse(value: &str) -> Option<Accent> {
+    pub fn parse(value: &str) -> Option<Accent> {
         if value.eq_ignore_ascii_case("auto") {
             return Some(Accent::Auto);
         }
@@ -241,7 +241,7 @@ pub enum Action {
 
 impl Action {
     /// Its kind as the settings file writes it.
-    fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> &'static str {
         match self {
             Action::Modifier(_) => "modifier",
             Action::Hold(_) => "hold",
@@ -258,7 +258,7 @@ impl Action {
     /// Whether it can be an item of a pie menu: items run once, when the
     /// finger lifts. Held keys cannot, and a pie inside a pie would need a
     /// menu opened from a menu.
-    fn is_pie_item(&self) -> bool {
+    pub fn is_pie_item(&self) -> bool {
         match self {
             Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Run(_) | Action::Page(_) => true,
             Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) => false,
@@ -533,76 +533,9 @@ impl Parser {
             return Err(format!("[set.*] に書けるのは key だけ（「{name}」）"));
         }
         self.set_lines[set].1 = true;
-        let fields: Vec<&str> = value.split('|').map(str::trim).collect();
-        if fields.len() < 3 {
-            return Err("key は「ラベル | 種類 | 内容」の3つの欄が要る".into());
-        }
-        if fields.len() > 4 {
-            return Err("key の欄が多すぎる（「ラベル | 種類 | 内容 | オプション」まで）".into());
-        }
-        let (label, kind, content) = (fields[0], fields[1].to_ascii_lowercase(), fields[2]);
-        if label.is_empty() {
-            return Err("key のラベルの欄が空".into());
-        }
-        if content.is_empty() {
-            return Err("key の内容の欄が空".into());
-        }
-        let mut options: Vec<(String, &str)> = Vec::new();
-        for option in fields.get(3).iter().flat_map(|o| o.split(',')).map(str::trim).filter(|o| !o.is_empty()) {
-            let Some((k, v)) = option.split_once('=') else {
-                return Err(format!("オプションは「名前=値」で書く（「{option}」）"));
-            };
-            options.push((k.trim().to_ascii_lowercase(), v.trim()));
-        }
-        let mut take = |want: &str| options.iter().position(|(k, _)| k == want).map(|i| options.remove(i).1);
-        let width = take("width").map(|v| number("width", v, 1, 3)).transpose()?.unwrap_or(1) as u8;
-        let action = match kind.as_str() {
-            "modifier" => match Key::parse(content) {
-                Some(key) if key.modifier().is_some() => Action::Modifier(key),
-                _ => return Err(format!("modifier の内容は Ctrl / Shift / Alt / Win のどれか（「{content}」）")),
-            },
-            "hold" => Action::Hold(Key::parse(content).ok_or_else(|| format!("知らないキー名「{content}」"))?),
-            "shortcut" => Action::Shortcut(Combo::parse(content)?),
-            "repeat" => {
-                let interval_ms = take("interval").map(|v| number("interval", v, 20, 1000)).transpose()?.unwrap_or(50);
-                Action::Repeat { combo: Combo::parse(content)?, interval_ms }
-            }
-            "macro" => {
-                let mut steps = Vec::new();
-                for step in content.split(',').map(str::trim) {
-                    let wait = step.get(..5).filter(|w| w.eq_ignore_ascii_case("wait ")).map(|_| step[5..].trim());
-                    steps.push(match wait {
-                        Some(ms) => Step::Wait(number("wait", ms, 0, 10_000)?),
-                        None if step.is_empty() => return Err("macro に空の手順がある".into()),
-                        None => Step::Keys(Combo::parse(step)?),
-                    });
-                }
-                Action::Macro(steps)
-            }
-            "text" => Action::Text(content.into()),
-            "run" => {
-                if let Some(rest) = content.strip_prefix('"') {
-                    match rest.split_once('"') {
-                        None => return Err("run の「\"」が閉じていない".into()),
-                        Some(("", _)) => return Err("run の「\"」の中が空".into()),
-                        Some(_) => {}
-                    }
-                }
-                Action::Run(content.into())
-            }
-            "page" => Action::Page(match content.to_ascii_lowercase().as_str() {
-                "next" => Page::Next,
-                "prev" => Page::Prev,
-                set => Page::Set(set.into()),
-            }),
-            "pie" => Action::Pie(content.to_ascii_lowercase()),
-            _ => return Err(format!("知らないキーの種類「{}」", fields[1])),
-        };
-        if let Some((k, _)) = options.first() {
-            return Err(format!("{kind} キーに知らないオプション「{k}」がある"));
-        }
+        let key = key_def(value)?;
         // Only a key that is read checks the sets it names.
-        match &action {
+        match &key.action {
             Action::Page(Page::Set(set)) => self.refs.push((n, set.clone())),
             Action::Pie(set) => {
                 self.refs.push((n, set.clone()));
@@ -610,7 +543,7 @@ impl Parser {
             }
             _ => {}
         }
-        self.config.sets[set].keys.push(KeyDef { label: label.into(), action, width });
+        self.config.sets[set].keys.push(key);
         Ok(())
     }
 
@@ -647,17 +580,8 @@ impl Parser {
         }
         for (line, name) in std::mem::take(&mut self.pies) {
             let Some(set) = self.config.set(&name) else { continue };
-            let count = set.keys.len();
-            if !PIE_ITEMS.contains(&count) {
-                let (min, max) = (PIE_ITEMS.start(), PIE_ITEMS.end());
-                let reason = format!("pie の項目は{min}〜{max}個（[set.{name}] には {count} 個）");
+            for reason in pie_problems(set) {
                 self.errors.push(Error { line, reason });
-            }
-            for key in &set.keys {
-                if !key.action.is_pie_item() {
-                    let reason = format!("pie の項目に {} キーは使えない（[set.{name}] の「{}」）", key.action.kind(), key.label);
-                    self.errors.push(Error { line, reason });
-                }
             }
         }
         for (profile, &line) in self.config.profiles.iter().zip(&self.profile_lines) {
@@ -675,6 +599,100 @@ impl Parser {
         self.errors.sort_by_key(|e| e.line);
         Err(self.errors)
     }
+}
+
+/// Why a pie key cannot open a menu of key set `set`, in the parser's
+/// words: none if it can (spec 4.6).
+pub fn pie_problems(set: &KeySet) -> Vec<String> {
+    let mut problems = Vec::new();
+    let count = set.keys.len();
+    if !PIE_ITEMS.contains(&count) {
+        let (min, max) = (PIE_ITEMS.start(), PIE_ITEMS.end());
+        problems.push(format!("pie の項目は{min}〜{max}個（[set.{}] には {count} 個）", set.name));
+    }
+    for key in &set.keys {
+        if !key.action.is_pie_item() {
+            problems.push(format!("pie の項目に {} キーは使えない（[set.{}] の「{}」）", key.action.kind(), set.name, key.label));
+        }
+    }
+    problems
+}
+
+/// The key `value` writes after `key =`, `label | kind | content |
+/// options`, as the parser reads it; or why not, in its words. Whether the
+/// key sets a page or pie key names are there is not asked: that is the
+/// whole file's to say. The settings window checks a key with this before
+/// writing it.
+pub fn key_def(value: &str) -> Result<KeyDef, String> {
+    let fields: Vec<&str> = value.split('|').map(str::trim).collect();
+    if fields.len() < 3 {
+        return Err("key は「ラベル | 種類 | 内容」の3つの欄が要る".into());
+    }
+    if fields.len() > 4 {
+        return Err("key の欄が多すぎる（「ラベル | 種類 | 内容 | オプション」まで）".into());
+    }
+    let (label, kind, content) = (fields[0], fields[1].to_ascii_lowercase(), fields[2]);
+    if label.is_empty() {
+        return Err("key のラベルの欄が空".into());
+    }
+    if content.is_empty() {
+        return Err("key の内容の欄が空".into());
+    }
+    let mut options: Vec<(String, &str)> = Vec::new();
+    for option in fields.get(3).iter().flat_map(|o| o.split(',')).map(str::trim).filter(|o| !o.is_empty()) {
+        let Some((k, v)) = option.split_once('=') else {
+            return Err(format!("オプションは「名前=値」で書く（「{option}」）"));
+        };
+        options.push((k.trim().to_ascii_lowercase(), v.trim()));
+    }
+    let mut take = |want: &str| options.iter().position(|(k, _)| k == want).map(|i| options.remove(i).1);
+    let width = take("width").map(|v| number("width", v, 1, 3)).transpose()?.unwrap_or(1) as u8;
+    let action = match kind.as_str() {
+        "modifier" => match Key::parse(content) {
+            Some(key) if key.modifier().is_some() => Action::Modifier(key),
+            _ => return Err(format!("modifier の内容は Ctrl / Shift / Alt / Win のどれか（「{content}」）")),
+        },
+        "hold" => Action::Hold(Key::parse(content).ok_or_else(|| format!("知らないキー名「{content}」"))?),
+        "shortcut" => Action::Shortcut(Combo::parse(content)?),
+        "repeat" => {
+            let interval_ms = take("interval").map(|v| number("interval", v, 20, 1000)).transpose()?.unwrap_or(50);
+            Action::Repeat { combo: Combo::parse(content)?, interval_ms }
+        }
+        "macro" => {
+            let mut steps = Vec::new();
+            for step in content.split(',').map(str::trim) {
+                let wait = step.get(..5).filter(|w| w.eq_ignore_ascii_case("wait ")).map(|_| step[5..].trim());
+                steps.push(match wait {
+                    Some(ms) => Step::Wait(number("wait", ms, 0, 10_000)?),
+                    None if step.is_empty() => return Err("macro に空の手順がある".into()),
+                    None => Step::Keys(Combo::parse(step)?),
+                });
+            }
+            Action::Macro(steps)
+        }
+        "text" => Action::Text(content.into()),
+        "run" => {
+            if let Some(rest) = content.strip_prefix('"') {
+                match rest.split_once('"') {
+                    None => return Err("run の「\"」が閉じていない".into()),
+                    Some(("", _)) => return Err("run の「\"」の中が空".into()),
+                    Some(_) => {}
+                }
+            }
+            Action::Run(content.into())
+        }
+        "page" => Action::Page(match content.to_ascii_lowercase().as_str() {
+            "next" => Page::Next,
+            "prev" => Page::Prev,
+            set => Page::Set(set.into()),
+        }),
+        "pie" => Action::Pie(content.to_ascii_lowercase()),
+        _ => return Err(format!("知らないキーの種類「{}」", fields[1])),
+    };
+    if let Some((k, _)) = options.first() {
+        return Err(format!("{kind} キーに知らないオプション「{k}」がある"));
+    }
+    Ok(KeyDef { label: label.into(), action, width })
 }
 
 /// The program (or file, folder or URL) a run key starts, and the arguments
@@ -725,7 +743,8 @@ pub fn check(section: &str, name: &str, value: &str) -> Result<(), String> {
     }
 }
 
-fn valid_name(name: &str) -> bool {
+/// Whether `name` can name a key set or a profile: `[set.name]`.
+pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
