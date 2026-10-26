@@ -81,7 +81,7 @@ fn clicking_the_panel_keeps_focus_on_the_previous_foreground_window() {
 
 // AC4
 #[test]
-fn panel_is_drawn_with_update_layered_window_at_90_percent_with_a_label_on_every_key() {
+fn panel_is_drawn_with_update_layered_window_fully_opaque_with_a_label_on_every_key() {
     let _desktop = desktop();
     // A topmost backdrop made before the panel sits right under it.
     let monitor = primary_monitor();
@@ -102,8 +102,9 @@ fn panel_is_drawn_with_update_layered_window_at_90_percent_with_a_label_on_every
     let attrs = unsafe { GetLayeredWindowAttributes(hwnd, &mut key_color, &mut alpha, &mut flags) };
     assert_eq!(attrs, 0, "GetLayeredWindowAttributes works only without UpdateLayeredWindow");
 
-    // 90% opaque: 10% of the backdrop shows through, so white vs black differs by ~25.
-    // Averaged over a 3x3 patch of panel background in the top-left corner.
+    // Fully opaque by default since Issue #85 (90% before): nothing of the
+    // backdrop shows through. Averaged over a 3x3 patch of panel background
+    // in the top-left corner.
     let corner = RECT { left: panel.left, top: panel.top, right: panel.left + 3, bottom: panel.top + 3 };
     let average = |pixels: Vec<u32>| {
         let n = pixels.len() as i32;
@@ -116,7 +117,7 @@ fn panel_is_drawn_with_update_layered_window_at_90_percent_with_a_label_on_every
     let on_black = average(capture(corner));
     for c in 0..3 {
         let diff = on_white[c] - on_black[c];
-        assert!((20..=31).contains(&diff), "backdrop shows through by {diff}/255, want ~25");
+        assert!(diff.abs() <= 4, "backdrop shows through by {diff}/255, want none");
     }
 
     // Each key's middle holds label strokes that stand out from the key face.
