@@ -99,7 +99,7 @@ fn the_tray_menu_lists_every_item_and_greys_edges_without_a_panel() {
     find_panel(&app);
 
     let items = tray_menu(&app);
-    let wanted = ["左辺", "右辺", "上辺", "下辺", "プロファイル「default」を固定", "設定ファイルを開く", "設定を再読込", "一時停止", "全キー解放", "自動起動", "終了"];
+    let wanted = ["左辺", "右辺", "上辺", "下辺", "プロファイル「default」を固定", "設定…", "設定ファイルを開く", "設定を再読込", "一時停止", "全キー解放", "自動起動", "終了"];
     let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
     assert_eq!(items.len(), wanted.len(), "items: {texts:?}");
     for (item, want) in items.iter().zip(wanted) {

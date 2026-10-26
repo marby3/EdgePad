@@ -347,13 +347,23 @@ fn private_bytes(app: &Running) -> usize {
     c.PrivateUsage
 }
 
-// AC8
+// AC8. The first time a window of EdgePad's takes the focus, Windows
+// loads its text input (IME, Text Input Framework) into the process, and
+// that stays (spec 7.1): count from after one opening, so what is left of
+// each window shows.
 #[test]
 fn closed_it_gives_its_memory_back() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
     let id = open_id(&app);
-    pump(500);
+    // Twice, and given time: Windows finishes loading in its own time,
+    // later still on a machine busy with other tests.
+    for _ in 0..2 {
+        let editor = open(&app, id);
+        unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
+        assert!(within_3s(|| editors(&app).is_empty()), "closed");
+    }
+    pump(1500);
     let before = private_bytes(&app);
     for _ in 0..3 {
         let editor = open(&app, id);
@@ -361,7 +371,7 @@ fn closed_it_gives_its_memory_back() {
         unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
         assert!(within_3s(|| editors(&app).is_empty()), "closed");
     }
-    pump(500);
+    pump(1500);
     let after = private_bytes(&app);
     assert!(after <= before + 128 * 1024, "private memory back within 128 KiB: {before} -> {after}");
 }
