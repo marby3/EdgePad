@@ -96,7 +96,7 @@ impl Default for General {
         General {
             hotkey: None,
             key_size: 56,
-            opacity: 90,
+            opacity: 100,
             dim_opacity: 35,
             latch_ms: 250,
             latch: LatchMode::OneShot,

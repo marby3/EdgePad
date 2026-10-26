@@ -270,10 +270,6 @@ fn opacity(backdrop: &TestWindow, at: POINT) -> i32 {
     100 - through * 100 / 255
 }
 
-fn centre(r: RECT) -> POINT {
-    POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }
-}
-
 // AC4
 #[test]
 fn the_menu_takes_the_panels_colours_and_their_opacity() {

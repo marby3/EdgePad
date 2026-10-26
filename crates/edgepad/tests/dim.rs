@@ -10,6 +10,8 @@
 mod common;
 
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::Controls::{
@@ -36,11 +38,11 @@ fn settings(general: &str) -> String {
 
 const DIMMING: &str = "opacity = 70\ndim_opacity = 40";
 
-/// Topmost backdrops down the left and right of the primary monitor, three
-/// keys wide. Made before EdgePad starts, so the panels go above them.
+/// Topmost backdrops down the left and right of the primary monitor, five
+/// keys wide: under a pie menu too. Made before EdgePad starts, so the panels go above them.
 fn backdrops() -> [TestWindow; 2] {
     let m = primary_monitor();
-    let w = key_px() * 3;
+    let w = key_px() * 5;
     [
         test_window("EdgePadTestDimLeft", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, RECT { left: m.left, top: m.top, right: m.left + w, bottom: m.bottom }),
         test_window("EdgePadTestDimRight", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, RECT { left: m.right - w, top: m.top, right: m.right, bottom: m.bottom }),
@@ -191,8 +193,11 @@ fn while_a_pie_menu_is_open_the_panels_are_dimmed_and_the_menu_is_not() {
     let o = becomes(&backdrops, || right_panel(&app), 40);
     assert!(near(o, 40), "and the right one, not {o}%");
     let menu = window_rect(pie_window(&app).expect("the menu"));
-    // An item of the menu, out to the right of the key, clear of the panel.
-    let item = POINT { x: pie.x + key_px() * 2, y: pie.y };
+    // Inside the second of the two items (down and to the right, at 45°),
+    // out past its label (the ring runs from half a key to two keys out),
+    // clear of the panel.
+    let r = key_px() as f64 * 1.625 / std::f64::consts::SQRT_2;
+    let item = POINT { x: pie.x + r as i32, y: pie.y + r as i32 };
     let o = opacity(&backdrops, RECT { left: item.x, top: item.y, right: item.x + 1, bottom: item.y + 1 });
     assert!(menu.right > item.x && near(o, 70), "the menu itself at opacity 70%, not {o}%");
     touch.move_to(1, item);
@@ -217,20 +222,50 @@ fn while_a_pie_menu_is_open_the_panels_are_dimmed_and_the_menu_is_not() {
     let _ = log.keys();
 }
 
-/// An injected pen, hovering in range without touching.
-struct Pen(HSYNTHETICPOINTERDEVICE);
+/// An injected pen, hovering in range without touching. A real pen keeps
+/// reporting while in range; an injected one says nothing between frames,
+/// and Windows takes it out of range after a while: a keeper thread says
+/// the last frame again, as the touch helper does for its contacts.
+struct Pen {
+    device: usize,
+    last: Arc<Mutex<Option<(POINT, POINTER_FLAGS)>>>,
+    stop: Arc<AtomicBool>,
+    keeper: Option<std::thread::JoinHandle<()>>,
+}
+
+fn inject_pen(device: usize, p: POINT, flags: POINTER_FLAGS) -> bool {
+    let frame = pen_frame(p, flags);
+    unsafe { InjectSyntheticPointerInput(device as HSYNTHETICPOINTERDEVICE, &frame, 1) != 0 }
+}
 
 impl Pen {
     fn new() -> Pen {
-        let pen = unsafe { CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_NONE) };
-        assert!(!pen.is_null(), "CreateSyntheticPointerDevice");
-        Pen(pen)
+        let device = unsafe { CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_NONE) };
+        assert!(!device.is_null(), "CreateSyntheticPointerDevice");
+        let device = device as usize;
+        let last: Arc<Mutex<Option<(POINT, POINTER_FLAGS)>>> = Arc::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let keeper = {
+            let (last, stop) = (last.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if let Some((p, flags)) = *last.lock().unwrap() {
+                        inject_pen(device, p, flags);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            })
+        };
+        Pen { device, last, stop, keeper: Some(keeper) }
     }
 
     fn frame(&self, p: POINT, flags: POINTER_FLAGS) {
-        let frame = pen_frame(p, flags);
-        let ok = unsafe { InjectSyntheticPointerInput(self.0, &frame, 1) };
-        assert!(ok != 0, "InjectSyntheticPointerInput: {}", std::io::Error::last_os_error());
+        {
+            let mut last = self.last.lock().unwrap();
+            assert!(inject_pen(self.device, p, flags), "InjectSyntheticPointerInput: {}", std::io::Error::last_os_error());
+            // In range, kept so; out of range, said once.
+            *last = (flags & POINTER_FLAG_INRANGE != 0).then_some((p, flags));
+        }
         pump(100);
     }
 
@@ -247,7 +282,11 @@ impl Pen {
 
 impl Drop for Pen {
     fn drop(&mut self) {
-        unsafe { DestroySyntheticPointerDevice(self.0) };
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(keeper) = self.keeper.take() {
+            let _ = keeper.join();
+        }
+        unsafe { DestroySyntheticPointerDevice(self.device as HSYNTHETICPOINTERDEVICE) };
     }
 }
 
