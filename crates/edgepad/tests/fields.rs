@@ -72,9 +72,11 @@ fn class_of(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
+/// The text of `hwnd`, asked of it: GetWindowText reads no edit control
+/// of another process.
 fn text_of(hwnd: HWND) -> String {
     let mut buf = [0u16; 512];
-    let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), 512) };
+    let n = unsafe { SendMessageW(hwnd, WM_GETTEXT, 512, buf.as_mut_ptr() as isize) } as i32;
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
@@ -481,6 +483,8 @@ fn the_keyboard_alone_moves_chooses_and_presses() {
     assert!(within_3s(|| value(editor, "latch") == "lock"), "Down: lock");
     press(VK_UP);
     assert!(within_3s(|| value(editor, "latch") == "oneshot"), "Up: oneshot");
+    // Chosen, latch is written: its 既定に戻す comes next.
+    press(VK_TAB);
     press(VK_TAB);
     assert!(within_3s(|| focus(editor) == field(editor, "pen_presses")), "Tab: on to pen_presses");
     press(VK_SPACE);

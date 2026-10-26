@@ -190,6 +190,12 @@ impl Document {
         (start + 1..end).rev().find(|&i| setting(&self.lines[i]).is_some()).map_or(start + 1, |i| i + 1)
     }
 
+    /// The value of setting `name` in `section`, as written, if it is there.
+    pub fn get(&self, section: &str, name: &str) -> Option<&str> {
+        let i = *self.settings(section, name).first()?;
+        value(&self.lines[i])
+    }
+
     /// Set `name` in `section` to `value`, or remove it with none. A new
     /// setting goes after the section's last one, as `name = value`; a new
     /// section goes at the end.

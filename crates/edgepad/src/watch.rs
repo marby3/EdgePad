@@ -139,6 +139,9 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
                     close(&watches);
                     return;
                 }
+                if unsafe { editor::key(&msg) } {
+                    continue;
+                }
                 unsafe { DispatchMessageW(&msg) };
             }
             if RESCAN.take() {
@@ -156,6 +159,9 @@ pub unsafe fn run(seen: Option<Vec<u8>>, unreadable: Option<String>, toggle: HAN
             close(&watches);
             let mut msg: MSG = unsafe { zeroed() };
             while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {
+                if unsafe { editor::key(&msg) } {
+                    continue;
+                }
                 unsafe { DispatchMessageW(&msg) };
             }
             return;

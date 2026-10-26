@@ -394,11 +394,13 @@ fn in_front_the_window_switches_no_profile_and_lets_no_key_go() {
 const DARK: [i32; 3] = [0x20, 0x20, 0x20];
 const LIGHT: [i32; 3] = [0xE4, 0xE4, 0xE4];
 
-/// The colour in the middle of `editor`'s client area, where nothing is.
+/// The colour half way down `editor`'s client area, in the margin on its
+/// left, where nothing is.
 fn middle(editor: HWND) -> [i32; 3] {
     let mut r: RECT = unsafe { std::mem::zeroed() };
     unsafe { GetClientRect(editor, &mut r) };
-    let mut p = POINT { x: r.right / 2, y: r.bottom / 2 };
+    let dpi = unsafe { GetDpiForWindow(editor) } as i32;
+    let mut p = POINT { x: 3 * dpi / 96, y: r.bottom / 2 };
     unsafe { ClientToScreen(editor, &mut p) };
     channels(capture(RECT { left: p.x, top: p.y, right: p.x + 1, bottom: p.y + 1 })[0])
 }

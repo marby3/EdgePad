@@ -148,7 +148,8 @@ const EDGES: [(&str, Edge); 4] =
     [("left", Edge::Left), ("right", Edge::Right), ("top", Edge::Top), ("bottom", Edge::Bottom)];
 
 impl Edge {
-    fn parse(name: &str) -> Option<Edge> {
+    /// `left`, `right`, `top` or `bottom`, in any case.
+    pub fn parse(name: &str) -> Option<Edge> {
         EDGES.iter().find(|(n, _)| name.eq_ignore_ascii_case(n)).map(|&(_, e)| e)
     }
 
@@ -519,21 +520,7 @@ impl Parser {
                 return Err(format!("この辺では「{name}」ではなく「{want}」を使う"));
             }
             "columns" | "rows" => e.lines = number(name, value, 1, 3)? as u8,
-            "handle" if value.eq_ignore_ascii_case("none") => e.handle = None,
-            "handle" => {
-                let parts: Vec<&str> = value.split(',').map(str::trim).collect();
-                if !(2..=3).contains(&parts.len()) {
-                    return Err(format!("handle は「幅, 長さ%[, 位置%]」で書く（「{value}」）"));
-                }
-                let percent = |p: &str, min| number(name, p.strip_suffix('%').unwrap_or(p).trim(), min, 100);
-                let mut handle = Handle { width: 6, length: 40, position: 50 };
-                handle.width = number(name, parts[0].strip_suffix("px").unwrap_or(parts[0]).trim(), 4, 8)? as u8;
-                handle.length = percent(parts[1], 1)? as u8;
-                if let Some(p) = parts.get(2) {
-                    handle.position = percent(p, 0)? as u8;
-                }
-                e.handle = Some(handle);
-            }
+            "handle" => e.handle = handle(value)?,
             _ => return Err(format!("[edge.*] に知らない設定「{name}」がある")),
         }
         Ok(())
@@ -697,6 +684,43 @@ pub fn run_target(command: &str) -> (&str, &str) {
         None => command.split_once(char::is_whitespace).unwrap_or((command, "")),
     };
     (file, rest.trim_start())
+}
+
+/// A handle as `handle =` takes it: none, or `width, length%[, position%]`.
+pub fn handle(value: &str) -> Result<Option<Handle>, String> {
+    let name = "handle";
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+    if !(2..=3).contains(&parts.len()) {
+        return Err(format!("handle は「幅, 長さ%[, 位置%]」で書く（「{value}」）"));
+    }
+    let percent = |p: &str, min| number(name, p.strip_suffix('%').unwrap_or(p).trim(), min, 100);
+    let mut handle = Handle { width: 6, length: 40, position: 50 };
+    handle.width = number(name, parts[0].strip_suffix("px").unwrap_or(parts[0]).trim(), 4, 8)? as u8;
+    handle.length = percent(parts[1], 1)? as u8;
+    if let Some(p) = parts.get(2) {
+        handle.position = percent(p, 0)? as u8;
+    }
+    Ok(Some(handle))
+}
+
+/// Whether `value` reads as setting `name` of `section` (`general`, or an
+/// edge's: `edge.left` and so on) as the parser reads it there; if not,
+/// why not, in the parser's words. The settings window checks a field
+/// with this before writing it.
+pub fn check(section: &str, name: &str, value: &str) -> Result<(), String> {
+    let mut parser = Parser::default();
+    let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
+    match section.split_once('.') {
+        None if section.eq_ignore_ascii_case("general") => parser.general(&name, value),
+        Some((kind, edge)) if kind.eq_ignore_ascii_case("edge") => match Edge::parse(edge) {
+            Some(edge) => parser.edge(edge, &name, value),
+            None => Err(format!("知らないセクション [{section}]")),
+        },
+        _ => Err(format!("[{section}] の設定はここでは確かめない")),
+    }
 }
 
 fn valid_name(name: &str) -> bool {
