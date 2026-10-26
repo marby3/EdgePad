@@ -4,6 +4,7 @@
 
 mod autostart;
 mod colors;
+mod editor;
 mod instance;
 mod launch;
 mod log;
@@ -50,6 +51,7 @@ fn main() -> ExitCode {
             (None, Some(_)) => log::debug_log!("設定を読み込んだ: パネル {} 枚", panels.edges.len()),
             (None, None) => log::debug_log!("設定ファイルなし: 固定のキーで動く"),
         }
+        panel::set_style(&panels);
         for p in &panels.edges {
             if !panel::create(p, &panels) {
                 log::debug_log!("終了（パネルを作れない）");

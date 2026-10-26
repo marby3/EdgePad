@@ -31,7 +31,7 @@ use windows_sys::w;
 
 use crate::colors::{self, colorref};
 use crate::log::debug_log;
-use crate::{launch, pie_menu, send};
+use crate::{editor, launch, pie_menu, send};
 use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
@@ -276,8 +276,9 @@ impl Panel {
     }
 }
 
-/// The colours panels and handles are drawn in now.
-fn palette() -> Palette {
+/// The colours panels and handles are drawn in now; the settings window's
+/// too.
+pub fn palette() -> Palette {
     PALETTE.get().unwrap_or_else(|| {
         let (theme, accent) = STYLE.get();
         let p = colors::palette(theme, accent);
@@ -308,8 +309,17 @@ pub unsafe fn restyle() -> bool {
                 }
             }
         }
+        unsafe { editor::restyle() };
         true
     })
+}
+
+/// Take the theme and accent of `panels`, for the panels and the settings
+/// window alike: with no panel at all, the settings window still draws in
+/// them.
+pub fn set_style(panels: &Panels) {
+    STYLE.set((panels.theme, panels.accent));
+    PALETTE.set(Some(colors::palette(panels.theme, panels.accent)));
 }
 
 /// `percent` opacity as a constant alpha.
@@ -445,8 +455,6 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         if hwnd.is_null() {
             return false;
         }
-        STYLE.set((panels.theme, panels.accent));
-        PALETTE.set(Some(colors::palette(panels.theme, panels.accent)));
         let keys: Vec<PanelKey> = p.keys.iter().map(PanelKey::of).collect();
         let presses = Presses::new(keys.len());
         let rect = Rect { x: 0, y: 0, w: 0, h: 0 };
@@ -528,6 +536,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
 /// are released first, so none is left down with no panel to lift it.
 /// Returns false if a window could not be created.
 pub unsafe fn rebuild(panels: &Panels) -> bool {
+    set_style(panels);
     unsafe {
         // The handles go, and their hover timers with them. An edge shown by
         // hovering stays so, if it still has a panel.

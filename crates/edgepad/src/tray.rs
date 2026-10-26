@@ -25,7 +25,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::log::debug_log;
-use crate::{autostart, panel, pie_menu, profile, send, settings, watch};
+use crate::{autostart, editor, panel, pie_menu, profile, send, settings, watch};
 
 // The class name, TRAY_ID, TRAY_CALLBACK, the menu texts and the test
 // messages are the contract the tests drive the tray through: change them
@@ -46,6 +46,7 @@ const CMD_PAUSE: usize = 1004;
 const CMD_RELEASE: usize = 1005;
 const CMD_AUTOSTART: usize = 1006;
 const CMD_PIN: usize = 1007;
+const CMD_EDITOR: usize = 1008;
 /// The one hotkey registered with the tray window.
 const HOTKEY_ID: i32 = 1;
 /// One per edge, CMD_EDGE + Edge as usize.
@@ -254,6 +255,7 @@ unsafe fn show_menu(hwnd: HWND) {
         let pin: Vec<u16> = pin.encode_utf16().chain([0]).collect();
         AppendMenuW(menu, MF_STRING | flags, CMD_PIN, pin.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        AppendMenuW(menu, MF_STRING, CMD_EDITOR, w!("設定…(&C)"));
         AppendMenuW(menu, MF_STRING, CMD_OPEN, w!("設定ファイルを開く(&O)"));
         AppendMenuW(menu, MF_STRING, CMD_RELOAD, w!("設定を再読込(&E)"));
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
@@ -278,6 +280,8 @@ unsafe fn open_settings(hwnd: HWND) {
         notify("設定ファイルを作れませんでした");
         return;
     };
+    // The file may be new, in a folder made just now: watched from now.
+    watch::rescan();
     test_event(&format!("open: {}", path.display()));
     // Test builds stop short of starting an editor.
     #[cfg(not(feature = "fault-injection"))]
@@ -310,7 +314,12 @@ unsafe fn exit(hwnd: HWND) {
 unsafe fn command(hwnd: HWND, id: usize) {
     unsafe {
         match id {
-            CMD_EXIT => exit(hwnd),
+            CMD_EXIT => {
+                if editor::may_exit() {
+                    exit(hwnd);
+                }
+            }
+            CMD_EDITOR => editor::open(),
             CMD_OPEN => open_settings(hwnd),
             CMD_RELOAD => watch::reload(true),
             CMD_PAUSE => panel::toggle_pause(),

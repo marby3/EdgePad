@@ -79,8 +79,15 @@ fn panels_for(process: Option<&str>) -> Panels {
     })
 }
 
-/// `hwnd` came to the front: unless pinned, follow its app.
+/// `hwnd` came to the front: unless pinned, follow its app. EdgePad's own
+/// windows, the settings window and the tray menu, are no app to follow
+/// (spec 7.1): the profile stays that of the app in front before. The hook
+/// already skips this process's events; this says so here too, for any
+/// other way a window gets here.
 pub unsafe fn foreground_changed(hwnd: HWND) {
+    if unsafe { is_own(hwnd) } {
+        return;
+    }
     LAST.set(unsafe { process_name(hwnd) });
     send::set_out_of_reach(unsafe { out_of_reach(hwnd) });
     if !PINNED.get() {
