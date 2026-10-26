@@ -450,7 +450,12 @@ fn it_follows_the_dpi_of_its_monitor_and_the_theme() {
     pump(300);
     let (h1, w1) = (window_rect(tab).bottom - window_rect(tab).top, window_rect(editor).right - window_rect(editor).left);
     assert!((h1 - h0 * 3 / 2).abs() <= 2, "the tab grows with the DPI: {h0} -> {h1}");
-    assert!((w1 - w0 * 3 / 2).abs() <= 4, "and the window: {w0} -> {w1}");
+    // As far as the work area has room: on CI's 1024 x 768 screen, the
+    // window at 150% is wider than that.
+    let mut work: RECT = unsafe { std::mem::zeroed() };
+    unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut RECT as _, 0) };
+    let want = (w0 * 3 / 2).min(work.right - work.left);
+    assert!((w1 - want).abs() <= 4, "and the window: {w0} -> {w1}, not {want}");
 
     // A DPI no monitor has (0, or far past 500%) changes nothing.
     for bad in [0, 0xFFFF] {
