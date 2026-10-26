@@ -80,7 +80,8 @@ pub struct Panels {
     pub latch: LatchMode,
     /// Opacity in percent of a panel shown normally.
     pub opacity: u8,
-    /// Opacity in percent of a panel shown dimmed.
+    /// Opacity in percent of the panels while a pie menu is open, or of one
+    /// a pen is over.
     pub dim_opacity: u8,
     pub theme: config::Theme,
     pub accent: config::Accent,

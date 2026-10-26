@@ -74,7 +74,8 @@ pub struct Opening<'a> {
     pub set: &'a str,
     pub labels: &'a [&'a str],
     pub palette: Palette,
-    /// The constant alpha the panel is drawn with now.
+    /// The constant alpha the menu is drawn with: the panels' own, not
+    /// the dimmed one they take behind it.
     pub alpha: u8,
 }
 
@@ -141,7 +142,9 @@ pub unsafe fn open(o: Opening) {
         }
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         debug_log!("パイメニューを開く: {} 項目", menu.labels.len());
+        let panel = menu.panel;
         MENU.set(Some(menu));
+        redraw_panels(panel);
     }
 }
 
@@ -187,6 +190,17 @@ pub unsafe fn point(pointer: u32, at: (i32, i32)) {
     });
 }
 
+/// Whether a menu is open: the panels are dimmed behind it.
+pub fn is_open() -> bool {
+    MENU.with_borrow(|menu| menu.is_some())
+}
+
+/// A menu opened or closed from `panel`: the panels are drawn again, dimmed
+/// or not (`panel::REDRAW`).
+fn redraw_panels(panel: HWND) {
+    unsafe { PostMessageW(panel, panel::REDRAW, 0, 0) };
+}
+
 /// Whether `pointer` holds the menu open.
 pub fn is_held_by(pointer: u32) -> bool {
     MENU.with_borrow(|menu| menu.as_ref().is_some_and(|m| m.pointer == Some(pointer)))
@@ -229,6 +243,7 @@ pub unsafe fn release(panel: HWND, pointer: u32, cancelled: bool) -> Option<Rele
     let m = MENU.take()?;
     debug_log!("パイメニューを閉じる");
     unsafe { DestroyWindow(m.hwnd) };
+    redraw_panels(m.panel);
     Some(match m.pointing.filter(|_| !cancelled) {
         Some(item) => Release::Run { set: m.set, item },
         None => Release::Nothing,
@@ -242,6 +257,7 @@ pub unsafe fn close(panel: HWND, pointer: Option<u32>) {
     if let Some(m) = menu {
         debug_log!("パイメニューを閉じる");
         unsafe { DestroyWindow(m.hwnd) };
+        redraw_panels(m.panel);
     }
 }
 
@@ -249,6 +265,7 @@ pub unsafe fn close(panel: HWND, pointer: Option<u32>) {
 pub unsafe fn close_all() {
     if let Some(m) = MENU.take() {
         unsafe { DestroyWindow(m.hwnd) };
+        redraw_panels(m.panel);
     }
     unsafe { end_linger() };
 }
@@ -341,6 +358,7 @@ unsafe fn tap_up(id: u32, at: (i32, i32), cancelled: bool) {
     let Some(item) = item else { return };
     let Some(m) = MENU.take() else { return };
     debug_log!("パイメニューを閉じる");
+    redraw_panels(m.panel);
     unsafe {
         linger(m.hwnd, id);
         panel::run_pie_item(m.panel, &m.set, item);

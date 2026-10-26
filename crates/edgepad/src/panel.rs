@@ -243,17 +243,6 @@ impl Panel {
         (self.key / 2).max(1)
     }
 
-    /// How far a swipe from the handle goes before it shows the panel
-    /// normally, not dimmed: two keys.
-    fn long_swipe_distance(&self) -> i32 {
-        (self.key * 2).max(1)
-    }
-
-    /// How far a flick on the panel goes before it undims it: a whole key.
-    fn flick_distance(&self) -> i32 {
-        self.key.max(1)
-    }
-
     /// How far a flick from `(x, y)` toward the screen edge goes before it
     /// hides the panel: three quarters of a key, or two thirds of the way to
     /// the edge where that is less. A one-column panel is only a key thick:
@@ -270,9 +259,10 @@ impl Panel {
         (self.key * 3 / 4).min(room * 2 / 3).max(1)
     }
 
-    /// The constant alpha it is drawn with now.
+    /// The constant alpha it is drawn with now: dimmed while a pie menu is
+    /// open, or a pen is over it, so what is under shows (spec 4.5).
     fn current_alpha(&self) -> u8 {
-        if DIMMED.get()[self.edge as usize] { self.dim_alpha } else { self.alpha }
+        if pie_menu::is_open() || PEN_OVER.get()[self.edge as usize] { self.dim_alpha } else { self.alpha }
     }
 }
 
@@ -335,9 +325,11 @@ thread_local! {
     // across rebuilds, never written to disk.
     static HIDDEN: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
-    // The edges shown dimmed by a short swipe from their handle (spec 4.5).
-    // Hiding an edge ends it, so every other way of showing it is normal.
-    static DIMMED: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
+    // The edges a pen hovers over, shown dimmed while it does (spec 4.5),
+    // and the pen's pointer: its leaving ends it, out of range too, when
+    // its kind may no longer be asked. Hiding an edge ends it.
+    static PEN_OVER: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
+    static PEN_ID: Cell<[u32; 4]> = const { Cell::new([0; 4]) };
     // The theme and accent of the settings, and the colours they come to.
     // Every panel shares them; Windows changing its own makes them anew.
     static STYLE: Cell<(Theme, Accent)> = const { Cell::new((Theme::Auto, Accent::Auto)) };
@@ -559,12 +551,8 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
                 send::key(vk as u16, false);
             }
         }
-        // An edge left without a panel is not dimmed when it comes back.
-        let mut dimmed = DIMMED.get();
-        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-            dimmed[edge as usize] &= panels.edges.iter().any(|p| p.edge == edge);
-        }
-        DIMMED.set(dimmed);
+        // A pen over a panel made anew comes to it again to dim it.
+        PEN_OVER.set([false; 4]);
         // Every edge is tried, even after one fails.
         panels.edges.iter().fold(true, |ok, p| create(p, panels) && ok)
     }
@@ -603,28 +591,52 @@ unsafe fn set_hidden(edge: Edge, hide: bool) {
     unsafe { apply_visibility() };
 }
 
-/// How a panel is shown.
-#[derive(Clone, Copy, PartialEq)]
-enum Look {
-    Normal,
-    Dimmed,
+/// Draw every panel again at its alpha now: a pie menu opened or closed
+/// (`pie_menu`). Posted, as it comes from inside the panels' own handling:
+/// in use further up the stack, they are drawn once they are free.
+pub const REDRAW: u32 = WM_APP + 2;
+
+/// Draw every panel again, at the alpha it has now. False if the panels
+/// are in use further up the stack.
+fn redraw_all() -> bool {
+    PANELS.with(|panels| {
+        let Ok(panels) = panels.try_borrow() else { return false };
+        for panel in panels.iter().filter(|p| unsafe { IsWindowVisible(p.hwnd) } != 0) {
+            unsafe { draw(panel) };
+        }
+        true
+    })
 }
 
-/// Show the panel on `edge` with `look`, or change how it is shown. It is
-/// redrawn at its new alpha before it goes up.
-unsafe fn show(edge: Edge, look: Look) {
-    let dim = look == Look::Dimmed;
-    let mut dimmed = DIMMED.get();
-    if dimmed[edge as usize] != dim {
-        dimmed[edge as usize] = dim;
-        DIMMED.set(dimmed);
-        debug_log!("パネル {}: {}", edge_name(edge), if dim { "半透明" } else { "通常表示" });
-        PANELS.with_borrow(|panels| {
-            for panel in panels.iter().filter(|p| p.edge == edge) {
-                unsafe { draw(panel) };
-            }
-        });
+/// Pointer `id` came over the panel of `hwnd` (`over`, if it is a pen), or
+/// went off it or out of range (if it is the pen that came): that panel
+/// alone is dimmed while a pen is there.
+unsafe fn pen_over(hwnd: HWND, id: u32, over: bool) {
+    let mut edge = None;
+    with_panel(hwnd, |panel| edge = Some(panel.edge));
+    let Some(edge) = edge else { return };
+    let (mut now, mut ids) = (PEN_OVER.get(), PEN_ID.get());
+    let k = edge as usize;
+    match over {
+        true if is_pen(id) => ids[k] = id,
+        false if now[k] && ids[k] == id => ids[k] = 0,
+        _ => return,
     }
+    if now[k] == over {
+        PEN_ID.set(ids);
+        return;
+    }
+    now[k] = over;
+    PEN_OVER.set(now);
+    PEN_ID.set(ids);
+    debug_log!("パネル {}: ペンが{}", edge_name(edge), if over { "乗った（半透明）" } else { "離れた" });
+    if !redraw_all() {
+        unsafe { PostMessageW(hwnd, REDRAW, 0, 0) };
+    }
+}
+
+/// Show the panel on `edge`.
+unsafe fn show(edge: Edge) {
     unsafe { set_hidden(edge, false) };
 }
 
@@ -646,8 +658,8 @@ pub unsafe fn toggle_all() {
 }
 
 /// Show or hide each panel and handle as `visible` and `handle_visible`
-/// say. A panel going away lets go of the keys held on it first, and is no
-/// longer dimmed: shown again, it is normal unless shown dimmed.
+/// say. A panel going away lets go of the keys held on it first, and has no
+/// pen over it any more.
 unsafe fn apply_visibility() {
     PANELS.with_borrow_mut(|panels| unsafe {
         for panel in panels {
@@ -659,13 +671,16 @@ unsafe fn apply_visibility() {
                 if show {
                     // Room first: no maximised window is under it as it shows.
                     dock(panel);
+                    // At the alpha it has now: a pie menu may have opened or
+                    // closed while it was hidden.
+                    draw(panel);
                     slide(panel, true);
                     ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE);
                     count_idle(panel);
                 } else {
-                    let mut dimmed = DIMMED.get();
-                    dimmed[panel.edge as usize] = false;
-                    DIMMED.set(dimmed);
+                    let mut over = PEN_OVER.get();
+                    over[panel.edge as usize] = false;
+                    PEN_OVER.set(over);
                     // Draws it, now at its normal alpha. Its keys go before
                     // it slides away, as when it goes at once.
                     let_go(panel);
@@ -866,12 +881,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_POINTERENTER => {
+                pen_over(hwnd, pointer_id(wp), true);
                 mouse_moved(hwnd, wp, Some(pointer_at(lp)));
                 0
             }
-            // Gone from the panel, though perhaps onto its handle.
+            // Gone from the panel, though perhaps onto its handle; a pen
+            // perhaps only out of range.
             WM_POINTERLEAVE => {
+                pen_over(hwnd, pointer_id(wp), false);
                 mouse_moved(hwnd, wp, None);
+                0
+            }
+            REDRAW => {
+                if !redraw_all() {
+                    PostMessageW(hwnd, REDRAW, 0, 0);
+                }
                 0
             }
             APPBAR_CALLBACK if wp as u32 == ABN_POSCHANGED => {
@@ -931,6 +955,13 @@ pub fn pointer_at(lp: LPARAM) -> (i32, i32) {
     ((lp & 0xFFFF) as i16 as i32, (lp >> 16 & 0xFFFF) as i16 as i32)
 }
 
+/// Whether pointer `id` is a pen.
+fn is_pen(id: u32) -> bool {
+    let mut kind = 0;
+    let known = unsafe { GetPointerType(id, &mut kind) } != 0;
+    known && kind == PT_PEN
+}
+
 /// Touch or mouse, not pen (pens press nothing), as the pointer's kind.
 pub unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
     let mut kind = 0;
@@ -942,10 +973,9 @@ pub unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
 }
 
 /// A pointer moved on a panel: a quick flick toward the screen edge hides the
-/// panel, letting go of the key it pressed. On a dimmed panel, a quick flick
-/// the other way shows it normally, and the key it pressed comes up as for a
-/// contact taken away: a gesture, not a key press. A finger holding a pie
-/// menu open slides to its items instead, and flicks nothing.
+/// panel, letting go of the key it pressed. A flick the other way is no
+/// gesture: the key stays pressed until the finger lifts. A finger holding a
+/// pie menu open slides to its items instead, and flicks nothing.
 unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
     unsafe { pie_menu::point(id, (x, y)) };
@@ -957,20 +987,14 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
         if let Some(s) = panel.starts.iter().find(|s| s.id == id && s.at.elapsed() <= FLICK_TIME) {
             let (dx, dy) = (x - s.x, y - s.y);
             let hide = panel.hide_distance((s.x, s.y));
-            flick = match gesture::swipe(panel.edge, dx, dy, hide) {
-                Some(Swipe::Outward) => Some((panel.edge, Swipe::Outward)),
-                _ => gesture::swipe(panel.edge, dx, dy, panel.flick_distance()).map(|f| (panel.edge, f)),
-            };
+            if gesture::swipe(panel.edge, dx, dy, hide) == Some(Swipe::Outward) {
+                flick = Some(panel.edge);
+            }
         }
     });
-    // Outside the borrow: hiding and undimming go over every panel.
-    match flick {
-        Some((edge, Swipe::Outward)) => unsafe { set_hidden(edge, true) },
-        Some((edge, Swipe::Inward)) if DIMMED.get()[edge as usize] => unsafe {
-            pointer_up(hwnd, wp, true);
-            show(edge, Look::Normal);
-        },
-        _ => {}
+    // Outside the borrow: hiding goes over every panel.
+    if let Some(edge) = flick {
+        unsafe { set_hidden(edge, true) };
     }
 }
 
@@ -1027,32 +1051,29 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 }
 
 /// A pointer that went down on handle `hwnd` moved, lifted or was lost. A
-/// short swipe inward shows the panel dimmed; carried on to a long one, the
-/// panel turns normal. A tap shows it normally.
+/// swipe inward, short or long, or a tap shows the panel.
 unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
     let Some(Start { x: x0, y: y0, .. }) =
         HANDLE_DRAGS.with_borrow(|drags| drags.iter().find(|d| d.hwnd == hwnd && d.id == id).copied())
     else {
         return;
     };
-    let Some((edge, short, long)) = PANELS.with(|panels| {
+    let Some((edge, short)) = PANELS.with(|panels| {
         let panels = panels.try_borrow().ok()?;
         let p = panels.iter().find(|p| p.handle_hwnd == hwnd)?;
-        Some((p.edge, p.swipe_distance(), p.long_swipe_distance()))
+        Some((p.edge, p.swipe_distance()))
     }) else {
         return;
     };
     let (dx, dy) = (x - x0, y - y0);
     let inward = |distance| gesture::swipe(edge, dx, dy, distance) == Some(Swipe::Inward);
-    // How it shows the panel, if it does, and whether the gesture is over.
+    // Whether it shows the panel, and whether the gesture is over.
     let (shows, over) = match msg {
-        WM_POINTERUPDATE if inward(long) => (Some(Look::Normal), true),
-        // Once: the swipe goes on, and may yet turn the panel normal.
-        WM_POINTERUPDATE if inward(short) && HIDDEN.get()[edge as usize] => (Some(Look::Dimmed), false),
-        WM_POINTERUPDATE => (None, false),
-        WM_POINTERUP => (gesture::is_tap(dx, dy, short).then_some(Look::Normal), true),
+        WM_POINTERUPDATE if inward(short) => (true, true),
+        WM_POINTERUPDATE => (false, false),
+        WM_POINTERUP => (gesture::is_tap(dx, dy, short), true),
         // Capture lost: the gesture ends with nothing more.
-        _ => (None, true),
+        _ => (false, true),
     };
     if over {
         HANDLE_DRAGS.with_borrow_mut(|drags| drags.retain(|d| d.id != id));
@@ -1060,10 +1081,10 @@ unsafe fn handle_pointer(hwnd: HWND, msg: u32, id: u32, (x, y): (i32, i32)) {
             unsafe { ReleaseCapture() };
         }
     }
-    if let Some(look) = shows {
+    if shows {
         // Shown on purpose, though it was up by hovering: it stays.
         set_hovered(edge, false);
-        unsafe { show(edge, look) };
+        unsafe { show(edge) };
     }
 }
 
@@ -1206,7 +1227,9 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
                     set: name,
                     labels: &labels,
                     palette: palette(),
-                    alpha: panel.current_alpha(),
+                    // The menu itself at the panels' opacity: they dim
+                    // behind it.
+                    alpha: panel.alpha,
                 });
             }
         });
@@ -1559,7 +1582,7 @@ unsafe fn hover_over(hwnd: HWND) {
     debug_log!("パネル {}: マウスのホバー", edge_name(edge));
     // Before showing: the handle stays up (see HOVERED).
     set_hovered(edge, true);
-    unsafe { show(edge, Look::Normal) };
+    unsafe { show(edge) };
     PANELS.with_borrow_mut(|panels| {
         for panel in panels.iter_mut().filter(|p| p.edge == edge) {
             unsafe {

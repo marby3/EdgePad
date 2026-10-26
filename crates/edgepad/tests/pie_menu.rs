@@ -270,32 +270,9 @@ fn opacity(backdrop: &TestWindow, at: POINT) -> i32 {
     100 - through * 100 / 255
 }
 
-fn centre(r: RECT) -> POINT {
-    POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }
-}
-
-/// Hide the left panel from the tray, then show it dimmed with a short mouse
-/// swipe from the handle (on CI a touch from the screen edge never reaches
-/// the handle; see the handle tests).
-fn show_dimmed(app: &Running) {
-    choose(app, "左辺");
-    assert!(panels_now(app).is_empty(), "precondition: the panel is hidden");
-    let start = centre(left_handle(app));
-    let mut saved = POINT { x: 0, y: 0 };
-    unsafe { GetCursorPos(&mut saved) };
-    mouse_move_to(start);
-    mouse_down_at(start);
-    let end = POINT { x: start.x + key_px() * 3 / 4, y: start.y };
-    mouse_move_to(end);
-    pump(100);
-    mouse_up_at(end);
-    unsafe { SetCursorPos(saved.x, saved.y) };
-    pump(200);
-}
-
 // AC4
 #[test]
-fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
+fn the_menu_takes_the_panels_colours_and_their_opacity() {
     let _desktop = desktop();
     let n = 2;
     let k = key_px() as f64;
@@ -329,19 +306,6 @@ fn the_menu_takes_the_panels_colours_and_its_opacity_dimmed_or_not() {
     assert!(o <= 4, "the gap between sectors is see-through, not {o}% opaque");
     let o = opacity(&backdrop, out(p, 0, n, rim + 6.0));
     assert!(o <= 4, "outside the ring is see-through, not {o}% opaque");
-    cancel(&mut touch, p);
-
-    show_dimmed(&app);
-    let p = key_centre(left_panel(&app), 0);
-    touch.down(1, p);
-    shown(&app);
-    let o = opacity(&backdrop, on_item(p, 0, n));
-    assert!((o - 40).abs() <= 4, "opened from the dimmed panel: at 40%, not {o}%");
-    // Sliding in to an item is no flick that undims the panel.
-    touch.move_to(1, toward(p, angle(1, n), 2.0 * k));
-    pointed(&app, "pie: point 1");
-    assert!(pie_window(&app).is_some(), "the menu stays open as the finger slides in");
-    assert_eq!(points(&app).last().map(String::as_str), Some("pie: point 1"));
     cancel(&mut touch, p);
 }
 

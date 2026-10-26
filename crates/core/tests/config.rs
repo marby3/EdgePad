@@ -8,8 +8,8 @@ const SPEC_EXAMPLE: &str = "\
 [general]
 hotkey        = Ctrl+Alt+E   ; 全辺の表示切替
 key_size      = 56           ; キー1辺（論理px）
-opacity       = 90           ; 通常表示の不透明度 %
-dim_opacity   = 35           ; 半透明表示の不透明度 %
+opacity       = 100          ; 通常表示の不透明度 %
+dim_opacity   = 35           ; パイメニュー表示中とペンが乗っている時の不透明度 %
 latch_ms      = 250          ; これ未満のタップでラッチ
 pen_presses   = false        ; ペンでキーを押せるか
 theme         = auto         ; light / dark / auto
@@ -74,7 +74,7 @@ fn the_spec_example_reads_without_errors_and_every_value_comes_through() {
 
     let g = &config.general;
     assert_eq!(g.hotkey, Some(combo(Mods::CTRL | Mods::ALT, Key::Char(b'E'))));
-    assert_eq!((g.key_size, g.opacity, g.dim_opacity, g.latch_ms), (56, 90, 35, 250));
+    assert_eq!((g.key_size, g.opacity, g.dim_opacity, g.latch_ms), (56, 100, 35, 250));
     assert!(!g.pen_presses);
     assert_eq!(g.theme, Theme::Auto);
 
@@ -158,7 +158,7 @@ top = more
     );
     let g = &config.general;
     assert_eq!(g.hotkey, None);
-    assert_eq!((g.key_size, g.opacity, g.dim_opacity, g.latch_ms), (56, 90, 35, 250));
+    assert_eq!((g.key_size, g.opacity, g.dim_opacity, g.latch_ms), (56, 100, 35, 250));
     assert_eq!((g.pen_presses, g.theme), (false, Theme::Auto));
     for edge in &config.edges {
         assert_eq!(*edge, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false });
