@@ -358,7 +358,7 @@ impl Document {
         true
     }
 
-    /// Key set `old` is called `new` now: so are the page and pie keys that
+    /// Key set `old` is called `new` now: so are the page, pie and layer keys that
     /// open it and the edges of profiles that show it. A page key's `next`
     /// and `prev` and an edge's `none` mean no set, whatever sets are
     /// called.
@@ -380,8 +380,8 @@ impl Document {
 }
 
 /// Whether setting `name` = `value` in a section of `kind` names key set
-/// `old`: a profile's edge, unless `none`, or the content of a pie key, or
-/// of a page key unless `next` or `prev`.
+/// `old`: a profile's edge, unless `none`, or the content of a pie or
+/// layer key, or of a page key unless `next` or `prev`.
 fn value_refers(kind: &str, name: &str, value: &str, old: &str) -> bool {
     let is = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
     if kind == "profile" {
@@ -392,5 +392,5 @@ fn value_refers(kind: &str, name: &str, value: &str, old: &str) -> bool {
     if name != "key" || !is(content, old) {
         return false;
     }
-    is(key_kind, "pie") || (is(key_kind, "page") && !is(content, "next") && !is(content, "prev"))
+    is(key_kind, "pie") || is(key_kind, "layer") || (is(key_kind, "page") && !is(content, "next") && !is(content, "prev"))
 }

@@ -88,6 +88,9 @@ const PIE: usize = 1063;
 const PIE_FIGURE: usize = 1064;
 const PIE_NOTE: usize = 1065;
 const KLE: usize = 1066;
+const LAYER_SET: usize = 1067;
+const LAYER_HOLD: usize = 1068;
+const LAYER_TOGGLE: usize = 1069;
 const TITLE_SET: usize = 1100;
 const TITLE_LABEL: usize = 1101;
 const TITLE_WIDTH: usize = 1102;
@@ -101,6 +104,7 @@ const WAIT_NOTE: usize = 1109;
 const TITLE_CONTENT: usize = 1110;
 const TITLE_TARGET: usize = 1111;
 const TITLE_PIE: usize = 1112;
+const TITLE_LAYER: usize = 1113;
 
 /// The sample's and the pie figure's window classes.
 pub(super) const SAMPLE_CLASS: *const u16 = w!("EdgePadSettingsSample");
@@ -108,9 +112,9 @@ pub(super) const PIE_CLASS: *const u16 = w!("EdgePadSettingsPie");
 
 /// The kinds, as the file writes them and as their buttons name them, and
 /// what each does, in a line.
-const KIND_NAMES: [&str; 9] = ["shortcut", "modifier", "hold", "repeat", "macro", "text", "run", "page", "pie"];
-const KIND_LABELS: [&str; 9] = ["ショートカット", "修飾キー", "押している間", "連打", "マクロ", "文字", "起動", "ページ", "パイ"];
-const ABOUTS: [&str; 9] = [
+const KIND_NAMES: [&str; 10] = ["shortcut", "modifier", "hold", "repeat", "macro", "text", "run", "page", "pie", "layer"];
+const KIND_LABELS: [&str; 10] = ["ショートカット", "修飾キー", "押している間", "連打", "マクロ", "文字", "起動", "ページ", "パイ", "レイヤー"];
+const ABOUTS: [&str; 10] = [
     "離した時に 1 回送ります。ラッチ中の修飾キーと合わせて送ります",
     "押している間だけ押します。短くタップするとラッチします",
     "押している間だけ押します。ラッチはしません",
@@ -120,6 +124,7 @@ const ABOUTS: [&str; 9] = [
     "プログラムやファイル、URL を開きます",
     "パネルのページか、表示するキーセットを切り替えます",
     "押した位置に、別のキーセットを項目にしたパイメニューを開きます",
+    "押している間か、押すたびに、パネルを別のキーセットに切り替えます",
 ];
 const SHORTCUT: usize = 0;
 const MODIFIER: usize = 1;
@@ -130,6 +135,7 @@ const TEXT: usize = 5;
 const RUN: usize = 6;
 const PAGE_KIND: usize = 7;
 const PIE_KIND: usize = 8;
+const LAYER_KIND: usize = 9;
 
 const MOD_KEYS: [(Key, &str); 4] = [(Key::Ctrl, "Ctrl"), (Key::Shift, "Shift"), (Key::Alt, "Alt"), (Key::Win, "Win")];
 const GROUP_NAMES: [&str; 5] = ["英数字", "F1〜F24", "移動・編集", "記号", "テンキー"];
@@ -203,6 +209,7 @@ const PARTS: &[(usize, Class, &str)] = &[
     (KINDS + 6, Toggle, KIND_LABELS[6]),
     (KINDS + 7, Toggle, KIND_LABELS[7]),
     (KINDS + 8, Toggle, KIND_LABELS[8]),
+    (KINDS + 9, Toggle, KIND_LABELS[9]),
     (ABOUT, Text, ""),
     (TITLE_STEPS, Text, "手順"),
     (STEPS, List, ""),
@@ -238,6 +245,10 @@ const PARTS: &[(usize, Class, &str)] = &[
     (PIE, Combo, ""),
     (PIE_FIGURE, Figure, ""),
     (PIE_NOTE, Text, ""),
+    (TITLE_LAYER, Text, "切り替え先"),
+    (LAYER_SET, Combo, ""),
+    (LAYER_HOLD, Toggle, "押している間"),
+    (LAYER_TOGGLE, Toggle, "押すたびに切り替える"),
 ];
 
 /// Where the keys captured go: the chosen key (or its macro's step), or
@@ -579,6 +590,7 @@ fn used_by(doc: &Document, set: &str) -> Vec<String> {
                 }
                 match line.kind() {
                     Some(PIE_KIND) => places.push(format!("{}キーのパイ", line.label)),
+                    Some(LAYER_KIND) => places.push(format!("{}キーのレイヤー", line.label)),
                     Some(PAGE_KIND) if PAGE_TURNS.iter().all(|(t, _)| !t.eq_ignore_ascii_case(set)) => {
                         places.push(format!("{}キーのページ", line.label))
                     }
@@ -749,7 +761,7 @@ fn shows(e: &Editor, id: usize, kind: Option<usize>, wait: bool, cut: bool) -> b
         TITLE_SET | ADD_SET | RENAME | REMOVE_SET | KLE | USED | SAMPLE | ADD_KEY | REMOVE_KEY | KEY_UP | KEY_DOWN => true,
         CUT => key && cut,
         TITLE_LABEL | LABEL | TITLE_WIDTH | WIDTH | WIDTH_NOTE | ABOUT => key,
-        _ if (KINDS..KINDS + 9).contains(&id) => key,
+        _ if (KINDS..KINDS + KIND_NAMES.len()).contains(&id) => key,
         TITLE_SENDS | SENDS | CAPTURE => sends,
         _ if (MODS..MODS + 4).contains(&id) => sends,
         _ if (GROUPS..GROUPS + 5).contains(&id) => sends && kind != Some(MODIFIER),
@@ -760,6 +772,7 @@ fn shows(e: &Editor, id: usize, kind: Option<usize>, wait: bool, cut: bool) -> b
         TITLE_CONTENT | CONTENT => matches!(kind, Some(TEXT | RUN)),
         TITLE_TARGET | TARGET => kind == Some(PAGE_KIND),
         TITLE_PIE | PIE | PIE_FIGURE | PIE_NOTE => kind == Some(PIE_KIND),
+        TITLE_LAYER | LAYER_SET | LAYER_HOLD | LAYER_TOGGLE => kind == Some(LAYER_KIND),
         _ => false,
     }
 }
@@ -889,6 +902,10 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     at(PIE, rx + s(124), y1, s(200), s(LIST_H));
     at(PIE_FIGURE, rx, y1 + pitch, s(120), s(100));
     at(PIE_NOTE, rx + s(128), y1 + pitch, rw - s(128), s(100));
+    at(TITLE_LAYER, rx, y1, s(96), h);
+    at(LAYER_SET, rx + s(100), y1, s(200), s(LIST_H));
+    at(LAYER_HOLD, rx, y1 + pitch, s(120), h);
+    at(LAYER_TOGGLE, rx + s(120) + gap, y1 + pitch, s(180), h);
 }
 
 /// Lay buttons `first`.. side by side across `x`, `width`: each as wide as
@@ -908,6 +925,12 @@ unsafe fn lay_row(e: &Editor, first: usize, names: &[&str], x: i32, y: i32, widt
             .collect();
         SelectObject(dc, old);
         ReleaseDC(e.hwnd, dc);
+        let total: i32 = widths.iter().sum();
+        // Too wide for the row: each one narrower, by its share.
+        let widths: Vec<i32> = match total > width && total > 0 {
+            true => widths.iter().map(|w| w * width / total).collect(),
+            false => widths,
+        };
         let total: i32 = widths.iter().sum();
         let extra = ((width - total) / names.len() as i32).max(0);
         let mut at = x;
@@ -948,6 +971,7 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
         let targets: Vec<String> = PAGE_TURNS.iter().map(|(_, n)| n.to_string()).chain(sets.iter().cloned()).collect();
         fill(part_of(e, TARGET), &targets, false);
         fill(part_of(e, PIE), &sets, false);
+        fill(part_of(e, LAYER_SET), &sets, false);
         show_key(e, &sets);
     }
     update_sample(e);
@@ -1013,6 +1037,10 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
         let target = turn.or_else(|| sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)).map(|i| i + PAGE_TURNS.len()));
         choose_item(part_of(e, TARGET), target, false);
         choose_item(part_of(e, PIE), sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)), false);
+        choose_item(part_of(e, LAYER_SET), sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)), false);
+        let toggle = line.option("mode").is_some_and(|m| m.eq_ignore_ascii_case("toggle"));
+        SendMessageW(part_of(e, LAYER_HOLD), BM_SETCHECK, (!toggle) as WPARAM, 0);
+        SendMessageW(part_of(e, LAYER_TOGGLE), BM_SETCHECK, toggle as WPARAM, 0);
         let (items, note) = pie_note(&e.doc, &line.content);
         set_text(part_of(e, PIE_NOTE), &note);
         PIE_ITEMS.set(items);
@@ -1124,6 +1152,9 @@ fn convert(line: &mut Line, kind: usize, step: usize, sets: &[String], own: &str
     line.kind = KIND_NAMES[kind].into();
     if kind != REPEAT {
         line.set_option("interval", None);
+    }
+    if kind != LAYER_KIND {
+        line.set_option("mode", None);
     }
 }
 
@@ -1321,7 +1352,7 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 move_by(e, if id == KEY_UP { -1 } else { 1 });
                 None
             }
-            _ if clicked && (KINDS..KINDS + 9).contains(&id) => {
+            _ if clicked && (KINDS..KINDS + KIND_NAMES.len()).contains(&id) => {
                 let (sets, step) = (set_names(&e.doc), e.keymap.step);
                 change(e, id, |line| {
                     if line.kind() != Some(id - KINDS) {
@@ -1385,6 +1416,24 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                         Ok(())
                     });
                 }
+                None
+            }
+            LAYER_SET if code == CBN_SELCHANGE => {
+                let at = SendMessageW(part_of(e, LAYER_SET), CB_GETCURSEL, 0, 0);
+                if let Some(target) = usize::try_from(at).ok().and_then(|i| set_names(&e.doc).get(i).cloned()) {
+                    change(e, LAYER_SET, |line| {
+                        line.content = target;
+                        Ok(())
+                    });
+                }
+                None
+            }
+            // Held is the default: written only when toggled.
+            LAYER_HOLD | LAYER_TOGGLE if clicked => {
+                change(e, id, |line| {
+                    line.set_option("mode", (id == LAYER_TOGGLE).then(|| "toggle".to_string()));
+                    Ok(())
+                });
                 None
             }
             PIE if code == CBN_SELCHANGE => {
