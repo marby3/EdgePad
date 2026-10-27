@@ -247,9 +247,14 @@ fn is_candidate(e: &Editor, hwnd: HWND) -> bool {
     parent == part_of(e, CANDIDATES)
 }
 
+/// Whether `hwnd` shows a value turned away: a field, or the edit of the
+/// drop-down list typed in.
 pub(super) fn is_wrong(hwnd: HWND) -> bool {
+    let parent = unsafe { GetParent(hwnd) };
     super::EDITOR.with(|e| {
-        e.try_borrow().ok().is_some_and(|e| e.as_ref().is_some_and(|e| e.apps.wrong.as_ref().is_some_and(|(id, _)| part_of(e, *id) == hwnd)))
+        e.try_borrow().ok().is_some_and(|e| {
+            e.as_ref().is_some_and(|e| e.apps.wrong.as_ref().is_some_and(|(id, _)| [hwnd, parent].contains(&part_of(e, *id))))
+        })
     })
 }
 
@@ -348,15 +353,17 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
 }
 
 /// Ask the running EdgePad which profile is in effect, and mark its app.
-/// Its answer counts the profiles of the file it read: the file as the
-/// window last saw it.
+/// Its answer counts the profiles of the file it read, which it reads again
+/// whenever the file is saved: the file as it is now.
 pub(super) unsafe fn ask_active(e: &mut Editor) {
     let index = unsafe { resident_tray() }.map_or(0, |tray| {
         let mut answer = 0usize;
         let sent = unsafe { SendMessageTimeoutW(tray, profile::active_message(), 0, 0, SMTO_ABORTIFHUNG, 500, &mut answer) };
         if sent == 0 { 0 } else { answer }
     });
-    let active = index.checked_sub(1).and_then(|i| config::parse(&e.known).ok().and_then(|c| c.profiles.get(i).map(|p| p.name.clone())));
+    let file = super::read_file(&e.path).ok();
+    let profiles = file.and_then(|f| config::parse(&f).ok()).map(|c| c.profiles);
+    let active = index.checked_sub(1).and_then(|i| profiles?.get(i).map(|p| p.name.clone()));
     if active != e.apps.active {
         e.apps.active = active;
         unsafe { refresh(e) };
@@ -451,16 +458,18 @@ fn name_for(doc: &Document, process: &str) -> String {
 }
 
 /// Add a profile for the process typed or chosen; or say why not.
-unsafe fn add(e: &mut Editor) {
-    let process = text_of(part_of(e, CANDIDATES)).trim().to_string();
+unsafe fn add(e: &mut Editor) -> bool {
+    // The app is matched by its exe's name: a path typed is its name.
+    let typed = text_of(part_of(e, CANDIDATES));
+    let process = typed.trim().rsplit(['\\', '/']).next().unwrap_or("").trim().to_string();
     let added = if process.is_empty() {
         Err("プロセス名を選ぶか入れてください".to_string())
     } else if profile_of(&e.doc, &process, None).is_some() {
         Err(format!("「{process}」のプロファイルはもうあります"))
     } else {
         let name = name_for(&e.doc, &process);
-        let section = format!("profile.{name}");
-        if e.doc.add_section(&section) && e.doc.set_value(&section, "process", Some(&process)) {
+        // Made with its process, or not at all.
+        if e.doc.set_value(&format!("profile.{name}"), "process", Some(&process)) {
             e.apps.profile = Some(name);
             e.apps.adding = false;
             Ok(())
@@ -468,7 +477,9 @@ unsafe fn add(e: &mut Editor) {
             Err(format!("「{process}」はファイルに書けません"))
         }
     };
+    let ok = added.is_ok();
     unsafe { taken(e, CANDIDATES, added) };
+    ok
 }
 
 /// What a change of `field` came to, as on the キー配置 page.
@@ -512,12 +523,13 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 let at = SendMessageW(part_of(e, APPS), LB_GETCURSEL, 0, 0);
                 if let Some(name) = usize::try_from(at).ok().and_then(|i| profiles(&e.doc).get(i).cloned()) {
                     e.apps.profile = (name != DEFAULT).then_some(name);
-                    e.apps.wrong = None;
+                    forget_reason(e);
                     refresh(e);
                 }
                 None
             }
             ADD_APP if clicked => {
+                forget_reason(e);
                 let combo = part_of(e, CANDIDATES);
                 fill(combo, &apps_open(), false);
                 set_text(combo, "");
@@ -525,10 +537,8 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 show(e);
                 Some(combo)
             }
-            ADD if clicked => {
-                add(e);
-                None
-            }
+            // Added, the list has the focus: the parts to add are gone.
+            ADD if clicked => add(e).then(|| part_of(e, APPS)),
             CANCEL_ADD if clicked => Some(cancel_adding(e)),
             REMOVE_APP if clicked => {
                 if let Some(name) = e.apps.profile.clone() {
@@ -563,6 +573,17 @@ pub(super) unsafe fn command(id: usize, code: u32) {
     }
 }
 
+/// Forget a value turned away on the page, which is no longer in a field:
+/// the status line says one still standing, or the question asked.
+fn forget_reason(e: &mut Editor) {
+    if e.apps.wrong.take().is_some() {
+        match super::standing_reason(e) {
+            Some(reason) => tell(e, &reason),
+            None => super::ask_reason(e),
+        }
+    }
+}
+
 /// Stop choosing a process to add.
 fn cancel_adding(e: &mut Editor) -> HWND {
     e.apps.adding = false;
@@ -582,8 +603,7 @@ pub(super) unsafe fn candidate_key(focus: HWND, enter: bool) -> bool {
             return None;
         }
         if enter {
-            unsafe { add(e) };
-            None
+            Some(unsafe { add(e) }.then(|| part_of(e, APPS)))
         } else {
             Some(Some(cancel_adding(e)))
         }
@@ -594,7 +614,8 @@ pub(super) unsafe fn candidate_key(focus: HWND, enter: bool) -> bool {
             unsafe { SetFocus(hwnd) };
             true
         }
-        _ => with_editor(|e| is_candidate(e, focus)) == Some(true),
+        Some(None) => true,
+        None => false,
     }
 }
 
@@ -609,7 +630,7 @@ pub(super) unsafe fn commit() -> bool {
         let Some(name) = e.apps.profile.clone() else { return };
         let process = text_of(field).trim().to_string();
         let result = if process.is_empty() {
-            Err("process が空".to_string())
+            Err("プロセス名が空です".to_string())
         } else if profile_of(&e.doc, &process, Some(&name)).is_some() {
             Err(format!("「{process}」のプロファイルはもうあります"))
         } else if process_of(&e.doc, &name).as_deref() == Some(process.as_str())

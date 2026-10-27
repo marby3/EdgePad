@@ -316,7 +316,7 @@ fn profiles_are_added_from_the_apps_open_or_by_name_and_removed() {
         type_text(name);
         click_id(editor, ADD);
     }
-    assert!(within_3s(|| status(editor).contains("Foo.exe") || status(editor).contains("foo.EXE")), "a process with a profile: {:?}", status(editor));
+    assert!(within_3s(|| status(editor).contains("foo.EXE") && status(editor).contains("もうあります")), "a process with a profile: {:?}", status(editor));
     assert_eq!(items(list).iter().filter(|i| unmarked(i).eq_ignore_ascii_case("foo.exe")).count(), 1, "{:?}", items(list));
 
     // The default cannot be removed; another can.
@@ -522,4 +522,23 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     let right = part(editor, RIGHT);
     assert!(within_3s(|| unsafe { SendMessageW(right, CB_GETDROPPEDSTATE, 0, 0) } != 0), "→ then Enter opens the right edge's list");
     press(VK_ESCAPE);
+}
+
+// A process name the file cannot hold is not added, and nothing is left of it.
+#[test]
+fn a_process_name_the_file_cannot_hold_is_not_added() {
+    let _desktop = desktop();
+    let app = launch_with(Some(&settings()), None);
+    let editor = open_apps(&app);
+    let list = part(editor, APPS);
+    let before = items(list).len();
+    click_id(editor, ADD_APP);
+    click_id(editor, CANDIDATES);
+    type_text("Bad ;x.exe");
+    click_id(editor, ADD);
+    assert!(within_3s(|| status(editor).contains("Bad ;x.exe")), "why: {:?}", status(editor));
+    assert_eq!(items(list).len(), before, "no app added: {:?}", items(list));
+    save(editor);
+    assert!(within_3s(|| status(editor).contains("保存しました")), "the rest saves: {:?}", status(editor));
+    assert!(!file(&app).contains("[profile.bad"), "{}", file(&app));
 }

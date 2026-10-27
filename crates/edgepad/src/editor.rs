@@ -1664,7 +1664,8 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
                 // Naming a key set, Esc leaves the name as it was.
                 VK_ESCAPE if keymap::naming(focus) => keymap::cancel_naming(),
                 // An open drop-down closes on Esc, as its own.
-                VK_ESCAPE if SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) == 0 => {
+                // A drop-down's edit has the focus where one is typed in.
+                VK_ESCAPE if SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) == 0 && closed => {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
                     true
                 }
