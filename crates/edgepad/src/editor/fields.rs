@@ -6,7 +6,9 @@
 //! drop-down list, or a check box), a note of what it takes, and 既定に戻す
 //! when the setting is written in the file, or 既定値 when it is not. The
 //! parts have control ids by row (FIELD, RESET, LABEL, NOTE, MARK + the
-//! row's index), which the tests go by too.
+//! row's index), which the tests go by too. hotkey has 押して取り込む
+//! (CAPTURE) beside it too, to press the keys rather than write them
+//! (`keymap::Capture`).
 //!
 //! A value is checked as the parser reads it before it goes into the
 //! window's copy of the file: one it would turn away stays in its field,
@@ -28,9 +30,10 @@ use super::{Editor, MARGIN, PAINT, mark_unsaved, scale, tell, wide, window_dpi, 
 use crate::colors::colorref;
 use crate::tray;
 
-/// Control ids: the figure; and by row, its field, 既定に戻す, label, note
-/// and 既定値.
+/// Control ids: the figure, hotkey's 押して取り込む; and by row, its field,
+/// 既定に戻す, label, note and 既定値.
 pub(super) const FIGURE: usize = 20;
+pub(super) const CAPTURE: usize = 21;
 pub(super) const FIELD: usize = 400;
 pub(super) const RESET: usize = 500;
 const LABEL: usize = 600;
@@ -48,6 +51,7 @@ const LABEL_W: i32 = 110;
 const FIELD_W: i32 = 120;
 const NOTE_W: i32 = 140;
 const RESET_W: i32 = 96;
+const CAPTURE_W: i32 = 236;
 /// A drop-down list's height with its list open.
 const LIST_H: i32 = 160;
 const FIGURE_W: i32 = 160;
@@ -65,8 +69,8 @@ const EDGES: [(Edge, &str); 4] = [(Edge::Left, "left"), (Edge::Right, "right"), 
 /// The edit controls' messages, of Win32_UI_Controls, a feature taken for
 /// these alone otherwise.
 pub(super) const EM_SETSEL: u32 = 0x00B1;
-const EM_GETMODIFY: u32 = 0x00B8;
-const EM_SETMODIFY: u32 = 0x00B9;
+pub(super) const EM_GETMODIFY: u32 = 0x00B8;
+pub(super) const EM_SETMODIFY: u32 = 0x00B9;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Group {
@@ -140,6 +144,9 @@ const ROWS: [Spec; 20] = [
     spec(O, "hover_ms", "", Number, 10),
     spec(O, "auto_hide_ms", "", Number, 1000),
 ];
+
+/// hotkey's row.
+const HOTKEY: usize = 17;
 
 /// The range of row `spec`'s number, if it has one.
 fn range(spec: &Spec) -> Option<config::Range> {
@@ -293,6 +300,9 @@ pub(super) unsafe fn make(parent: HWND) -> Option<(Vec<Row>, HWND)> {
             if !made {
                 return None;
             }
+            if i == HOTKEY && control(parent, 0, w!("Button"), "押して取り込む", CAPTURE, WS_TABSTOP | BS_PUSHBUTTON as u32).is_null() {
+                return None;
+            }
         }
     }
     Some((rows, figure))
@@ -300,7 +310,13 @@ pub(super) unsafe fn make(parent: HWND) -> Option<(Vec<Row>, HWND)> {
 
 /// Every part of the rows, for fonts and themes.
 pub(super) fn parts(e: &Editor) -> Vec<HWND> {
-    e.rows.iter().flat_map(|r| [r.label, r.field, r.note, r.reset, r.mark]).filter(|h| !h.is_null()).collect()
+    let rows = e.rows.iter().flat_map(|r| [r.label, r.field, r.note, r.reset, r.mark]);
+    rows.chain([capture(e)]).filter(|h| !h.is_null()).collect()
+}
+
+/// hotkey's 押して取り込む.
+fn capture(e: &Editor) -> HWND {
+    unsafe { GetDlgItem(e.hwnd, CAPTURE as i32) }
 }
 
 /// The rows' fields to theme as edit controls and drop-downs, and their
@@ -316,6 +332,7 @@ pub(super) fn themed(e: &Editor) -> (Vec<HWND>, Vec<HWND>) {
             buttons.push(row.reset);
         }
     }
+    buttons.push(capture(e));
     (fields, buttons)
 }
 
@@ -357,6 +374,9 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, bottom: i32) {
             for part in [row.reset, row.mark] {
                 MoveWindow(part, nx + s(NOTE_W) + m, y, s(RESET_W), h, 1);
             }
+            if spec.name == "hotkey" {
+                MoveWindow(capture(e), nx + s(NOTE_W) + s(RESET_W) + 2 * m, y, s(CAPTURE_W), h, 1);
+            }
         }
     }
     unsafe { MoveWindow(e.figure, left, top, s(FIGURE_W), pitch * DISPLAY_ROWS - (pitch - h), 1) };
@@ -384,6 +404,17 @@ pub(super) unsafe fn show(e: &Editor) {
         shown(row.mark, on && !row.written);
     }
     shown(e.figure, e.page == EDGES_PAGE);
+    shown(capture(e), e.page == OPERATION_PAGE);
+}
+
+/// hotkey captured as `text`: put in its field and taken, as if typed.
+pub(super) unsafe fn set_hotkey(text: &str) {
+    let Some(field) = with_editor(|e| e.rows[HOTKEY].field) else { return };
+    set_text(field, text);
+    unsafe {
+        SendMessageW(field, EM_SETMODIFY, 1, 0);
+        commit(FIELD + HOTKEY, true);
+    }
 }
 
 /// The handle as the file has it for `section`: none, or its parts. Not
@@ -477,7 +508,7 @@ unsafe fn refresh_rows(e: &mut Editor, rows: impl IntoIterator<Item = usize>) {
         had |= unsafe { refresh_row(e, i) };
     }
     if had {
-        match standing_reason(e) {
+        match super::standing_reason(e) {
             Some(reason) => tell(e, &reason),
             None => super::ask_reason(e),
         }

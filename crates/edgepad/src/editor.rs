@@ -55,6 +55,7 @@ use crate::panel::{pointer_at, pointer_id};
 use crate::{settings, tray, watch};
 
 mod fields;
+mod keymap;
 
 /// The window's class: also how the running EdgePad and the tests find it.
 pub const CLASS: *const u16 = w!("EdgePadSettings");
@@ -96,9 +97,12 @@ const BUTTON_W: i32 = 120;
 const ANSWER_W: i32 = 136;
 
 /// The figure asks for edge wParam to be chosen; a field, id wParam, to be
-/// taken once the window is free.
+/// taken once the window is free; the sample, for key wParam to be chosen;
+/// and the parts are to be placed again, once the window is free.
 const WM_CHOOSE_EDGE: u32 = WM_APP + 1;
 const WM_COMMIT: u32 = WM_APP + 2;
+const WM_CHOOSE_KEY: u32 = WM_APP + 3;
+const WM_LAY_OUT: u32 = WM_APP + 4;
 
 /// Styles, messages and notices of Win32_System_SystemServices and
 /// Win32_UI_Controls, features taken for these alone otherwise.
@@ -218,6 +222,7 @@ struct Editor {
     figure: HWND,
     /// The edge the figure has chosen, of `fields::EDGES`.
     edge: usize,
+    keymap: keymap::Keymap,
     /// The line of the file the last save failed on, while the status line
     /// leads to it.
     fault: Cell<Option<usize>>,
@@ -454,6 +459,19 @@ unsafe fn register() -> bool {
             debug_log!("設定画面の図の窓クラスを登録できない");
             return false;
         }
+        wc.lpfnWndProc = Some(keymap::sample_proc);
+        wc.lpszClassName = keymap::SAMPLE_CLASS;
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            debug_log!("設定画面の見本の窓クラスを登録できない");
+            return false;
+        }
+        wc.lpfnWndProc = Some(keymap::pie_proc);
+        wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+        wc.lpszClassName = keymap::PIE_CLASS;
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            debug_log!("設定画面のパイの図の窓クラスを登録できない");
+            return false;
+        }
     }
     REGISTERED.set(true);
     true
@@ -485,8 +503,11 @@ unsafe fn restyle() {
     let now = look();
     let Some(old) = PAINT.get().filter(|p| p.look != now) else { return };
     let Some((hwnd, buttons, typed)) = with_editor(|e| {
-        let (typed, theirs) = fields::themed(e);
-        let buttons: Vec<HWND> = [e.open_text, e.save].into_iter().chain(e.answers.iter().copied()).chain(theirs).collect();
+        let (mut typed, theirs) = fields::themed(e);
+        let (keymap_typed, keymap_buttons) = keymap::themed(e);
+        typed.extend(keymap_typed);
+        let buttons: Vec<HWND> =
+            [e.open_text, e.save].into_iter().chain(e.answers.iter().copied()).chain(theirs).chain(keymap_buttons).collect();
         (e.hwnd, buttons, typed)
     }) else {
         return;
@@ -501,6 +522,8 @@ unsafe fn restyle() {
         for part in typed {
             RedrawWindow(part, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
         }
+        // The sample's panel colours, of theme = auto, follow Windows too.
+        with_editor(|e| keymap::refresh(e));
         RedrawWindow(hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
     }
 }
@@ -585,9 +608,10 @@ unsafe fn open() -> bool {
             }
             let shown = path.display().to_string();
             let path_part = part(hwnd, w!("Static"), &shown, PATH, SS_NOPREFIX | SS_CENTERIMAGE | SS_PATHELLIPSIS);
-            // The rows, between the sidebar and the bottom row, for the Tab
-            // key's order.
-            let rows = fields::make(hwnd);
+            // The pages' parts, between the sidebar and the bottom row, for
+            // the Tab key's order.
+            let keymap = keymap::make(hwnd);
+            let rows = fields::make(hwnd).filter(|_| keymap);
             let open_text = button(hwnd, "テキストで開く", OPEN_TEXT);
             let save = button(hwnd, "保存", SAVE);
             ([sidebar, heading, status, path_part, open_text, save], rows)
@@ -629,6 +653,7 @@ unsafe fn open() -> bool {
             rows,
             figure,
             edge: 0,
+            keymap: keymap::Keymap::default(),
             fault: Cell::new(None),
             focus: sidebar,
             marked: false,
@@ -639,9 +664,15 @@ unsafe fn open() -> bool {
         };
         PAINT.set(Some(Paint::new(look, font, path_part)));
         set_fonts(&editor);
-        let (typed, buttons) = fields::themed(&editor);
+        let (mut typed, mut buttons) = fields::themed(&editor);
+        let (keymap_typed, keymap_buttons) = keymap::themed(&editor);
+        typed.extend(keymap_typed);
+        buttons.extend(keymap_buttons);
         EDITOR.set(Some(editor));
-        with_editor(|e| fields::refresh(e));
+        with_editor(|e| {
+            fields::refresh(e);
+            keymap::refresh(e);
+        });
         title_bar(hwnd, look.dark);
         button_theme(&[open_text, save].into_iter().chain(buttons).collect::<Vec<_>>(), look.dark);
         field_theme(&typed, look.dark);
@@ -661,7 +692,7 @@ unsafe fn open() -> bool {
 unsafe fn set_fonts(e: &Editor) {
     unsafe {
         let all = [e.sidebar, e.status, e.path_part, e.open_text, e.save].into_iter().chain(e.answers.iter().copied());
-        for p in all.chain(fields::parts(e)) {
+        for p in all.chain(fields::parts(e)).chain(keymap::parts(e)) {
             SendMessageW(p, WM_SETFONT, e.font as WPARAM, 1);
         }
         SendMessageW(e.heading, WM_SETFONT, e.heading_font as WPARAM, 1);
@@ -731,8 +762,11 @@ unsafe fn lay_out() {
         // The rows, down to the status line, a row of answers left room for.
         let rows_bottom = side_bottom - bh - m - s(STATUS_H) - m;
         with_editor(|e| {
-            fields::place(e, left, m + s(HEADING_H) + m, rows_bottom);
+            let top = m + s(HEADING_H) + m;
+            fields::place(e, left, top, rows_bottom);
+            keymap::place(e, left, top, width, rows_bottom);
             fields::show(e);
+            keymap::show(e);
         });
 
         // The answers right aligned in their row; the status line above.
@@ -760,7 +794,14 @@ unsafe fn lay_out() {
 unsafe fn show_page(index: usize) {
     let Some((sidebar, heading)) = with_editor(|e| {
         e.page = index;
-        unsafe { fields::show(e) };
+        keymap::cancel_capture(e);
+        unsafe {
+            fields::show(e);
+            if index == keymap::PAGE {
+                keymap::refresh(e);
+            }
+            keymap::show(e);
+        }
         (e.sidebar, e.heading)
     }) else {
         return;
@@ -815,9 +856,9 @@ fn tell_fault(e: &Editor, reason: &str, line: usize) {
 /// The status line leading to the line a save failed on was pressed: show
 /// the page of that line, and the field of its setting, if it has one.
 unsafe fn go_to_fault() {
-    let Some((page, row, edge)) = with_editor(|e| {
+    let Some(((page, row, edge), section)) = with_editor(|e| {
         let (section, name) = e.doc.place(e.fault.get()?);
-        Some(fields::locate(section.as_deref(), name.as_deref()))
+        Some((fields::locate(section.as_deref(), name.as_deref()), section))
     })
     .flatten() else {
         return;
@@ -836,6 +877,9 @@ unsafe fn go_to_fault() {
         if let Some(edge) = edge.filter(|_| row.is_some()) {
             fields::choose_edge(edge);
         }
+        if let Some(set) = section.as_deref().and_then(|s| s.strip_prefix("set.")) {
+            keymap::choose_set(set);
+        }
         if let Some(field) = row.and_then(|i| with_editor(|e| fields::field(e, i))) {
             SetFocus(field);
         }
@@ -852,8 +896,14 @@ unsafe fn enter_focused() {
     unsafe {
         let focus = GetFocus();
         let id = GetDlgCtrlID(focus) as usize;
-        if with_editor(|e| fields::is_typed(e, focus)) == Some(true) {
-            fields::commit(id, false);
+        match with_editor(|e| (fields::is_typed(e, focus), keymap::is_typed(e, focus))) {
+            Some((true, _)) => {
+                fields::commit(id, false);
+            }
+            Some((_, true)) => {
+                keymap::commit(id);
+            }
+            _ => {}
         }
     }
 }
@@ -872,6 +922,12 @@ unsafe fn mark_unsaved(e: &mut Editor) {
         SetWindowTextW(e.hwnd, title.as_ptr());
         SendMessageW(e.save, BM_SETSTYLE, style as WPARAM, 1);
     }
+}
+
+/// The reason a field's value was turned away, of one still standing, of
+/// any page.
+fn standing_reason(e: &Editor) -> Option<String> {
+    fields::standing_reason(e).or_else(|| keymap::standing_reason(e))
 }
 
 /// Question `ask`, as the status line puts it.
@@ -1084,6 +1140,7 @@ unsafe fn command(id: usize) {
                         e.known = bytes;
                         mark_unsaved(e);
                         fields::refresh(e);
+                        keymap::refresh(e);
                         said = "読み直しました";
                         true
                     }
@@ -1131,7 +1188,7 @@ unsafe fn command(id: usize) {
             } else {
                 // Saved with a field's value turned away: that value is not
                 // in the file, which the status line goes on saying.
-                with_editor(|e| match fields::standing_reason(e).filter(|_| id == SAVE) {
+                with_editor(|e| match standing_reason(e).filter(|_| id == SAVE) {
                     Some(reason) => set_status(e, &format!("{said}\n保存していない値があります: {reason}")),
                     None => set_status(e, said),
                 });
@@ -1180,10 +1237,13 @@ unsafe fn part_colours(dc: HDC, part: HWND) -> LRESULT {
         String::from_utf16_lossy(&name[..n.max(0) as usize])
     };
     let paint = PAINT.get();
+    let wrong = fields::is_wrong(part) || keymap::is_wrong(part);
+    let sidebar = unsafe { GetDlgCtrlID(part) } as usize == SIDEBAR;
     let (ink, fill, brush) = match class.as_str() {
-        "Edit" | "ComboLBox" if fields::is_wrong(part) => (look.text, look.wrong, paint.map_or(brush, |p| p.wrong)),
+        "Edit" | "ComboLBox" if wrong => (look.text, look.wrong, paint.map_or(brush, |p| p.wrong)),
         "Edit" | "ComboLBox" => (look.text, look.field, paint.map_or(brush, |p| p.field)),
-        "ListBox" => (look.text, look.sidebar, side),
+        "ListBox" if sidebar => (look.text, look.sidebar, side),
+        "ListBox" => (look.text, look.field, paint.map_or(brush, |p| p.field)),
         _ if part == path => (look.dim, look.background, brush),
         _ => (look.text, look.background, brush),
     };
@@ -1227,7 +1287,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             WM_COMMIT => {
                 if fields::is_field(wp) {
                     fields::commit(wp, false);
+                } else if keymap::is_typed_id(wp) {
+                    keymap::commit(wp);
                 }
+                0
+            }
+            WM_CHOOSE_KEY => {
+                keymap::choose_key(wp);
+                0
+            }
+            WM_LAY_OUT => {
+                lay_out();
                 0
             }
             WM_DRAWITEM if wp == SIDEBAR => {
@@ -1307,6 +1377,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         fields::commit(id, true);
                     }
                     _ => {}
+                }
+                0
+            }
+            WM_COMMAND if keymap::is_part(wp & 0xFFFF) => {
+                keymap::command(wp & 0xFFFF, (wp >> 16 & 0xFFFF) as u32);
+                0
+            }
+            WM_COMMAND if wp & 0xFFFF == fields::CAPTURE => {
+                if (wp >> 16 & 0xFFFF) as u32 == BN_CLICKED {
+                    keymap::capture_hotkey();
                 }
                 0
             }
@@ -1427,8 +1507,8 @@ unsafe fn wheel(hwnd: HWND, msg: &MSG) -> bool {
         // Over the window, the wheel steps only a number under the cursor:
         // nothing else, the focused part's choice not either.
         let notches = (msg.wParam >> 16 & 0xFFFF) as i16 as i32 / WHEEL_DELTA as i32;
-        if notches != 0 {
-            fields::step(under, notches, shift());
+        if notches != 0 && !fields::step(under, notches, shift()) {
+            keymap::step(under, notches, shift());
         }
         true
     }
@@ -1492,14 +1572,27 @@ unsafe fn tap(hwnd: HWND, part: HWND, x: i32, y: i32) {
 
 /// A key for the settings window: Tab and Shift+Tab move the focus along
 /// the parts, Enter presses the button with the focus, Esc closes and
-/// Ctrl+S saves. Whether it took the key; a key it did not take has its
-/// characters made, for the parts that take text.
+/// Ctrl+S saves; on キー配置, Alt+↑ and Alt+↓ move the chosen key. While
+/// keys are captured, they all go to the capture. Whether it took the key;
+/// a key it did not take has its characters made, for the parts that take
+/// text.
 unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
     unsafe {
+        if keymap::capturing() {
+            return keymap::capture_key(msg);
+        }
+        if msg.message == WM_SYSKEYDOWN && matches!(msg.wParam as u16, VK_UP | VK_DOWN) {
+            // An open drop-down's own, as is Alt+↓ opening one.
+            let combo = SendMessageW(GetFocus(), CB_GETDROPPEDSTATE, 0, 0) != 0 || is_combo(GetFocus());
+            if !combo && with_editor(|e| e.page == keymap::PAGE) == Some(true) {
+                keymap::move_key(if msg.wParam as u16 == VK_UP { -1 } else { 1 });
+                return true;
+            }
+        }
         if msg.message == WM_KEYDOWN {
             let focus = GetFocus();
             let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
-            let typed = with_editor(|e| fields::is_typed(e, focus)) == Some(true);
+            let typed = with_editor(|e| fields::is_typed(e, focus) || keymap::is_typed(e, focus)) == Some(true);
             let took = match msg.wParam as u16 {
                 VK_TAB if !ctrl => {
                     let from = if IsChild(hwnd, focus) != 0 { focus } else { null_mut() };
@@ -1509,6 +1602,8 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
                     }
                     true
                 }
+                // Naming a key set, Esc leaves the name as it was.
+                VK_ESCAPE if keymap::naming(focus) => keymap::cancel_naming(),
                 // An open drop-down closes on Esc, as its own.
                 VK_ESCAPE if SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) == 0 => {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
@@ -1524,12 +1619,19 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
                     true
                 }
                 VK_RETURN if typed => {
-                    fields::commit(GetDlgCtrlID(focus) as usize, false);
+                    let id = GetDlgCtrlID(focus) as usize;
+                    if fields::is_field(id) {
+                        fields::commit(id, false);
+                    } else {
+                        keymap::commit(id);
+                    }
                     true
                 }
                 VK_UP | VK_DOWN if typed => {
                     let delta = if msg.wParam as u16 == VK_UP { 1 } else { -1 };
-                    fields::step(focus, delta, shift());
+                    if !fields::step(focus, delta, shift()) {
+                        keymap::step(focus, delta, shift());
+                    }
                     true
                 }
                 VK_RETURN if GetParent(focus) == hwnd && is_button(focus) => {
@@ -1550,6 +1652,13 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
 /// Whether Shift is held, as the message being handled saw it.
 fn shift() -> bool {
     unsafe { GetKeyState(VK_SHIFT as i32) < 0 }
+}
+
+/// Whether `hwnd` is a drop-down list.
+unsafe fn is_combo(hwnd: HWND) -> bool {
+    let mut name = [0u16; 16];
+    let n = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), 16) };
+    String::from_utf16_lossy(&name[..n.max(0) as usize]) == "ComboBox"
 }
 
 /// Whether `hwnd` is a button.

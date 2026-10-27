@@ -204,6 +204,19 @@ impl Document {
         (section, setting(&self.lines[i]))
     }
 
+    /// The sections, in the order written, by their lower-case names.
+    pub fn sections(&self) -> Vec<String> {
+        self.lines.iter().filter_map(|l| header(l)).collect()
+    }
+
+    /// The settings of `section`, in the order written: each one's
+    /// lower-case name and its value as written.
+    pub fn values(&self, section: &str) -> Vec<(String, String)> {
+        let Some((start, end)) = self.section(section) else { return Vec::new() };
+        let line = |l: &String| Some((setting(l)?, value(l)?.to_string()));
+        self.lines[start + 1..end].iter().filter_map(line).collect()
+    }
+
     /// The value of setting `name` in `section`, as written, if it is there.
     pub fn get(&self, section: &str, name: &str) -> Option<&str> {
         let i = *self.settings(section, name).first()?;

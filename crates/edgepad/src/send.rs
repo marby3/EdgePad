@@ -92,12 +92,13 @@ fn held(vk: u16) -> bool {
 }
 
 /// Keys whose scan code Windows prefixes with E0: without the extended flag
-/// they arrive as their number-pad twins.
+/// they arrive as their number-pad twins, and the number pad's / as the
+/// main keyboard's.
 fn is_extended(vk: u16) -> bool {
     matches!(
         vk,
         VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_INSERT | VK_DELETE | VK_HOME | VK_END | VK_PRIOR | VK_NEXT
-            | VK_LWIN | VK_RWIN
+            | VK_LWIN | VK_RWIN | VK_DIVIDE
     )
 }
 
@@ -235,6 +236,14 @@ pub fn vk(key: Key) -> u16 {
         // Key::parse makes no other Char (keys.rs, SYMBOLS).
         Key::Char(c) => unreachable!("the parser admits no key {c}"),
         Key::F(n) => VK_F1 + n as u16 - 1,
+        Key::Pad(d @ b'0'..=b'9') => VK_NUMPAD0 + (d - b'0') as u16,
+        Key::Pad(b'*') => VK_MULTIPLY,
+        Key::Pad(b'+') => VK_ADD,
+        Key::Pad(b'-') => VK_SUBTRACT,
+        Key::Pad(b'.') => VK_DECIMAL,
+        Key::Pad(b'/') => VK_DIVIDE,
+        // Key::parse makes no other Pad (keys.rs, NAMED).
+        Key::Pad(c) => unreachable!("the parser admits no number pad key {c}"),
         Key::Space => VK_SPACE,
         Key::Enter => VK_RETURN,
         Key::Esc => VK_ESCAPE,

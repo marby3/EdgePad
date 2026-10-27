@@ -20,6 +20,8 @@ pub enum Key {
     Char(u8),
     /// F1..=F24.
     F(u8),
+    /// A key of the number pad: a digit, or `* + - . /`.
+    Pad(u8),
     Space,
     Enter,
     Esc,
@@ -39,7 +41,7 @@ pub enum Key {
 
 const SYMBOLS: &[u8] = b"[]-=;',./\\`";
 
-const NAMED: [(&str, Key); 20] = [
+const NAMED: [(&str, Key); 25] = [
     ("ctrl", Key::Ctrl),
     ("shift", Key::Shift),
     ("alt", Key::Alt),
@@ -61,6 +63,12 @@ const NAMED: [(&str, Key); 20] = [
     ("down", Key::Down),
     // Inside a macro "," separates the steps, so the comma key has a name.
     ("comma", Key::Char(b',')),
+    // The number pad's, by Windows's names for them (VK_MULTIPLY and so on).
+    ("multiply", Key::Pad(b'*')),
+    ("add", Key::Pad(b'+')),
+    ("subtract", Key::Pad(b'-')),
+    ("decimal", Key::Pad(b'.')),
+    ("divide", Key::Pad(b'/')),
 ];
 
 impl Key {
@@ -75,6 +83,9 @@ impl Key {
             if c.is_ascii_uppercase() || c.is_ascii_digit() || SYMBOLS.contains(&c) {
                 return Some(Key::Char(c));
             }
+        }
+        if let Some(&[d]) = lower.strip_prefix("numpad").map(str::as_bytes) {
+            return d.is_ascii_digit().then_some(Key::Pad(d));
         }
         let digits = lower.strip_prefix('f')?;
         let n: u8 = digits.parse().ok()?;
@@ -151,6 +162,11 @@ impl std::fmt::Display for Key {
         let name = match self {
             Key::Char(c) => return write!(f, "{}", *c as char),
             Key::F(n) => return write!(f, "F{n}"),
+            Key::Pad(d) if d.is_ascii_digit() => return write!(f, "Numpad{}", *d as char),
+            Key::Pad(sign) => match NAMED.iter().find(|(_, k)| *k == Key::Pad(*sign)) {
+                Some((name, _)) => return write!(f, "{}{}", name[..1].to_ascii_uppercase(), &name[1..]),
+                None => return Err(std::fmt::Error),
+            },
             Key::Ctrl => "Ctrl",
             Key::Shift => "Shift",
             Key::Alt => "Alt",
