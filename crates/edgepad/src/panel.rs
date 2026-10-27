@@ -199,8 +199,10 @@ struct Panel {
     /// The keys the panel goes back to from a layer: the profile's set, or
     /// the one a page key switched to.
     base: Vec<KeyDef>,
-    /// The layer shown, if any, and the modifiers carried over to it.
+    /// The layer shown, if any, and the modifiers carried over to it. The
+    /// page of the base keys, to go back to.
     layer: Option<Layer>,
+    base_page: usize,
     carried: Vec<Carried>,
     presses: Presses,
     /// The macro running on this panel: its steps, and the one to send next.
@@ -509,6 +511,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             sets: panels.sets.clone(),
             base: p.keys.clone(),
             layer: None,
+            base_page: 0,
             carried: Vec::new(),
             presses,
             running: None,
@@ -792,6 +795,7 @@ pub unsafe fn release_all() {
         PANELS.with_borrow_mut(|panels| {
             for panel in panels {
                 let_go(panel);
+                back_to_base(panel);
                 count_idle(panel);
             }
         });
@@ -896,8 +900,11 @@ unsafe fn to_layer(panel: &mut Panel, layer: Layer) {
     let Some(set) = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(layer.set())) else { return };
     let keys = set.keys.clone();
     debug_log!("パネル {}: レイヤー {}", edge_name(panel.edge), layer.set());
+    if panel.layer.is_none() {
+        panel.base_page = panel.page;
+    }
     panel.layer = Some(layer);
-    unsafe { show_keys(panel, &keys) };
+    unsafe { show_keys(panel, &keys, 0) };
 }
 
 /// Turn `panel` back from its layer, if it shows one, to its base keys.
@@ -905,19 +912,21 @@ unsafe fn back_to_base(panel: &mut Panel) {
     if panel.layer.take().is_some() {
         debug_log!("パネル {}: レイヤーから戻る", edge_name(panel.edge));
         let keys = panel.base.clone();
-        unsafe { show_keys(panel, &keys) };
+        let page = panel.base_page;
+        unsafe { show_keys(panel, &keys, page) };
     }
 }
 
-/// Show `defs` on `panel` in place of its keys. Hold and repeat keys held
-/// come up; modifiers held or latched stay so, on a key of the same
-/// modifier if there is one, else carried unseen (spec 4.3).
-unsafe fn show_keys(panel: &mut Panel, defs: &[KeyDef]) {
+/// Show `defs` on `panel` in place of its keys, from page `page`. Hold
+/// and repeat keys held come up; modifiers held or latched stay so, on a
+/// key of the same modifier if there is one, else carried unseen (spec 7,
+/// layer keys).
+unsafe fn show_keys(panel: &mut Panel, defs: &[KeyDef], page: usize) {
     unsafe {
         let mut carried = std::mem::take(&mut panel.carried);
         for (i, key) in panel.keys.iter_mut().enumerate() {
             match &mut key.sends {
-                Sends::Modifier { vk, state } if state.is_down() || state.is_latched() => {
+                Sends::Modifier { vk, state } if state.is_down() => {
                     let pointer = panel.presses.pointers_on(i).first().copied();
                     carried.push(Carried { vk: *vk, state: *state, pointer });
                 }
@@ -941,8 +950,11 @@ unsafe fn show_keys(panel: &mut Panel, defs: &[KeyDef]) {
             }
             false
         });
-        (panel.keys, panel.presses, panel.carried, panel.page) = (keys, presses, carried, 0);
+        (panel.keys, panel.presses, panel.carried, panel.page) = (keys, presses, carried, page);
         place_keys(panel);
+        if panel.docked {
+            dock(panel);
+        }
         draw(panel);
     }
 }
@@ -1377,7 +1389,7 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                     true => hold(c.vk, false),
                     false => debug_log!("ラッチ 0x{:02X}", c.vk),
                 }
-                panel.carried.retain(|c| c.state.is_down() || c.state.is_latched());
+                panel.carried.retain(|c| c.state.is_down());
             }
             let lifted = panel.presses.up(id);
             let mut released = lifted;
@@ -1568,9 +1580,10 @@ unsafe fn end_one_shot_latches(panels: &mut [Panel], mode: LatchMode) {
         for c in &mut panel.carried {
             if c.state.shortcut_sent(mode) {
                 unsafe { hold(c.vk, false) };
+                changed = true;
             }
         }
-        panel.carried.retain(|c| c.state.is_down() || c.state.is_latched());
+        panel.carried.retain(|c| c.state.is_down());
         if changed {
             unsafe {
                 draw(panel);

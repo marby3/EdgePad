@@ -10,8 +10,8 @@
 //!   and ↓ 1010 for its keys;
 //! - the chosen key's label 1011 (an Edit), 「パネルでは切れます」 1012 (a
 //!   Static, shown when the label is cut), the kind's description 1013 (a
-//!   Static), its width 1014 (an Edit), and the nine kinds 1020 to 1028
-//!   (buttons, the chosen one checked);
+//!   Static), its width 1014 (an Edit), and the ten kinds 1020 to 1029
+//!   (buttons, the chosen one checked; レイヤー since Issue #104);
 //! - the keys sent: Ctrl, Shift, Alt and Win 1030 to 1033 (buttons, checked
 //!   when on), the five groups of keys 1040 to 1044, the keys of the group
 //!   1050 (a ListBox, the key sent chosen), 押して取り込む 1051, and the keys
@@ -84,8 +84,8 @@ const PIE_FIGURE: i32 = 1064;
 const PIE_NOTE: i32 = 1065;
 const HOTKEY_CAPTURE: i32 = 21;
 
-/// The kinds, as the buttons 1020 to 1028 name them.
-const KIND_NAMES: [&str; 9] = ["ショートカット", "修飾キー", "押している間", "連打", "マクロ", "文字", "起動", "ページ", "パイ"];
+/// The kinds, as the buttons 1020 to 1029 name them.
+const KIND_NAMES: [&str; 10] = ["ショートカット", "修飾キー", "押している間", "連打", "マクロ", "文字", "起動", "ページ", "パイ", "レイヤー"];
 const SHORTCUT: i32 = 0;
 const REPEAT: i32 = 3;
 const MACRO: i32 = 4;
@@ -564,10 +564,10 @@ fn nine_kinds_show_their_description_and_only_their_fields() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
     let editor = open_set(&app, "mods");
-    let kinds: Vec<String> = (0..9).map(|k| text(editor, KINDS + k)).collect();
-    assert_eq!(kinds, KIND_NAMES, "nine kinds");
+    let kinds: Vec<String> = (0..10).map(|k| text(editor, KINDS + k)).collect();
+    assert_eq!(kinds, KIND_NAMES, "ten kinds");
     let top = |k: i32| window_rect(part(editor, KINDS + k)).top;
-    assert!((1..9).all(|k| top(k) == top(0)), "side by side");
+    assert!((1..10).all(|k| top(k) == top(0)), "side by side");
     assert!(checked(part(editor, KINDS + SHORTCUT)), "Esc is a shortcut");
 
     // Each kind: its description, and its own fields alone.

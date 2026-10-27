@@ -5,7 +5,7 @@
 //! the left, a sample of its panel, in the panel's colours and shape, laid
 //! out as on the first edge that shows it; a key pressed there is chosen,
 //! and the buttons under it add, remove and move keys. On the right, the
-//! chosen key's fields: its label, its width, its kind of the nine, and the
+//! chosen key's fields: its label, its width, its kind of the ten, and the
 //! fields of that kind alone.
 //!
 //! The keys a key sends are chosen, not written: modifiers turned on and
@@ -357,7 +357,7 @@ impl Line {
         Line { label: field(0), kind: field(1), content: field(2), options }
     }
 
-    /// Its kind, of the nine.
+    /// Its kind, of the ten.
     fn kind(&self) -> Option<usize> {
         KIND_NAMES.iter().position(|k| k.eq_ignore_ascii_case(&self.kind))
     }
