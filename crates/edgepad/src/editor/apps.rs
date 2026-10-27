@@ -367,7 +367,7 @@ pub(super) unsafe fn ask_active(e: &mut Editor) {
         if sent == 0 { 0 } else { answer }
     });
     let file = super::read_file(&e.path).ok();
-    let profiles = file.and_then(|f| config::parse(&f).ok()).map(|c| c.profiles);
+    let profiles = file.and_then(|f| crate::settings::parse(&e.path, &f).0.ok()).map(|c| c.profiles);
     let active = index.checked_sub(1).and_then(|i| profiles?.get(i).map(|p| p.name.clone()));
     if active != e.apps.active {
         e.apps.active = active;

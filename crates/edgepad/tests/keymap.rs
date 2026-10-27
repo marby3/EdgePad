@@ -915,7 +915,7 @@ fn a_kle_file_is_imported_into_the_settings_folder_for_the_chosen_set() {
 
     // A file that does not read: not copied, why on the status line.
     import(editor, &from.join("bad.json"));
-    assert!(within_3s(|| dialog_of(editor).is_none() && status(editor).contains("bad.json")), "why: {:?}", status(editor));
+    assert!(within_3s(|| dialog_of(editor).is_none() && status(editor).contains("bad.json") && status(editor).contains("回転")), "why: {:?}", status(editor));
     assert!(!dir.join("bad.json").exists(), "not copied");
 
     // The same name, other content: asked first; on yes, copied over.

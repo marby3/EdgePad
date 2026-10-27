@@ -1029,7 +1029,7 @@ fn pie_note(doc: &Document, set: &str) -> (usize, String) {
     }
     let raw = doc.keys(&section);
     let keys = raw.iter().filter_map(|k| config::key_def(k).ok()).collect();
-    let problems = config::pie_problems(&KeySet { name: set.to_ascii_lowercase(), keys, free: false });
+    let problems = config::pie_problems(&KeySet { name: set.to_ascii_lowercase(), keys });
     let mut note = format!("項目 {} 個", raw.len());
     for p in problems {
         note += &format!("\n{p}");
@@ -1156,7 +1156,6 @@ unsafe fn send_combo(e: &mut Editor, field: usize, combo: Combo, first: Option<K
     done
 }
 
-/// A part of the page was used: `code` is its notification.
 /// KLE から読み込む: choose a KLE file, copy it into the settings
 /// file's folder, and lay the chosen set out by it (Issue #101). The
 /// dialogs run with the window free: their messages reach it meanwhile.
@@ -1175,6 +1174,11 @@ unsafe fn import_kle() {
         return;
     }
     let to = dir.join(&name);
+    let settings = with_editor(|e| e.path.clone());
+    if settings.as_ref().is_some_and(|s| s.file_name() == to.file_name()) {
+        with_editor(|e| tell(e, &format!("「{name}」は設定ファイルと同じ名前なので読み込めません")));
+        return;
+    }
     if to != from {
         if std::fs::read(&to).is_ok_and(|there| there != bytes) {
             let text = wide(&format!("設定ファイルのフォルダに、別の中身の「{name}」があります。上書きしますか？"));
@@ -1201,6 +1205,12 @@ unsafe fn import_kle() {
     });
 }
 
+/// How far down a free layout's keys reach, in keys, as the file writes it.
+fn free_bottom(doc: &Document, section: &str) -> String {
+    let bottom = doc.keys(section).iter().filter_map(|k| config::key_def(k).ok()?.place).map(|p| p.y + p.h).max().unwrap_or(0);
+    config::show_quarters(bottom)
+}
+
 /// The file chosen in an open dialog over `owner`, if one is. comdlg32
 /// is loaded for it, not imported: imported, it would bring comctl32 into
 /// EdgePad before any window opens (spec 8).
@@ -1217,7 +1227,7 @@ unsafe fn open_file(owner: HWND) -> Option<std::path::PathBuf> {
     ofn.nMaxFile = file.len() as u32;
     ofn.lpstrTitle = title.as_ptr();
     ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
-    let (dll, f) = unsafe { system_proc(w!("comdlg32.dll"), b"GetOpenFileNameW ") }?;
+    let (dll, f) = unsafe { system_proc(w!("comdlg32.dll"), b"GetOpenFileNameW\0") }?;
     let chosen = unsafe { std::mem::transmute::<_, Open>(f)(&mut ofn) };
     unsafe { FreeLibrary(dll) };
     if chosen == 0 {
@@ -1227,6 +1237,7 @@ unsafe fn open_file(owner: HWND) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(String::from_utf16_lossy(&file[..len])))
 }
 
+/// A part of the page was used: `code` is its notification.
 pub(super) unsafe fn command(id: usize, code: u32) {
     match (id, code) {
         (LABEL, EN_CHANGE) => return unsafe { label_typed() },
@@ -1285,7 +1296,13 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             ADD_KEY if clicked && e.keymap.set.is_some() => {
                 let at = if count == 0 { 0 } else { k + 1 };
-                if e.doc.insert_key(&section, at, NEW_KEY) {
+                // In a free layout, in a row of its own under the rest.
+                let free = e.doc.get(&section, "layout").is_some_and(|l| l.trim().eq_ignore_ascii_case("free"));
+                let new = match free {
+                    true => format!("{NEW_KEY} | x=0, y={}", free_bottom(&e.doc, &section)),
+                    false => NEW_KEY.to_string(),
+                };
+                if e.doc.insert_key(&section, at, &new) {
                     choose(e, Some(set), at);
                     mark_unsaved(e);
                 }

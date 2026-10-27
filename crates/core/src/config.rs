@@ -210,10 +210,9 @@ pub struct Handle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeySet {
     pub name: String,
+    /// In a free layout (`layout = free` or `kle:`, Issue #101), every
+    /// key has its `place`; along the edge, none does.
     pub keys: Vec<KeyDef>,
-    /// Keys placed freely, each at its `place`, not along the edge
-    /// (`layout = free` or `kle:`, Issue #101).
-    pub free: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -490,7 +489,7 @@ impl Parser<'_> {
                 None => return self.error(n, format!("知らないセクション [{name}]（辺は left / right / top / bottom）")),
             },
             Some(("set", set)) if valid_name(set) => {
-                self.config.sets.push(KeySet { name: set.into(), keys: Vec::new(), free: false });
+                self.config.sets.push(KeySet { name: set.into(), keys: Vec::new() });
                 self.set_lines.push((n, false));
                 self.layouts.push(SetLayout::Edge);
                 self.key_lines.push(Vec::new());
@@ -724,7 +723,6 @@ impl Parser<'_> {
                     for line in lines_where(false) {
                         self.errors.push(Error { line, reason: "layout = free のキーには x と y を書く".into() });
                     }
-                    set.free = true;
                 }
                 SetLayout::Kle(layout_line, kle) => {
                     for line in lines_where(true) {
@@ -740,7 +738,6 @@ impl Parser<'_> {
                             None => set.keys.push(KeyDef { label, action: Action::None, width: 1, place: Some(place) }),
                         }
                     }
-                    set.free = true;
                 }
             }
         }
