@@ -150,9 +150,41 @@ fn checked(hwnd: HWND) -> bool {
 }
 
 fn click_on(editor: HWND, hwnd: HWND) {
-    wait_in_front(editor);
-    click(centre(window_rect(hwnd)));
+    let at = centre(window_rect(hwnd));
+    reach(editor, hwnd, at);
+    click(at);
     pump(300);
+}
+
+/// Bring `editor` in front with `part` at `at` on top, nothing over it: in
+/// front is not enough. On CI, the runner's terminal was seen over the
+/// window as the first test opened it, in front, and took the click
+/// (Issue #103: CASCADIA_HOSTING_WINDOW_CLASS under the point, run
+/// 40511603723). Raised once, it stays over the terminal for the rest of
+/// the test, so the other clicks need not check. Raising activates it,
+/// as wanted: it is the window clicked.
+fn reach(editor: HWND, part: HWND, at: POINT) {
+    let on_part = || {
+        let under = unsafe { WindowFromPoint(at) };
+        under == part || unsafe { IsChild(part, under) } != 0
+    };
+    for _ in 0..3 {
+        wait_in_front(editor);
+        if within_3s(on_part) {
+            return;
+        }
+        unsafe { SetWindowPos(editor, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE) };
+        pump(300);
+    }
+    let under = unsafe { WindowFromPoint(at) };
+    let r = window_rect(part);
+    let inside = at.x >= r.left && at.x < r.right && at.y >= r.top && at.y < r.bottom;
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(under, &mut pid) };
+    panic!(
+        "({}, {}) is under {} {under:?} of process {pid}, not the part clicked ({}, id {}); the point {} the part",
+        at.x, at.y, class_of(under), class_of(part), unsafe { GetDlgCtrlID(part) }, if inside { "is in" } else { "is outside" },
+    );
 }
 
 /// Click the part `id` of `editor`.
@@ -374,10 +406,18 @@ fn open_set(app: &Running, set: &str) -> HWND {
 /// Choose key `i` of a set shown down one column, by clicking it in the
 /// sample, and wait for its label to show.
 fn choose_key(editor: HWND, i: i32, label: &str) {
-    wait_in_front(editor);
-    click(sample_cell(editor, 0, i));
-    pump(300);
-    assert!(within_3s(|| text(editor, LABEL) == label), "key {i}, {label}, chosen: {:?}", text(editor, LABEL));
+    let sample = part(editor, SAMPLE);
+    let at = sample_cell(editor, 0, i);
+    // Judged by the result too: a click lost another way is tried again.
+    for _ in 0..3 {
+        reach(editor, sample, at);
+        click(at);
+        pump(300);
+        if within_3s(|| text(editor, LABEL) == label) {
+            return;
+        }
+    }
+    panic!("key {i}, {label}, chosen: {:?}", text(editor, LABEL));
 }
 
 // AC1
