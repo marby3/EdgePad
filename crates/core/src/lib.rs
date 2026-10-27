@@ -8,6 +8,7 @@ pub mod config;
 pub mod document;
 pub mod gesture;
 pub mod keys;
+pub mod kle;
 pub mod layout;
 pub mod modifier;
 pub mod pie;

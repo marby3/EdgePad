@@ -349,7 +349,7 @@ unsafe fn fonts_for(dpi: u32) -> (HFONT, HFONT) {
 /// A function of a system DLL, by name: loaded here, not imported, so the
 /// DLL is in EdgePad only once the window is open (spec 8). With the DLL,
 /// to free once done with the function.
-unsafe fn system_proc(dll: *const u16, name: &[u8]) -> Option<(HMODULE, unsafe extern "system" fn() -> isize)> {
+pub(super) unsafe fn system_proc(dll: *const u16, name: &[u8]) -> Option<(HMODULE, unsafe extern "system" fn() -> isize)> {
     unsafe {
         let module = LoadLibraryExW(dll, null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
         if module.is_null() {
@@ -1023,7 +1023,7 @@ fn first_error(errors: &[config::Error]) -> String {
 /// the reason why, and the line at fault if the parser named one.
 fn save(e: &mut Editor) -> Result<(), (String, Option<usize>)> {
     let bytes = e.doc.to_bytes();
-    if let Err(errors) = config::parse(&bytes) {
+    if let Err(errors) = settings::parse(&e.path, &bytes).0 {
         let line = errors.first().map(|e| e.line).filter(|&l| l > 0);
         return Err((format!("保存できません: {}", first_error(&errors)), line));
     }
@@ -1160,7 +1160,8 @@ unsafe fn command(id: usize) {
             // stays, the reason beside it.
             RELOAD => {
                 let Some(bytes) = e.outside.take() else { return true };
-                let read = config::parse(&bytes)
+                let read = settings::parse(&e.path, &bytes)
+                    .0
                     .map_err(|errors| first_error(&errors))
                     .and_then(|_| Document::new(&bytes).map_err(|e| e.to_string()));
                 match read {

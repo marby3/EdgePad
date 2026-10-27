@@ -79,6 +79,61 @@ pub fn edge_panel(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[u
     (panel, keys)
 }
 
+/// Where a key of a free layout sits, in quarters of a key: its top left
+/// corner, the layout's top left at 0, 0, and its width and height
+/// (Issue #101).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// A panel of keys at `places`, on `edge` of `monitor`, a key `key` pixels
+/// square: the panel's rectangle on screen and each key's inside it, in
+/// order (spec 5.2).
+///
+/// The panel is as large as holds every key, and centred along the edge.
+/// The layout's first row lies against the screen edge: on the top as
+/// laid out, on the bottom with its rows the other way up. On the left
+/// and right its rows are columns, a row's left end at the top. Labels
+/// are never turned, so neither is anything here.
+pub fn free_panel(monitor: Rect, edge: Edge, key: i32, places: &[Place]) -> (Rect, Vec<Rect>) {
+    let left = places.iter().map(|p| p.x).min().unwrap_or(0);
+    let top = places.iter().map(|p| p.y).min().unwrap_or(0);
+    let wide = places.iter().map(|p| p.x + p.w).max().unwrap_or(0) - left;
+    let tall = places.iter().map(|p| p.y + p.h).max().unwrap_or(0) - top;
+    // Quarters to pixels, each edge on its own: keys that touch still do.
+    let px = |q: i32| (q * key + 2) / 4;
+    let span = |from: i32, len: i32| (px(from), px(from + len) - px(from));
+    let side = edge.is_side();
+    let (long, thick) = (px(wide), px(tall));
+    let panel = match edge {
+        Edge::Left => Rect { x: monitor.x, y: monitor.y + (monitor.h - long) / 2, w: thick, h: long },
+        Edge::Right => Rect { x: monitor.x + monitor.w - thick, y: monitor.y + (monitor.h - long) / 2, w: thick, h: long },
+        Edge::Top => Rect { x: monitor.x + (monitor.w - long) / 2, y: monitor.y, w: long, h: thick },
+        Edge::Bottom => Rect { x: monitor.x + (monitor.w - long) / 2, y: monitor.y + monitor.h - thick, w: long, h: thick },
+    };
+    let keys = places
+        .iter()
+        .map(|p| {
+            let (along, length) = span(p.x - left, p.w);
+            // Rows from the screen edge: the first one against it.
+            let row = match edge {
+                Edge::Left | Edge::Top => p.y - top,
+                Edge::Right | Edge::Bottom => tall - (p.y - top) - p.h,
+            };
+            let (across, depth) = span(row, p.h);
+            match side {
+                true => Rect { x: across, y: along, w: depth, h: length },
+                false => Rect { x: along, y: across, w: length, h: depth },
+            }
+        })
+        .collect();
+    (panel, keys)
+}
+
 /// The keys on each page of a panel, as `edge_panel` would lay them out:
 /// indices into `widths`, in the order they go on the panel.
 ///

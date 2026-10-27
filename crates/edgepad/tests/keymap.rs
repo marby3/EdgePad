@@ -21,6 +21,7 @@
 //!   1059, a wait's time 1060, the text or what is run 1061 (an Edit), the
 //!   page's target 1062 and the pie's key set 1063 (drop-down lists), the
 //!   pie's figure 1064 and what it says of its items 1065 (a Static);
+//! - KLE から読み込む 1066 (Issue #101);
 //! - on 操作, 押して取り込む beside hotkey: 21.
 //!
 //! The sample draws the panel 8 logical pixels in from its top left corner,
@@ -252,14 +253,20 @@ fn chosen(hwnd: HWND) -> Option<String> {
 fn choose(editor: HWND, id: i32, option: &str) {
     let combo = part(editor, id);
     let at = items(combo).iter().position(|o| o == option).unwrap_or_else(|| panic!("no {option} in {:?}", items(combo)));
-    click_on(editor, combo);
-    press(VK_ESCAPE);
-    press(VK_HOME);
-    for _ in 0..at {
-        press(VK_DOWN);
+    // A key pressed as the list opens can be lost: try again.
+    for _ in 0..3 {
+        click_on(editor, combo);
+        press(VK_ESCAPE);
+        press(VK_HOME);
+        for _ in 0..at {
+            press(VK_DOWN);
+        }
+        pump(300);
+        if within_3s(|| chosen(combo).as_deref() == Some(option)) {
+            return;
+        }
     }
-    pump(300);
-    assert!(within_3s(|| chosen(combo).as_deref() == Some(option)), "{option} chosen in {id}");
+    panic!("{option} chosen in {id}");
 }
 
 /// Click item `option` of the ListBox `id`.

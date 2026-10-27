@@ -30,17 +30,20 @@ use edgepad_core::document::Document;
 use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout;
 use edgepad_core::theme::Palette;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows_sys::Win32::Foundation::{FreeLibrary, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, SetFocus, VK_CONTROL, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
     VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_UP,
 };
+use windows_sys::Win32::UI::Controls::Dialogs::{
+    OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use super::fields::{EM_GETMODIFY, EM_SETMODIFY, EM_SETSEL};
-use super::{Editor, MARGIN, PAINT, mark_unsaved, scale, tell, wide, window_dpi, with_editor};
+use super::{Editor, MARGIN, PAINT, mark_unsaved, scale, system_proc, tell, wide, window_dpi, with_editor};
 use crate::colors::{self, colorref};
 use crate::{panel, send};
 
@@ -84,6 +87,7 @@ const TARGET: usize = 1062;
 const PIE: usize = 1063;
 const PIE_FIGURE: usize = 1064;
 const PIE_NOTE: usize = 1065;
+const KLE: usize = 1066;
 const TITLE_SET: usize = 1100;
 const TITLE_LABEL: usize = 1101;
 const TITLE_WIDTH: usize = 1102;
@@ -177,6 +181,7 @@ const PARTS: &[(usize, Class, &str)] = &[
     (ADD_SET, Button, "追加"),
     (RENAME, Button, "名前の変更"),
     (REMOVE_SET, Button, "削除"),
+    (KLE, Button, "KLE から読み込む"),
     (USED, Text, ""),
     (SAMPLE, Sample, ""),
     (ADD_KEY, Button, "追加"),
@@ -741,7 +746,7 @@ fn shows(e: &Editor, id: usize, kind: Option<usize>, wait: bool, cut: bool) -> b
     match id {
         SET => !k.naming,
         NAME => k.naming,
-        TITLE_SET | ADD_SET | RENAME | REMOVE_SET | USED | SAMPLE | ADD_KEY | REMOVE_KEY | KEY_UP | KEY_DOWN => true,
+        TITLE_SET | ADD_SET | RENAME | REMOVE_SET | KLE | USED | SAMPLE | ADD_KEY | REMOVE_KEY | KEY_UP | KEY_DOWN => true,
         CUT => key && cut,
         TITLE_LABEL | LABEL | TITLE_WIDTH | WIDTH | WIDTH_NOTE | ABOUT => key,
         _ if (KINDS..KINDS + 9).contains(&id) => key,
@@ -805,7 +810,7 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     at(SET, x, top, s(180), s(LIST_H));
     at(NAME, x, top, s(180), h);
     x += s(180) + gap;
-    for (id, w) in [(ADD_SET, 64), (RENAME, 96), (REMOVE_SET, 64)] {
+    for (id, w) in [(ADD_SET, 64), (RENAME, 96), (REMOVE_SET, 64), (KLE, 128)] {
         at(id, x, top, s(w), h);
         x += s(w) + gap;
     }
@@ -1024,7 +1029,7 @@ fn pie_note(doc: &Document, set: &str) -> (usize, String) {
     }
     let raw = doc.keys(&section);
     let keys = raw.iter().filter_map(|k| config::key_def(k).ok()).collect();
-    let problems = config::pie_problems(&KeySet { name: set.to_ascii_lowercase(), keys });
+    let problems = config::pie_problems(&KeySet { name: set.to_ascii_lowercase(), keys, free: false });
     let mut note = format!("項目 {} 個", raw.len());
     for p in problems {
         note += &format!("\n{p}");
@@ -1152,6 +1157,76 @@ unsafe fn send_combo(e: &mut Editor, field: usize, combo: Combo, first: Option<K
 }
 
 /// A part of the page was used: `code` is its notification.
+/// KLE から読み込む: choose a KLE file, copy it into the settings
+/// file's folder, and lay the chosen set out by it (Issue #101). The
+/// dialogs run with the window free: their messages reach it meanwhile.
+unsafe fn import_kle() {
+    let Some((hwnd, dir, set)) = with_editor(|e| Some((e.hwnd, e.path.parent()?.to_path_buf(), e.keymap.set.clone()?))).flatten() else {
+        return;
+    };
+    let Some(from) = (unsafe { open_file(hwnd) }) else { return };
+    let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut bytes = Vec::new();
+    // One byte over the limit is enough to refuse it.
+    let read = std::fs::File::open(&from).and_then(|f| std::io::Read::read_to_end(&mut std::io::Read::take(f, config::MAX_BYTES as u64 + 1), &mut bytes));
+    let checked = read.map_err(|e| e.to_string()).and_then(|_| config::kle_keys(&bytes).map(|_| ()));
+    if let Err(why) = checked {
+        with_editor(|e| tell(e, &format!("「{name}」を読み込めません: {why}")));
+        return;
+    }
+    let to = dir.join(&name);
+    if to != from {
+        if std::fs::read(&to).is_ok_and(|there| there != bytes) {
+            let text = wide(&format!("設定ファイルのフォルダに、別の中身の「{name}」があります。上書きしますか？"));
+            let answer = unsafe { MessageBoxW(hwnd, text.as_ptr(), w!("KLE から読み込む"), MB_YESNO | MB_ICONQUESTION) };
+            if answer != IDYES {
+                return;
+            }
+        }
+        if let Err(why) = std::fs::write(&to, &bytes) {
+            with_editor(|e| tell(e, &format!("「{name}」を設定ファイルのフォルダに写せません: {why}")));
+            return;
+        }
+    }
+    with_editor(|e| unsafe {
+        let section = format!("set.{set}");
+        if e.doc.set_value(&section, "layout", Some(&format!("kle:{name}"))) {
+            let key = e.keymap.key;
+            choose(e, Some(set), key);
+            mark_unsaved(e);
+            tell(e, &format!("「{name}」の配列を読み込みました"));
+        } else {
+            tell(e, &format!("「{name}」は設定ファイルに書けない名前です"));
+        }
+    });
+}
+
+/// The file chosen in an open dialog over `owner`, if one is. comdlg32
+/// is loaded for it, not imported: imported, it would bring comctl32 into
+/// EdgePad before any window opens (spec 8).
+unsafe fn open_file(owner: HWND) -> Option<std::path::PathBuf> {
+    type Open = unsafe extern "system" fn(*mut OPENFILENAMEW) -> i32;
+    let mut file = [0u16; 1024];
+    let filter = wide("KLE の raw data (*.json; *.txt)\0*.json;*.txt\0すべてのファイル\0*.*\0");
+    let title = wide("KLE から読み込む");
+    let mut ofn: OPENFILENAMEW = unsafe { zeroed() };
+    ofn.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = filter.as_ptr();
+    ofn.lpstrFile = file.as_mut_ptr();
+    ofn.nMaxFile = file.len() as u32;
+    ofn.lpstrTitle = title.as_ptr();
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+    let (dll, f) = unsafe { system_proc(w!("comdlg32.dll"), b"GetOpenFileNameW ") }?;
+    let chosen = unsafe { std::mem::transmute::<_, Open>(f)(&mut ofn) };
+    unsafe { FreeLibrary(dll) };
+    if chosen == 0 {
+        return None;
+    }
+    let len = file.iter().position(|&c| c == 0).unwrap_or(file.len());
+    Some(std::path::PathBuf::from(String::from_utf16_lossy(&file[..len])))
+}
+
 pub(super) unsafe fn command(id: usize, code: u32) {
     match (id, code) {
         (LABEL, EN_CHANGE) => return unsafe { label_typed() },
@@ -1167,6 +1242,9 @@ pub(super) unsafe fn command(id: usize, code: u32) {
         _ => {}
     }
     let clicked = code == BN_CLICKED;
+    if id == KLE && clicked {
+        return unsafe { import_kle() };
+    }
     let focus = with_editor(|e| unsafe {
         let set = e.keymap.set.clone().unwrap_or_default();
         let section = format!("set.{set}");

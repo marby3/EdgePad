@@ -5,7 +5,7 @@
 //! the fixed M0 keys on the left edge.
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use edgepad_core::config::{self, Config, Edge, Handle, KeyDef, KeySet, Monitor, Profile};
@@ -133,24 +133,45 @@ pub fn load() -> (Option<Config>, Option<Vec<u8>>, Option<String>) {
 }
 
 /// Read the settings file again. `seen` is the content read last time,
-/// usable or not; unless `force` is set, the same content again is
-/// `Unchanged`, so an error is reported once, not on every change to other
-/// files in the folder. EdgePad keeps what it has on anything but `Loaded`.
+/// usable or not, with the KLE files it names; unless `force` is set, the
+/// same content again is `Unchanged`, so an error is reported once, not on
+/// every change to other files in the folder. EdgePad keeps what it has on
+/// anything but `Loaded`.
 pub fn reload(seen: Option<&[u8]>, force: bool) -> Outcome {
     let Some(path) = path() else { return Outcome::Missing };
     let mut bytes = Vec::new();
     // One byte over the limit is enough for the parser to refuse it.
-    let read = std::fs::File::open(path).and_then(|f| f.take(config::MAX_BYTES as u64 + 1).read_to_end(&mut bytes));
+    let read = std::fs::File::open(&path).and_then(|f| f.take(config::MAX_BYTES as u64 + 1).read_to_end(&mut bytes));
     if let Err(e) = read {
         return Outcome::Failed(format!("{FILE} を読めません: {e}"), None);
     }
-    if !force && seen == Some(&bytes[..]) {
+    let (read, content) = parse(&path, &bytes);
+    if !force && seen == Some(&content[..]) {
         return Outcome::Unchanged;
     }
-    match config::parse(&bytes) {
-        Ok(config) => Outcome::Loaded(config, bytes),
-        Err(errors) => Outcome::Failed(notice(&errors), Some(bytes)),
+    match read {
+        Ok(config) => Outcome::Loaded(config, content),
+        Err(errors) => Outcome::Failed(notice(&errors), Some(content)),
     }
+}
+
+/// Read `bytes`, the settings file at `path`, the KLE files it names read
+/// from its folder (or where they say, written in full): the settings, and
+/// all that was read, to tell a change to any of it by (Issue #101).
+pub fn parse(path: &Path, bytes: &[u8]) -> (Result<Config, Vec<config::Error>>, Vec<u8>) {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut content = bytes.to_vec();
+    let read = config::parse_with(bytes, &mut |name| {
+        let mut file = Vec::new();
+        // One byte over the limit is enough for the parser to refuse it.
+        let read = std::fs::File::open(dir.join(name)).and_then(|f| f.take(config::MAX_BYTES as u64 + 1).read_to_end(&mut file));
+        content.push(0);
+        content.extend_from_slice(name.as_bytes());
+        content.push(0);
+        content.extend_from_slice(&file);
+        read.map(|_| file).map_err(|e| e.to_string())
+    });
+    (read, content)
 }
 
 /// The first error, with its line, and how many more there are.

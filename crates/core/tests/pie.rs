@@ -33,7 +33,7 @@ left = csp-tools
 ";
     let config = parse(text.as_bytes()).expect("pie key parses");
     let keys = &config.set("csp-tools").expect("set csp-tools").keys;
-    assert_eq!(keys[1], KeyDef { label: "変形".into(), action: Action::Pie("csp-transform".into()), width: 1 });
+    assert_eq!(keys[1], KeyDef { label: "変形".into(), action: Action::Pie("csp-transform".into()), width: 1, place: None });
 
     let text = "[set.pad]\nkey = A | shortcut | A\nkey = 変形 | pie | nosuch\n[profile.default]\nleft = pad\n";
     let errors = parse(text.as_bytes()).expect_err("unknown key set");

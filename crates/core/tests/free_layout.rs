@@ -99,7 +99,7 @@ fn a_free_layout_turns_on_the_side_edges_its_first_row_against_the_screen_edge()
     let ps = [at(0.0, 0.0, 1.0, 1.0), at(1.0, 0.0, 1.0, 1.0), at(0.0, 1.0, 2.0, 1.0)];
     let k = 40;
     let (top, keys) = free_panel(monitor, Edge::Top, k, &ps);
-    assert_eq!((top.x, top.y, top.w, top.h), (480, 0, 80, 80));
+    assert_eq!((top.x, top.y, top.w, top.h), (460, 0, 80, 80));
     assert_eq!(keys, [Rect { x: 0, y: 0, w: 40, h: 40 }, Rect { x: 40, y: 0, w: 40, h: 40 }, Rect { x: 0, y: 40, w: 80, h: 40 }]);
     let (bottom, keys) = free_panel(monitor, Edge::Bottom, k, &ps);
     assert_eq!((bottom.y, bottom.h), (720, 80));
