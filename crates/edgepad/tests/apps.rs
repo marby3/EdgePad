@@ -504,14 +504,17 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
     pump(300);
-    assert!((width(PROCESS) - process0 * 3 / 2).abs() <= 3, "the process field grows: {process0} -> {}", width(PROCESS));
-    // The figure grows with the window; where the window has no room to
-    // grow as much (CI's 1024 x 768 screen), it keeps inside the window,
-    // off the list, and the edges' lists inside it, apart (Issue #99).
+    // The process field and the figure grow with the window; where the
+    // window has no room to grow as much (CI's 1024 x 768 screen), they
+    // keep inside it, the figure off the list and the edges' lists inside
+    // it, apart (Issue #99).
     let client = client_rect(editor);
     if (client_w(client) - client0 * 3 / 2).abs() <= 3 {
+        assert!((width(PROCESS) - process0 * 3 / 2).abs() <= 3, "the process field grows: {process0} -> {}", width(PROCESS));
         assert!((width(FIGURE) - figure0 * 3 / 2).abs() <= 3, "the figure grows: {figure0} -> {}", width(FIGURE));
     }
+    let process = window_rect(part(editor, PROCESS));
+    assert!(process.right <= client.right && width(PROCESS) > process0, "the process field in the window, grown: {:?}", ltrb(process));
     let (f, list) = (window_rect(part(editor, FIGURE)), window_rect(part(editor, APPS)));
     assert!(f.left >= client.left && f.right <= client.right && f.top >= client.top && f.bottom <= client.bottom, "the figure in the window: {:?}", ltrb(f));
     assert!(f.left >= list.right, "the figure off the list: {:?} {:?}", ltrb(f), ltrb(list));
