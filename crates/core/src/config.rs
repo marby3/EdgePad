@@ -243,6 +243,9 @@ pub enum Action {
     Page(Page),
     /// Opens a pie menu of another key set's keys (spec 4.6).
     Pie(String),
+    /// Turns the panel to another key set: while held, or from one press
+    /// to the next with `toggle` (Issue #104).
+    Layer { set: String, toggle: bool },
     /// Nothing: a key of a KLE layout no key line is given to (Issue #101).
     None,
 }
@@ -260,6 +263,7 @@ impl Action {
             Action::Run(_) => "run",
             Action::Page(_) => "page",
             Action::Pie(_) => "pie",
+            Action::Layer { .. } => "layer",
             Action::None => "none",
         }
     }
@@ -270,7 +274,7 @@ impl Action {
     pub fn is_pie_item(&self) -> bool {
         match self {
             Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Run(_) | Action::Page(_) => true,
-            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) | Action::None => false,
+            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) | Action::Layer { .. } | Action::None => false,
         }
     }
 }
@@ -604,6 +608,7 @@ impl Parser<'_> {
                 self.refs.push((n, set.clone()));
                 self.pies.push((n, set.clone()));
             }
+            Action::Layer { set, .. } => self.refs.push((n, set.clone())),
             _ => {}
         }
         self.config.sets[set].keys.push(key);
@@ -851,6 +856,14 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
             set => Page::Set(set.into()),
         }),
         "pie" => Action::Pie(content.to_ascii_lowercase()),
+        "layer" => {
+            let toggle = match take("mode").map(str::to_ascii_lowercase).as_deref() {
+                None | Some("hold") => false,
+                Some("toggle") => true,
+                Some(mode) => return Err(format!("layer の mode は hold か toggle（「{mode}」）")),
+            };
+            Action::Layer { set: content.to_ascii_lowercase(), toggle }
+        }
         _ => return Err(format!("知らないキーの種類「{}」", fields[1])),
     };
     if let Some((k, _)) = options.first() {

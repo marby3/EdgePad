@@ -84,6 +84,9 @@ enum Sends {
     /// Opens a pie menu of the key set it names while pressed (spec 4.6).
     /// Nothing is sent yet.
     Pie(String),
+    /// Turns the panel to the key set it names: while held, or from one
+    /// press to the next with `toggle` (Issue #104).
+    Layer { set: String, toggle: bool },
     /// Nothing at all: a KLE layout's key no key line is given to.
     Nothing,
 }
@@ -117,6 +120,7 @@ impl Sends {
             Action::Run(command) => Sends::Run(command.clone()),
             Action::Page(page) => Sends::Page(page.clone()),
             Action::Pie(set) => Sends::Pie(set.clone()),
+            Action::Layer { set, toggle } => Sends::Layer { set: set.clone(), toggle: *toggle },
             Action::None => Sends::Nothing,
         }
     }
@@ -192,6 +196,14 @@ struct Panel {
     pages: usize,
     /// Every key set, for a page key that switches to another.
     sets: Rc<[KeySet]>,
+    /// The keys the panel goes back to from a layer: the profile's set, or
+    /// the one a page key switched to.
+    base: Vec<KeyDef>,
+    /// The layer shown, if any, and the modifiers carried over to it. The
+    /// page of the base keys, to go back to.
+    layer: Option<Layer>,
+    base_page: usize,
+    carried: Vec<Carried>,
     presses: Presses,
     /// The macro running on this panel: its steps, and the one to send next.
     running: Option<(Rc<[MacroStep]>, usize)>,
@@ -226,6 +238,31 @@ struct Slide {
     /// How long it takes: `slide_ms` for the whole way, less for the rest of
     /// a slide turned back.
     ms: u32,
+}
+
+/// The layer a panel is turned to (Issue #104): held by a pointer on its
+/// key, or toggled; the key set it is.
+#[derive(Clone)]
+enum Layer {
+    Held { pointer: u32, set: String },
+    Toggled(String),
+}
+
+impl Layer {
+    fn set(&self) -> &str {
+        match self {
+            Layer::Held { set, .. } | Layer::Toggled(set) => set,
+        }
+    }
+}
+
+/// A modifier held or latched when the panel turned to keys without it:
+/// still down, till its pointer lifts or a latch ends as it would on its
+/// key. The pointer holding it, if one does.
+struct Carried {
+    vk: u16,
+    state: Modifier,
+    pointer: Option<u32>,
 }
 
 /// Where and when a pointer went down, in screen pixels.
@@ -472,6 +509,10 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             page: 0,
             pages: 1,
             sets: panels.sets.clone(),
+            base: p.keys.clone(),
+            layer: None,
+            base_page: 0,
+            carried: Vec::new(),
             presses,
             running: None,
             captured: None,
@@ -690,6 +731,7 @@ unsafe fn apply_visibility() {
                     // Draws it, now at its normal alpha. Its keys go before
                     // it slides away, as when it goes at once.
                     let_go(panel);
+                    back_to_base(panel);
                     if !slide(panel, false) {
                         ShowWindow(panel.hwnd, SW_HIDE);
                         // The room goes back while hidden.
@@ -727,6 +769,12 @@ unsafe fn let_go(panel: &mut Panel) {
                 hold(vk, false);
             }
         }
+        for c in std::mem::take(&mut panel.carried) {
+            let mut state = c.state;
+            if state.let_go() {
+                hold(c.vk, false);
+            }
+        }
         panel.presses = Presses::new(panel.keys.len());
         // A macro stops between steps, so it leaves nothing down.
         if panel.running.take().is_some() {
@@ -747,6 +795,7 @@ pub unsafe fn release_all() {
         PANELS.with_borrow_mut(|panels| {
             for panel in panels {
                 let_go(panel);
+                back_to_base(panel);
                 count_idle(panel);
             }
         });
@@ -832,8 +881,9 @@ unsafe fn turn(panel: &mut Panel, page: &Page) {
         Page::Set(name) => {
             // The parser makes sure the set is there.
             let Some(set) = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(name)) else { return };
-            let keys: Vec<PanelKey> = set.keys.iter().map(PanelKey::of).collect();
+            let (keys, base): (Vec<PanelKey>, _) = (set.keys.iter().map(PanelKey::of).collect(), set.keys.clone());
             unsafe { let_go(panel) };
+            (panel.base, panel.layer) = (base, None);
             panel.presses = Presses::new(keys.len());
             panel.keys = keys;
             panel.page = 0;
@@ -842,6 +892,71 @@ unsafe fn turn(panel: &mut Panel, page: &Page) {
     debug_log!("パネル {}: ページ {}/{}", edge_name(panel.edge), panel.page + 1, panel.pages);
     place_keys(panel);
     unsafe { draw(panel) };
+}
+
+/// Turn `panel` to `layer`, its key set's keys in place of those shown.
+unsafe fn to_layer(panel: &mut Panel, layer: Layer) {
+    // The parser makes sure the set is there.
+    let Some(set) = panel.sets.iter().find(|s| s.name.eq_ignore_ascii_case(layer.set())) else { return };
+    let keys = set.keys.clone();
+    debug_log!("パネル {}: レイヤー {}", edge_name(panel.edge), layer.set());
+    if panel.layer.is_none() {
+        panel.base_page = panel.page;
+    }
+    panel.layer = Some(layer);
+    unsafe { show_keys(panel, &keys, 0) };
+}
+
+/// Turn `panel` back from its layer, if it shows one, to its base keys.
+unsafe fn back_to_base(panel: &mut Panel) {
+    if panel.layer.take().is_some() {
+        debug_log!("パネル {}: レイヤーから戻る", edge_name(panel.edge));
+        let keys = panel.base.clone();
+        let page = panel.base_page;
+        unsafe { show_keys(panel, &keys, page) };
+    }
+}
+
+/// Show `defs` on `panel` in place of its keys, from page `page`. Hold
+/// and repeat keys held come up; modifiers held or latched stay so, on a
+/// key of the same modifier if there is one, else carried unseen (spec 7,
+/// layer keys).
+unsafe fn show_keys(panel: &mut Panel, defs: &[KeyDef], page: usize) {
+    unsafe {
+        let mut carried = std::mem::take(&mut panel.carried);
+        for (i, key) in panel.keys.iter_mut().enumerate() {
+            match &mut key.sends {
+                Sends::Modifier { vk, state } if state.is_down() => {
+                    let pointer = panel.presses.pointers_on(i).first().copied();
+                    carried.push(Carried { vk: *vk, state: *state, pointer });
+                }
+                Sends::Hold(vk) if panel.presses.is_down(i) => hold(*vk, false),
+                Sends::Repeat { .. } => {
+                    KillTimer(panel.hwnd, repeat_timer(i));
+                }
+                _ => {}
+            }
+        }
+        let mut keys: Vec<PanelKey> = defs.iter().map(PanelKey::of).collect();
+        let mut presses = Presses::new(keys.len());
+        carried.retain(|c| {
+            let same = keys.iter().position(|k| matches!(k.sends, Sends::Modifier { vk, .. } if vk == c.vk));
+            let Some(i) = same else { return true };
+            if let Sends::Modifier { state, .. } = &mut keys[i].sends {
+                *state = c.state;
+            }
+            if let Some(pointer) = c.pointer {
+                presses.down(pointer, i);
+            }
+            false
+        });
+        (panel.keys, panel.presses, panel.carried, panel.page) = (keys, presses, carried, page);
+        place_keys(panel);
+        if panel.docked {
+            dock(panel);
+        }
+        draw(panel);
+    }
 }
 
 unsafe extern "system" fn gather(monitor: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> i32 {
@@ -1228,6 +1343,10 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             if let Some(vk) = down {
                 hold(vk, true);
             }
+            if let Sends::Layer { set, toggle: false } = &panel.keys[key].sends {
+                let set = set.clone();
+                return to_layer(panel, Layer::Held { pointer: id, set });
+            }
             draw(panel);
             // Over the panel, drawn with the key held.
             if let Sends::Pie(name) = &panel.keys[key].sends {
@@ -1263,6 +1382,15 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
             panel.starts.retain(|s| s.id != id);
+            let ends_layer = matches!(panel.layer, Some(Layer::Held { pointer, .. }) if pointer == id);
+            if let Some(c) = panel.carried.iter_mut().find(|c| c.pointer == Some(id)) {
+                c.pointer = None;
+                match c.state.release(Instant::now(), panel.latch_time, cancelled) {
+                    true => hold(c.vk, false),
+                    false => debug_log!("ラッチ 0x{:02X}", c.vk),
+                }
+                panel.carried.retain(|c| c.state.is_down());
+            }
             let lifted = panel.presses.up(id);
             let mut released = lifted;
             // What a key does on release is for a finger that lifted: a
@@ -1304,7 +1432,9 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                 }
             }
             let panel = &mut panels[i];
-            if lifted.is_some() {
+            if ends_layer {
+                back_to_base(panel);
+            } else if lifted.is_some() {
                 draw(panel);
             }
             // Only the mouse that took the capture gives it back; a finger
@@ -1354,7 +1484,16 @@ unsafe fn act(panels: &mut [Panel], i: usize, sends: &Sends) {
             Sends::Text(text) => send::text(text),
             Sends::Run(command) => launch::run(command),
             Sends::Page(page) => turn(&mut panels[i], page),
-            Sends::Hold(_) | Sends::Modifier { .. } | Sends::Repeat { .. } | Sends::Pie(_) | Sends::Nothing => {}
+            Sends::Layer { set, toggle: true } => {
+                let panel = &mut panels[i];
+                // Its own set shown: back; else to it, till pressed there.
+                if panel.layer.as_ref().is_some_and(|l| l.set().eq_ignore_ascii_case(set)) {
+                    back_to_base(panel);
+                } else {
+                    to_layer(panel, Layer::Toggled(set.clone()));
+                }
+            }
+            Sends::Hold(_) | Sends::Modifier { .. } | Sends::Repeat { .. } | Sends::Pie(_) | Sends::Layer { .. } | Sends::Nothing => {}
         }
     }
 }
@@ -1438,6 +1577,13 @@ unsafe fn end_one_shot_latches(panels: &mut [Panel], mode: LatchMode) {
                 }
             }
         }
+        for c in &mut panel.carried {
+            if c.state.shortcut_sent(mode) {
+                unsafe { hold(c.vk, false) };
+                changed = true;
+            }
+        }
+        panel.carried.retain(|c| c.state.is_down());
         if changed {
             unsafe {
                 draw(panel);
@@ -1452,6 +1598,8 @@ unsafe fn end_one_shot_latches(panels: &mut [Panel], mode: LatchMode) {
 /// macro short.
 fn busy(panel: &Panel) -> bool {
     panel.running.is_some()
+        || matches!(panel.layer, Some(Layer::Held { .. }))
+        || !panel.carried.is_empty()
         || panel.keys.iter().enumerate().any(|(i, k)| {
             panel.presses.is_down(i) || matches!(k.sends, Sends::Modifier { state, .. } if state.is_latched())
         })

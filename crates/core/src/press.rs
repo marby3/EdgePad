@@ -40,6 +40,11 @@ impl Presses {
         (self.holders[key] == 0).then_some(key)
     }
 
+    /// The pointers holding `key`.
+    pub fn pointers_on(&self, key: usize) -> Vec<u32> {
+        self.pointers.iter().flatten().filter(|&&(_, k)| k == key).map(|&(p, _)| p).collect()
+    }
+
     pub fn is_down(&self, key: usize) -> bool {
         self.holders.get(key).is_some_and(|&n| n > 0)
     }
