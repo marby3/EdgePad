@@ -375,9 +375,23 @@ fn open_set(app: &Running, set: &str) -> HWND {
 /// sample, and wait for its label to show.
 fn choose_key(editor: HWND, i: i32, label: &str) {
     wait_in_front(editor);
-    click(sample_cell(editor, 0, i));
+    let at = sample_cell(editor, 0, i);
+    // What the click lands on, to tell why a key goes unchosen (Issue #103).
+    let under = unsafe { WindowFromPoint(at) };
+    let front = unsafe { GetForegroundWindow() };
+    click(at);
     pump(300);
-    assert!(within_3s(|| text(editor, LABEL) == label), "key {i}, {label}, chosen: {:?}", text(editor, LABEL));
+    if !within_3s(|| text(editor, LABEL) == label) {
+        let s = window_rect(part(editor, SAMPLE));
+        let mut cursor = POINT { x: 0, y: 0 };
+        unsafe { GetCursorPos(&mut cursor) };
+        panic!(
+            "key {i}, {label}, chosen: {:?}; clicked ({}, {}) on {} (the sample: {}), front: {}, focus on the sample: {},              sample ({}, {})-({}, {}), cursor ({}, {}), editor {:?}",
+            text(editor, LABEL), at.x, at.y, class_of(under), under == part(editor, SAMPLE), front == editor,
+            focus_of(editor) == part(editor, SAMPLE), s.left, s.top, s.right, s.bottom, cursor.x, cursor.y,
+            { let r = window_rect(editor); (r.left, r.top, r.right, r.bottom) },
+        );
+    }
 }
 
 // AC1
