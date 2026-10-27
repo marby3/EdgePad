@@ -93,25 +93,29 @@ fn kle_keys_go_to_the_key_lines_in_order_and_the_rest_send_nothing() {
 
 // AC4
 #[test]
-fn a_free_layout_turns_on_the_side_edges_its_first_row_against_the_screen_edge() {
+fn a_free_layout_turns_on_the_side_edges_its_bottom_row_against_the_screen_edge() {
     let monitor = Rect { x: 0, y: 0, w: 1000, h: 800 };
     // Two keys in the first row, one 2 wide below: 2 keys by 2.
     let ps = [at(0.0, 0.0, 1.0, 1.0), at(1.0, 0.0, 1.0, 1.0), at(0.0, 1.0, 2.0, 1.0)];
     let k = 40;
+    // The top and the bottom: as laid out, the first row on top.
+    let as_laid_out = [Rect { x: 0, y: 0, w: 40, h: 40 }, Rect { x: 40, y: 0, w: 40, h: 40 }, Rect { x: 0, y: 40, w: 80, h: 40 }];
     let (top, keys) = free_panel(monitor, Edge::Top, k, &ps);
     assert_eq!((top.x, top.y, top.w, top.h), (460, 0, 80, 80));
-    assert_eq!(keys, [Rect { x: 0, y: 0, w: 40, h: 40 }, Rect { x: 40, y: 0, w: 40, h: 40 }, Rect { x: 0, y: 40, w: 80, h: 40 }]);
+    assert_eq!(keys, as_laid_out);
     let (bottom, keys) = free_panel(monitor, Edge::Bottom, k, &ps);
     assert_eq!((bottom.y, bottom.h), (720, 80));
-    assert_eq!(keys, [Rect { x: 0, y: 40, w: 40, h: 40 }, Rect { x: 40, y: 40, w: 40, h: 40 }, Rect { x: 0, y: 0, w: 80, h: 40 }], "first row at the bottom");
-    // The left edge: rows become columns, the first against the edge, a
+    assert_eq!(keys, as_laid_out, "the first row on top on the bottom edge too");
+    // The left edge: turned clockwise, the bottom row against the edge, a
     // row's left end at the top.
     let (left, keys) = free_panel(monitor, Edge::Left, k, &ps);
     assert_eq!((left.x, left.y, left.w, left.h), (0, 360, 80, 80));
-    assert_eq!(keys, [Rect { x: 0, y: 0, w: 40, h: 40 }, Rect { x: 0, y: 40, w: 40, h: 40 }, Rect { x: 40, y: 0, w: 40, h: 80 }]);
+    assert_eq!(keys, [Rect { x: 40, y: 0, w: 40, h: 40 }, Rect { x: 40, y: 40, w: 40, h: 40 }, Rect { x: 0, y: 0, w: 40, h: 80 }]);
+    // The right edge: turned anticlockwise, the bottom row against the
+    // edge, a row's left end at the bottom.
     let (right, keys) = free_panel(monitor, Edge::Right, k, &ps);
     assert_eq!(right.x, 920);
-    assert_eq!(keys, [Rect { x: 40, y: 0, w: 40, h: 40 }, Rect { x: 40, y: 40, w: 40, h: 40 }, Rect { x: 0, y: 0, w: 40, h: 80 }]);
+    assert_eq!(keys, [Rect { x: 0, y: 40, w: 40, h: 40 }, Rect { x: 0, y: 0, w: 40, h: 40 }, Rect { x: 40, y: 0, w: 40, h: 80 }]);
 }
 
 // AC5
