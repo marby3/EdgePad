@@ -353,9 +353,9 @@ struct Parser {
     seen: Vec<String>,
     /// Settings already given in the current section (lower case).
     given: Vec<String>,
-    /// [edge]'s settings, read, to give each edge that does not write its
-    /// own once the whole file is read: (line, name, value).
-    common: Vec<(usize, String, String)>,
+    /// [edge]'s settings, read and checked, to give each edge that does not
+    /// write its own once the whole file is read: (name, value).
+    shared: Vec<(String, String)>,
     /// The settings each edge writes, by `Edge as usize`: columns and rows
     /// as `lines`.
     edge_given: [Vec<String>; 4],
@@ -382,7 +382,7 @@ impl Default for Parser {
             section: Section::None { reported: false },
             seen: Vec::new(),
             given: Vec::new(),
-            common: Vec::new(),
+            shared: Vec::new(),
             edge_given: Default::default(),
             set_lines: Vec::new(),
             profile_lines: Vec::new(),
@@ -426,7 +426,7 @@ impl Parser {
         let result = match self.section {
             Section::None { .. } => Ok(()),
             Section::General => self.general(&name, value),
-            Section::Edges => self.common(n, &name, value),
+            Section::Edges => self.common(&name, value),
             Section::Edge(edge) => {
                 let given = if matches!(name.as_str(), "columns" | "rows") { "lines".into() } else { name.clone() };
                 self.edge_given[edge as usize].push(given);
@@ -520,11 +520,11 @@ impl Parser {
 
     /// A setting of [edge]: checked as an edge would read it (columns as
     /// a side edge's, rows as the top's), and kept for `finish`.
-    fn common(&mut self, n: usize, name: &str, value: &str) -> Result<(), String> {
+    fn common(&mut self, name: &str, value: &str) -> Result<(), String> {
         let edge = if name == "rows" { Edge::Top } else { Edge::Left };
         let mut check = Parser::default();
         check.edge(edge, name, value).map_err(|why| why.replace("[edge.*]", "[edge]"))?;
-        self.common.push((n, name.into(), value.into()));
+        self.shared.push((name.into(), value.into()));
         Ok(())
     }
 
@@ -596,7 +596,7 @@ impl Parser {
     fn finish(mut self) -> Result<Config, Vec<Error>> {
         // [edge]'s settings, to each edge that does not write its own:
         // columns to the side edges, rows to the top and bottom.
-        for (_, name, value) in std::mem::take(&mut self.common) {
+        for (name, value) in std::mem::take(&mut self.shared) {
             let lines = matches!(name.as_str(), "columns" | "rows");
             for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
                 let given = if lines { "lines" } else { name.as_str() };

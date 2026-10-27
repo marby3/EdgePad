@@ -85,7 +85,7 @@ fn note(editor: HWND, name: &str) -> String {
     text_of(part(editor, NOTE + row(editor, name)))
 }
 
-/// Whether `name` shows as not written in the file: 既定値, not 既定に戻す.
+/// Whether `name` shows as not written for it: 既定値 (or 共通), not 既定に戻す.
 fn is_default(editor: HWND, name: &str) -> bool {
     let i = row(editor, name);
     visible(part(editor, MARK + i)) && !visible(part(editor, RESET + i))
@@ -711,14 +711,14 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     assert!(within_3s(|| focus_of(editor) == field(editor, "enabled")), "then the edge's first field");
 }
 
-
 // Issue #97 AC5: an edge's field not written takes [edge]'s value, marked
 // 共通; 既定に戻す goes back to it.
 #[test]
 fn an_edge_field_not_written_shows_the_common_value_marked() {
     let _desktop = desktop();
-    let text = settings("").replace("[edge.left]\n", "[edge]\nenabled = false\ncolumns = 2\n\n[edge.left]\n").replace("columns = 2   ; 2列", "columns = 3");
-    let app = launch_with(Some(&text), None);
+    let text = "[edge]\nenabled = false\ncolumns = 2\n\n[edge.left]\ncolumns = 3\n\n\
+                [set.two]\nkey = A | hold | A\nkey = B | hold | B\n[profile.default]\nleft = two\n";
+    let app = launch_with(Some(text), None);
     let editor = open_page(&app, EDGES_PAGE);
     select_edge(&app, editor, "left");
     let mark = |name: &str| text_of(part(editor, MARK + row(editor, name)));

@@ -4,7 +4,8 @@
 //!
 //! A row is a label with the setting's name, its field (an edit control, a
 //! drop-down list, or a check box), a note of what it takes, and 既定に戻す
-//! when the setting is written in the file, or 既定値 when it is not. The
+//! when the setting is written in the file, or 既定値 when it is not (共通,
+//! for an edge's setting [edge] has: its value is shown). The
 //! parts have control ids by row (FIELD, RESET, LABEL, NOTE, MARK + the
 //! row's index), which the tests go by too. hotkey has 押して取り込む
 //! (CAPTURE) beside it too, to press the keys rather than write them
@@ -187,7 +188,7 @@ pub(super) struct Row {
     label: HWND,
     field: HWND,
     note: HWND,
-    /// 既定に戻す and 既定値; null on the handle's parts.
+    /// 既定に戻す and 既定値 (or 共通); null on the handle's parts.
     reset: HWND,
     mark: HWND,
     /// Whether the file has the row's setting.
