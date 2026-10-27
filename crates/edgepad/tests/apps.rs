@@ -1,6 +1,6 @@
 //! Acceptance tests for Issue #88: the アプリ別 page of the settings window,
 //! which edits the profiles, [profile.*], without writing the settings
-//! file (spec 7.1).
+//! file (spec 7.1). Issue #99: its figure on a screen too small to grow.
 //!
 //! The tests find the page's parts by control id: the list of apps 2000 (a
 //! ListBox), 開いているアプリから追加 2001, 削除 2002, the process name to
@@ -24,7 +24,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Dwm::DwmFlush;
-use windows_sys::Win32::Graphics::Gdi::MapWindowPoints;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
@@ -475,7 +474,7 @@ fn brightness(c: [i32; 3]) -> i32 {
     (c[0] + c[1] + c[2]) / 3
 }
 
-// AC6
+// AC6; Issue #99, AC1-3
 #[test]
 fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     let _desktop = desktop();
@@ -498,28 +497,35 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
         r.right - r.left
     };
     let (process0, figure0) = (width(PROCESS), width(FIGURE));
+    let client_w = |r: RECT| r.right - r.left;
+    let client0 = client_w(client_rect(editor));
     let dpi = unsafe { GetDpiForWindow(editor) } as i32;
     let new = dpi * 3 / 2;
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
     pump(300);
     assert!((width(PROCESS) - process0 * 3 / 2).abs() <= 3, "the process field grows: {process0} -> {}", width(PROCESS));
-    // The figure keeps inside the window, off the list, and the edges'
-    // lists inside it, apart: on CI's 1024 x 768 screen too, where the
-    // window has no room to grow as much (Issue #99).
-    let mut client: RECT = unsafe { zeroed() };
-    unsafe { GetClientRect(editor, &mut client) };
-    let mut corners = [POINT { x: 0, y: 0 }, POINT { x: client.right, y: client.bottom }];
-    unsafe { MapWindowPoints(editor, null_mut(), corners.as_mut_ptr(), 2) };
+    // The figure grows with the window; where the window has no room to
+    // grow as much (CI's 1024 x 768 screen), it keeps inside the window,
+    // off the list, and the edges' lists inside it, apart (Issue #99).
+    let client = client_rect(editor);
+    if (client_w(client) - client0 * 3 / 2).abs() <= 3 {
+        assert!((width(FIGURE) - figure0 * 3 / 2).abs() <= 3, "the figure grows: {figure0} -> {}", width(FIGURE));
+    }
     let (f, list) = (window_rect(part(editor, FIGURE)), window_rect(part(editor, APPS)));
-    assert!(f.left >= corners[0].x && f.right <= corners[1].x && f.top >= corners[0].y && f.bottom <= corners[1].y, "the figure in the window: {:?}", ltrb(f));
+    assert!(f.left >= client.left && f.right <= client.right && f.top >= client.top && f.bottom <= client.bottom, "the figure in the window: {:?}", ltrb(f));
     assert!(f.left >= list.right, "the figure off the list: {:?} {:?}", ltrb(f), ltrb(list));
     for id in [LEFT, RIGHT, TOP, BOTTOM] {
         let r = window_rect(part(editor, id));
         assert!(r.left >= f.left && r.right <= f.right && r.top >= f.top && r.bottom <= f.bottom, "{id} on the figure: {:?} {:?}", ltrb(r), ltrb(f));
     }
-    let (l, r, t, b) = (window_rect(part(editor, LEFT)), window_rect(part(editor, RIGHT)), window_rect(part(editor, TOP)), window_rect(part(editor, BOTTOM)));
-    assert!(l.right <= r.left && t.bottom <= l.top && l.bottom <= b.top, "the edges' lists apart: {:?}", [l, r, t, b].map(ltrb));
+    let edges = [LEFT, RIGHT, TOP, BOTTOM].map(|id| window_rect(part(editor, id)));
+    let apart = |a: &RECT, b: &RECT| a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+    for (i, a) in edges.iter().enumerate() {
+        for b in &edges[i + 1..] {
+            assert!(apart(a, b), "the edges' lists apart: {:?}", edges.map(ltrb));
+        }
+    }
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
     pump(300);
     assert_eq!(width(FIGURE), figure0, "the figure back as it was");
