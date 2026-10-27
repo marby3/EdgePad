@@ -95,10 +95,10 @@ pub struct Place {
 /// order (spec 5.2).
 ///
 /// The panel is as large as holds every key, and centred along the edge.
-/// The layout's first row lies against the screen edge: on the top as
-/// laid out, on the bottom with its rows the other way up. On the left
-/// and right its rows are columns, a row's left end at the top. Labels
-/// are never turned, so neither is anything here.
+/// On the top and the bottom it is as laid out. On the left it is turned
+/// clockwise, and on the right anticlockwise: its bottom row against the
+/// screen edge, as on the bottom. Labels are never turned, so neither is
+/// anything here.
 pub fn free_panel(monitor: Rect, edge: Edge, key: i32, places: &[Place]) -> (Rect, Vec<Rect>) {
     let left = places.iter().map(|p| p.x).min().unwrap_or(0);
     let top = places.iter().map(|p| p.y).min().unwrap_or(0);
@@ -118,13 +118,15 @@ pub fn free_panel(monitor: Rect, edge: Edge, key: i32, places: &[Place]) -> (Rec
     let keys = places
         .iter()
         .map(|p| {
-            let (along, length) = span(p.x - left, p.w);
-            // Rows from the screen edge: the first one against it.
-            let row = match edge {
-                Edge::Left | Edge::Top => p.y - top,
-                Edge::Right | Edge::Bottom => tall - (p.y - top) - p.h,
+            let (x, y) = (p.x - left, p.y - top);
+            // Along the edge, and across it from the panel's left or top.
+            let (along, across) = match edge {
+                Edge::Top | Edge::Bottom => (x, y),
+                Edge::Left => (x, tall - y - p.h),
+                Edge::Right => (wide - x - p.w, y),
             };
-            let (across, depth) = span(row, p.h);
+            let (along, length) = span(along, p.w);
+            let (across, depth) = span(across, p.h);
             match side {
                 true => Rect { x: across, y: along, w: depth, h: length },
                 false => Rect { x: along, y: across, w: length, h: depth },
