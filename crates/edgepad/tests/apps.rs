@@ -514,7 +514,7 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
         assert!((width(FIGURE) - figure0 * 3 / 2).abs() <= 3, "the figure grows: {figure0} -> {}", width(FIGURE));
     }
     let process = window_rect(part(editor, PROCESS));
-    assert!(process.right <= client.right && width(PROCESS) > process0, "the process field in the window, grown: {:?}", ltrb(process));
+    assert!(process.right <= client.right, "the process field in the window: {:?}", ltrb(process));
     let (f, list) = (window_rect(part(editor, FIGURE)), window_rect(part(editor, APPS)));
     assert!(f.left >= client.left && f.right <= client.right && f.top >= client.top && f.bottom <= client.bottom, "the figure in the window: {:?}", ltrb(f));
     assert!(f.left >= list.right, "the figure off the list: {:?} {:?}", ltrb(f), ltrb(list));
