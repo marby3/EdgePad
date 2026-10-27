@@ -4,7 +4,8 @@
 //!
 //! A row is a label with the setting's name, its field (an edit control, a
 //! drop-down list, or a check box), a note of what it takes, and 既定に戻す
-//! when the setting is written in the file, or 既定値 when it is not. The
+//! when the setting is written in the file, or 既定値 when it is not (共通,
+//! for an edge's setting [edge] has: its value is shown). The
 //! parts have control ids by row (FIELD, RESET, LABEL, NOTE, MARK + the
 //! row's index), which the tests go by too. hotkey has 押して取り込む
 //! (CAPTURE) beside it too, to press the keys rather than write them
@@ -187,7 +188,7 @@ pub(super) struct Row {
     label: HWND,
     field: HWND,
     note: HWND,
-    /// 既定に戻す and 既定値; null on the handle's parts.
+    /// 既定に戻す and 既定値 (or 共通); null on the handle's parts.
     reset: HWND,
     mark: HWND,
     /// Whether the file has the row's setting.
@@ -417,10 +418,22 @@ pub(super) unsafe fn set_hotkey(text: &str) {
     }
 }
 
+/// The value of setting `name` an edge's `section` takes when it does not
+/// write it: [edge]'s, if [edge] has it (Issue #97).
+fn common<'a>(e: &'a Editor, section: &str, name: &str) -> Option<&'a str> {
+    section.starts_with("edge.").then(|| e.doc.get("edge", name)).flatten()
+}
+
+/// The value of setting `name` in `section` as the file has it: written
+/// there, or [edge]'s for an edge.
+fn written_or_common<'a>(e: &'a Editor, section: &str, name: &str) -> Option<&'a str> {
+    e.doc.get(section, name).or_else(|| common(e, section, name))
+}
+
 /// The handle as the file has it for `section`: none, or its parts. Not
-/// written, or not as the parser reads it: the default.
+/// written there or in [edge], or not as the parser reads it: the default.
 fn handle_in(e: &Editor, section: &str) -> Option<[u8; 3]> {
-    match e.doc.get(section, "handle").map(config::handle) {
+    match written_or_common(e, section, "handle").map(config::handle) {
         Some(Ok(Some(h))) => Some([h.width, h.length, h.position]),
         Some(Ok(None)) => None,
         _ => default_handle(),
@@ -430,7 +443,7 @@ fn handle_in(e: &Editor, section: &str) -> Option<[u8; 3]> {
 /// Whether the edge of `section` is enabled, as the file has it or by
 /// default.
 fn enabled_in(e: &Editor, section: &str) -> bool {
-    let value = e.doc.get(section, "enabled").map(str::to_string).or_else(|| config::default_value(section, "enabled"));
+    let value = written_or_common(e, section, "enabled").map(str::to_string).or_else(|| config::default_value(section, "enabled"));
     value.is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
 }
 
@@ -457,7 +470,9 @@ unsafe fn refresh_row(e: &mut Editor, i: usize) -> bool {
     let (section, name) = setting(e, i);
     let written = e.doc.get(&section, name).map(str::to_string);
     let wrong = written.as_deref().is_some_and(|v| config::check(&section, name, v).is_err());
-    let default = || config::default_value(&section, name).unwrap_or_default();
+    // Not written for the edge: [edge]'s, marked 共通, or the default.
+    let shared = common(e, &section, name).map(str::to_string);
+    let default = || shared.clone().or_else(|| config::default_value(&section, name)).unwrap_or_default();
     let value = written.clone().unwrap_or_else(default);
     let handle = handle_in(e, &section);
     let row = &mut e.rows[i];
@@ -490,6 +505,9 @@ unsafe fn refresh_row(e: &mut Editor, i: usize) -> bool {
         }
         if spec.kind == Lines {
             set_text(row.label, name);
+        }
+        if !row.mark.is_null() {
+            set_text(row.mark, if shared.is_some() { "共通" } else { "既定値" });
         }
         if wrong {
             row.reason = Some(format!("{name}: ファイルの値を読めない"));

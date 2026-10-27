@@ -85,7 +85,7 @@ fn note(editor: HWND, name: &str) -> String {
     text_of(part(editor, NOTE + row(editor, name)))
 }
 
-/// Whether `name` shows as not written in the file: 既定値, not 既定に戻す.
+/// Whether `name` shows as not written for it: 既定値 (or 共通), not 既定に戻す.
 fn is_default(editor: HWND, name: &str) -> bool {
     let i = row(editor, name);
     visible(part(editor, MARK + i)) && !visible(part(editor, RESET + i))
@@ -711,3 +711,25 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     assert!(within_3s(|| focus_of(editor) == field(editor, "enabled")), "then the edge's first field");
 }
 
+// Issue #97 AC5: an edge's field not written takes [edge]'s value, marked
+// 共通; 既定に戻す goes back to it.
+#[test]
+fn an_edge_field_not_written_shows_the_common_value_marked() {
+    let _desktop = desktop();
+    let text = "[edge]\nenabled = false\ncolumns = 2\n\n[edge.left]\ncolumns = 3\n\n\
+                [set.two]\nkey = A | hold | A\nkey = B | hold | B\n[profile.default]\nleft = two\n";
+    let app = launch_with(Some(text), None);
+    let editor = open_page(&app, EDGES_PAGE);
+    select_edge(&app, editor, "left");
+    let mark = |name: &str| text_of(part(editor, MARK + row(editor, name)));
+    assert_eq!(value(editor, "enabled"), "false", "the common value");
+    assert!(is_default(editor, "enabled") && mark("enabled") == "共通", "marked 共通: {:?}", mark("enabled"));
+    assert!(is_default(editor, "dock") && mark("dock") == "既定値", "no common value: the default");
+    assert_eq!(value(editor, "columns"), "3", "the edge's own");
+    assert!(!is_default(editor, "columns"));
+    click_on(editor, part(editor, RESET + row(editor, "columns")));
+    assert!(within_3s(|| value(editor, "columns") == "2"), "back to the common value: {}", value(editor, "columns"));
+    assert_eq!(mark("columns"), "共通");
+    save(editor);
+    assert!(within_3s(|| !file(&app).contains("columns = 3")), "the edge's line gone: {}", file(&app));
+}

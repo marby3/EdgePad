@@ -597,7 +597,9 @@ fn first_edge(doc: &Document, set: &str) -> Option<(Edge, usize)> {
         .and_then(|(name, _)| Edge::parse(&name))?;
     let (name, _) = EDGE_NAMES[edge as usize];
     let lines_name = if edge.is_side() { "columns" } else { "rows" };
-    let lines = doc.get(&format!("edge.{name}"), lines_name).and_then(|v| v.trim().parse().ok()).filter(|n| (1..=3).contains(n));
+    // Not written for the edge: [edge]'s (Issue #97).
+    let written = doc.get(&format!("edge.{name}"), lines_name).or_else(|| doc.get("edge", lines_name));
+    let lines = written.and_then(|v| v.trim().parse().ok()).filter(|n| (1..=3).contains(n));
     Some((edge, lines.unwrap_or(1)))
 }
 
