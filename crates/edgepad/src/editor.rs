@@ -54,6 +54,7 @@ use crate::log::debug_log;
 use crate::panel::{pointer_at, pointer_id};
 use crate::{settings, tray, watch};
 
+mod apps;
 mod fields;
 mod keymap;
 
@@ -98,11 +99,13 @@ const ANSWER_W: i32 = 136;
 
 /// The figure asks for edge wParam to be chosen; a field, id wParam, to be
 /// taken once the window is free; the sample, for key wParam to be chosen;
-/// and the parts are to be placed again, once the window is free.
+/// the parts are to be placed again, once the window is free; and the
+/// アプリ別 figure asks for the list of its edge wParam to open.
 const WM_CHOOSE_EDGE: u32 = WM_APP + 1;
 const WM_COMMIT: u32 = WM_APP + 2;
 const WM_CHOOSE_KEY: u32 = WM_APP + 3;
 const WM_LAY_OUT: u32 = WM_APP + 4;
+const WM_OPEN_EDGE: u32 = WM_APP + 5;
 
 /// Styles, messages and notices of Win32_System_SystemServices and
 /// Win32_UI_Controls, features taken for these alone otherwise.
@@ -223,6 +226,7 @@ struct Editor {
     /// The edge the figure has chosen, of `fields::EDGES`.
     edge: usize,
     keymap: keymap::Keymap,
+    apps: apps::Apps,
     /// The line of the file the last save failed on, while the status line
     /// leads to it.
     fault: Cell<Option<usize>>,
@@ -465,6 +469,12 @@ unsafe fn register() -> bool {
             debug_log!("設定画面の見本の窓クラスを登録できない");
             return false;
         }
+        wc.lpfnWndProc = Some(apps::figure_proc);
+        wc.lpszClassName = apps::FIGURE_CLASS;
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            debug_log!("設定画面のアプリ別の図の窓クラスを登録できない");
+            return false;
+        }
         wc.lpfnWndProc = Some(keymap::pie_proc);
         wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
         wc.lpszClassName = keymap::PIE_CLASS;
@@ -505,9 +515,15 @@ unsafe fn restyle() {
     let Some((hwnd, buttons, typed)) = with_editor(|e| {
         let (mut typed, theirs) = fields::themed(e);
         let (keymap_typed, keymap_buttons) = keymap::themed(e);
-        typed.extend(keymap_typed);
-        let buttons: Vec<HWND> =
-            [e.open_text, e.save].into_iter().chain(e.answers.iter().copied()).chain(theirs).chain(keymap_buttons).collect();
+        let (apps_typed, apps_buttons) = apps::themed(e);
+        typed.extend(keymap_typed.into_iter().chain(apps_typed));
+        let buttons: Vec<HWND> = [e.open_text, e.save]
+            .into_iter()
+            .chain(e.answers.iter().copied())
+            .chain(theirs)
+            .chain(keymap_buttons)
+            .chain(apps_buttons)
+            .collect();
         (e.hwnd, buttons, typed)
     }) else {
         return;
@@ -611,7 +627,8 @@ unsafe fn open() -> bool {
             // The pages' parts, between the sidebar and the bottom row, for
             // the Tab key's order.
             let keymap = keymap::make(hwnd);
-            let rows = fields::make(hwnd).filter(|_| keymap);
+            let apps = apps::make(hwnd);
+            let rows = fields::make(hwnd).filter(|_| keymap && apps);
             let open_text = button(hwnd, "テキストで開く", OPEN_TEXT);
             let save = button(hwnd, "保存", SAVE);
             ([sidebar, heading, status, path_part, open_text, save], rows)
@@ -654,6 +671,7 @@ unsafe fn open() -> bool {
             figure,
             edge: 0,
             keymap: keymap::Keymap::default(),
+            apps: apps::Apps::default(),
             fault: Cell::new(None),
             focus: sidebar,
             marked: false,
@@ -666,12 +684,14 @@ unsafe fn open() -> bool {
         set_fonts(&editor);
         let (mut typed, mut buttons) = fields::themed(&editor);
         let (keymap_typed, keymap_buttons) = keymap::themed(&editor);
-        typed.extend(keymap_typed);
-        buttons.extend(keymap_buttons);
+        let (apps_typed, apps_buttons) = apps::themed(&editor);
+        typed.extend(keymap_typed.into_iter().chain(apps_typed));
+        buttons.extend(keymap_buttons.into_iter().chain(apps_buttons));
         EDITOR.set(Some(editor));
         with_editor(|e| {
             fields::refresh(e);
             keymap::refresh(e);
+            apps::refresh(e);
         });
         title_bar(hwnd, look.dark);
         button_theme(&[open_text, save].into_iter().chain(buttons).collect::<Vec<_>>(), look.dark);
@@ -692,7 +712,7 @@ unsafe fn open() -> bool {
 unsafe fn set_fonts(e: &Editor) {
     unsafe {
         let all = [e.sidebar, e.status, e.path_part, e.open_text, e.save].into_iter().chain(e.answers.iter().copied());
-        for p in all.chain(fields::parts(e)).chain(keymap::parts(e)) {
+        for p in all.chain(fields::parts(e)).chain(keymap::parts(e)).chain(apps::parts(e)) {
             SendMessageW(p, WM_SETFONT, e.font as WPARAM, 1);
         }
         SendMessageW(e.heading, WM_SETFONT, e.heading_font as WPARAM, 1);
@@ -765,8 +785,10 @@ unsafe fn lay_out() {
             let top = m + s(HEADING_H) + m;
             fields::place(e, left, top, rows_bottom);
             keymap::place(e, left, top, width, rows_bottom);
+            apps::place(e, left, top, width, rows_bottom);
             fields::show(e);
             keymap::show(e);
+            apps::show(e);
         });
 
         // The answers right aligned in their row; the status line above.
@@ -801,6 +823,11 @@ unsafe fn show_page(index: usize) {
                 keymap::refresh(e);
             }
             keymap::show(e);
+            if index == apps::PAGE {
+                apps::ask_active(e);
+                apps::refresh(e);
+            }
+            apps::show(e);
         }
         (e.sidebar, e.heading)
     }) else {
@@ -896,12 +923,15 @@ unsafe fn enter_focused() {
     unsafe {
         let focus = GetFocus();
         let id = GetDlgCtrlID(focus) as usize;
-        match with_editor(|e| (fields::is_typed(e, focus), keymap::is_typed(e, focus))) {
-            Some((true, _)) => {
+        match with_editor(|e| (fields::is_typed(e, focus), keymap::is_typed(e, focus), apps::is_typed(e, focus))) {
+            Some((true, ..)) => {
                 fields::commit(id, false);
             }
-            Some((_, true)) => {
+            Some((_, true, _)) => {
                 keymap::commit(id);
+            }
+            Some((.., true)) => {
+                apps::commit();
             }
             _ => {}
         }
@@ -927,7 +957,7 @@ unsafe fn mark_unsaved(e: &mut Editor) {
 /// The reason a field's value was turned away, of one still standing, of
 /// any page.
 fn standing_reason(e: &Editor) -> Option<String> {
-    fields::standing_reason(e).or_else(|| keymap::standing_reason(e))
+    fields::standing_reason(e).or_else(|| keymap::standing_reason(e)).or_else(|| apps::standing_reason(e))
 }
 
 /// Question `ask`, as the status line puts it.
@@ -1141,6 +1171,7 @@ unsafe fn command(id: usize) {
                         mark_unsaved(e);
                         fields::refresh(e);
                         keymap::refresh(e);
+                        apps::refresh(e);
                         said = "読み直しました";
                         true
                     }
@@ -1237,7 +1268,7 @@ unsafe fn part_colours(dc: HDC, part: HWND) -> LRESULT {
         String::from_utf16_lossy(&name[..n.max(0) as usize])
     };
     let paint = PAINT.get();
-    let wrong = fields::is_wrong(part) || keymap::is_wrong(part);
+    let wrong = fields::is_wrong(part) || keymap::is_wrong(part) || apps::is_wrong(part);
     let sidebar = unsafe { GetDlgCtrlID(part) } as usize == SIDEBAR;
     let (ink, fill, brush) = match class.as_str() {
         "Edit" | "ComboLBox" if wrong => (look.text, look.wrong, paint.map_or(brush, |p| p.wrong)),
@@ -1289,6 +1320,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     fields::commit(wp, false);
                 } else if keymap::is_typed_id(wp) {
                     keymap::commit(wp);
+                } else if apps::is_part(wp) {
+                    apps::commit();
+                }
+                0
+            }
+            WM_OPEN_EDGE => {
+                if wp < 4 {
+                    apps::open_edge(wp);
                 }
                 0
             }
@@ -1384,6 +1423,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 keymap::command(wp & 0xFFFF, (wp >> 16 & 0xFFFF) as u32);
                 0
             }
+            WM_COMMAND if apps::is_part(wp & 0xFFFF) => {
+                apps::command(wp & 0xFFFF, (wp >> 16 & 0xFFFF) as u32);
+                0
+            }
             WM_COMMAND if wp & 0xFFFF == fields::CAPTURE => {
                 if (wp >> 16 & 0xFFFF) as u32 == BN_CLICKED {
                     keymap::capture_hotkey();
@@ -1403,6 +1446,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // Left, the part with the focus is kept, to have it again on
             // coming back.
             WM_ACTIVATE => {
+                // Back in front: the profile in effect may be another's now.
+                if wp & 0xFFFF != WA_INACTIVE as usize {
+                    with_editor(|e| {
+                        if e.page == apps::PAGE {
+                            apps::ask_active(e);
+                        }
+                    });
+                }
                 if wp & 0xFFFF == WA_INACTIVE as usize {
                     let focus = GetFocus();
                     if IsChild(hwnd, focus) != 0 {
@@ -1592,7 +1643,15 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
         if msg.message == WM_KEYDOWN {
             let focus = GetFocus();
             let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
-            let typed = with_editor(|e| fields::is_typed(e, focus) || keymap::is_typed(e, focus)) == Some(true);
+            let typed =
+                with_editor(|e| fields::is_typed(e, focus) || keymap::is_typed(e, focus) || apps::is_typed(e, focus)) == Some(true);
+            // The process to add: Enter adds it, Esc stops (its list open,
+            // Esc is the list's).
+            let vk = msg.wParam as u16;
+            let closed = SendMessageW(GetParent(focus), CB_GETDROPPEDSTATE, 0, 0) == 0;
+            if (vk == VK_RETURN || vk == VK_ESCAPE && closed) && apps::candidate_key(focus, vk == VK_RETURN) {
+                return true;
+            }
             let took = match msg.wParam as u16 {
                 VK_TAB if !ctrl => {
                     let from = if IsChild(hwnd, focus) != 0 { focus } else { null_mut() };
@@ -1605,7 +1664,8 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
                 // Naming a key set, Esc leaves the name as it was.
                 VK_ESCAPE if keymap::naming(focus) => keymap::cancel_naming(),
                 // An open drop-down closes on Esc, as its own.
-                VK_ESCAPE if SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) == 0 => {
+                // A drop-down's edit has the focus where one is typed in.
+                VK_ESCAPE if SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) == 0 && closed => {
                     PostMessageW(hwnd, WM_CLOSE, 0, 0);
                     true
                 }
@@ -1622,8 +1682,10 @@ unsafe fn key(hwnd: HWND, msg: &MSG) -> bool {
                     let id = GetDlgCtrlID(focus) as usize;
                     if fields::is_field(id) {
                         fields::commit(id, false);
-                    } else {
+                    } else if keymap::is_typed_id(id) {
                         keymap::commit(id);
+                    } else {
+                        apps::commit();
                     }
                     true
                 }
