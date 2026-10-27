@@ -174,3 +174,18 @@ fn waiting_for_changes_uses_no_cpu() {
     let used_ms = (cpu_time_100ns(&app) - before) as f64 / 10_000.0;
     assert!(used_ms < 10.0, "CPU {used_ms:.1}ms in 3s of waiting");
 }
+
+// Issue #101, AC7
+#[test]
+fn saving_a_kle_file_in_the_settings_folder_reads_it_again() {
+    let _desktop = desktop();
+    let app = launch_with(Some(&keys_on("left", 1)), None);
+    find_panel(&app);
+    // A row of keys: on the left, a column as long.
+    let kle = exe_dir(&app).join("pad.txt");
+    std::fs::write(&kle, r#"["A","B"]"#).expect("write the KLE file");
+    save(&app, "[set.pad]\nlayout = kle:pad.txt\nkey = A | hold | A\n[profile.default]\nleft = pad\n");
+    assert!(within(1000, || left_keys(&app) == Some(2)), "two keys from the file: {:?}", rects(&app));
+    std::fs::write(&kle, r#"["A","B","C"]"#).expect("write the KLE file");
+    assert!(within(1000, || left_keys(&app) == Some(3)), "three keys, the file read again: {:?}", rects(&app));
+}
