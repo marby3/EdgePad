@@ -266,6 +266,16 @@ pub fn window_rect(hwnd: HWND) -> RECT {
     r
 }
 
+/// The client area of `hwnd`, on the screen.
+pub fn client_rect(hwnd: HWND) -> RECT {
+    let mut r: RECT = unsafe { zeroed() };
+    unsafe {
+        GetClientRect(hwnd, &mut r);
+        MapWindowPoints(hwnd, null_mut(), &mut r as *mut RECT as *mut POINT, 2);
+    }
+    r
+}
+
 pub fn primary_monitor() -> RECT {
     unsafe {
         let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);

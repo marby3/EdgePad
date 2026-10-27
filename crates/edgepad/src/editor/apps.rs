@@ -297,17 +297,22 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     let rx = left + s(LIST_W) + s(MARGIN);
     let rw = (left + width - rx).max(0);
     at(TITLE_PROCESS, rx, top, s(88), h);
-    at(PROCESS, rx + s(92), top, s(240), h);
+    at(PROCESS, rx + s(92), top, s(240).min(rw - s(92)), h);
     at(NOTE, rx, top, rw, h);
     let (fx, fy) = (rx, top + h + s(MARGIN));
     let (fw, fh) = (s(FIGURE_W).min(rw), s(FIGURE_H).min((bottom - fy).max(0)));
     at(FIGURE, fx, fy, fw, fh);
     let inner = s(INSET + BAND + 4);
-    let (ew, mid_x, mid_y) = (s(EDGE_W), fx + fw / 2, fy + fh / 2);
-    at(EDGES, fx + inner, mid_y - h / 2, ew, s(LIST_H));
-    at(EDGES + 1, fx + fw - inner - ew, mid_y - h / 2, ew, s(LIST_H));
-    at(EDGES + 2, mid_x - ew / 2, fy + inner, ew, s(LIST_H));
-    at(EDGES + 3, mid_x - ew / 2, fy + fh - inner - h, ew, s(LIST_H));
+    // The edges' lists are no wider than the figure has room for: the
+    // side ones apart, when the window has no room for the figure to grow
+    // as far (Issue #99).
+    let side = s(EDGE_W).min((fw - 2 * inner - gap) / 2).max(0);
+    let across = s(EDGE_W).min(fw - 2 * inner).max(0);
+    let (mid_x, mid_y) = (fx + fw / 2, fy + fh / 2);
+    at(EDGES, fx + inner, mid_y - h / 2, side, s(LIST_H));
+    at(EDGES + 1, fx + fw - inner - side, mid_y - h / 2, side, s(LIST_H));
+    at(EDGES + 2, mid_x - across / 2, fy + inner, across, s(LIST_H));
+    at(EDGES + 3, mid_x - across / 2, fy + fh - inner - h, across, s(LIST_H));
 }
 
 /// Show the page as the window's copy of the file has it, the chosen app
