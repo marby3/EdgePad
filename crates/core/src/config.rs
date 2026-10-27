@@ -339,6 +339,8 @@ enum Section {
     /// Before the first header, or inside a header that was wrong.
     None { reported: bool },
     General,
+    /// [edge]: every edge's, but where an edge writes its own.
+    Edges,
     Edge(Edge),
     Set(usize),
     Profile(usize),
@@ -351,6 +353,12 @@ struct Parser {
     seen: Vec<String>,
     /// Settings already given in the current section (lower case).
     given: Vec<String>,
+    /// [edge]'s settings, read, to give each edge that does not write its
+    /// own once the whole file is read: (line, name, value).
+    common: Vec<(usize, String, String)>,
+    /// The settings each edge writes, by `Edge as usize`: columns and rows
+    /// as `lines`.
+    edge_given: [Vec<String>; 4],
     /// Header line of each set, and whether it had any key lines.
     set_lines: Vec<(usize, bool)>,
     /// Header line of each profile.
@@ -374,6 +382,8 @@ impl Default for Parser {
             section: Section::None { reported: false },
             seen: Vec::new(),
             given: Vec::new(),
+            common: Vec::new(),
+            edge_given: Default::default(),
             set_lines: Vec::new(),
             profile_lines: Vec::new(),
             refs: Vec::new(),
@@ -416,7 +426,12 @@ impl Parser {
         let result = match self.section {
             Section::None { .. } => Ok(()),
             Section::General => self.general(&name, value),
-            Section::Edge(edge) => self.edge(edge, &name, value),
+            Section::Edges => self.common(n, &name, value),
+            Section::Edge(edge) => {
+                let given = if matches!(name.as_str(), "columns" | "rows") { "lines".into() } else { name.clone() };
+                self.edge_given[edge as usize].push(given);
+                self.edge(edge, &name, value)
+            }
             Section::Set(set) => self.key(n, set, &name, value),
             Section::Profile(profile) => self.profile(n, profile, &name, value),
         };
@@ -437,6 +452,7 @@ impl Parser {
         }
         let section = match name.split_once('.') {
             None if name == "general" => Section::General,
+            None if name == "edge" => Section::Edges,
             Some(("edge", edge)) => match Edge::parse(edge) {
                 Some(edge) => Section::Edge(edge),
                 None => return self.error(n, format!("知らないセクション [{name}]（辺は left / right / top / bottom）")),
@@ -499,6 +515,16 @@ impl Parser {
             }
             _ => return Err(format!("[general] に知らない設定「{name}」がある")),
         }
+        Ok(())
+    }
+
+    /// A setting of [edge]: checked as an edge would read it (columns as
+    /// a side edge's, rows as the top's), and kept for `finish`.
+    fn common(&mut self, n: usize, name: &str, value: &str) -> Result<(), String> {
+        let edge = if name == "rows" { Edge::Top } else { Edge::Left };
+        let mut check = Parser::default();
+        check.edge(edge, name, value).map_err(|why| why.replace("[edge.*]", "[edge]"))?;
+        self.common.push((n, name.into(), value.into()));
         Ok(())
     }
 
@@ -568,6 +594,19 @@ impl Parser {
     }
 
     fn finish(mut self) -> Result<Config, Vec<Error>> {
+        // [edge]'s settings, to each edge that does not write its own:
+        // columns to the side edges, rows to the top and bottom.
+        for (_, name, value) in std::mem::take(&mut self.common) {
+            let lines = matches!(name.as_str(), "columns" | "rows");
+            for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+                let given = if lines { "lines" } else { name.as_str() };
+                if lines && (name == "columns") != edge.is_side() || self.edge_given[edge as usize].iter().any(|g| g == given) {
+                    continue;
+                }
+                // Checked when read: it reads.
+                let _ = self.edge(edge, &name, &value);
+            }
+        }
         for (set, &(line, had_keys)) in self.config.sets.iter().zip(&self.set_lines) {
             if !had_keys {
                 self.errors.push(Error { line, reason: format!("[set.{}] にキーが1つもない", set.name) });
