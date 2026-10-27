@@ -150,9 +150,30 @@ fn checked(hwnd: HWND) -> bool {
 }
 
 fn click_on(editor: HWND, hwnd: HWND) {
-    wait_in_front(editor);
-    click(centre(window_rect(hwnd)));
+    let at = centre(window_rect(hwnd));
+    reach(editor, hwnd, at);
+    click(at);
     pump(300);
+}
+
+/// Bring `editor` in front with `part` at `at` on top, nothing over it: in
+/// front is not enough. On CI, the runner's terminal can lie over the
+/// window as its first test opens it, and takes the click (Issue #103).
+fn reach(editor: HWND, part: HWND, at: POINT) {
+    let on_part = || {
+        let under = unsafe { WindowFromPoint(at) };
+        under == part || unsafe { IsChild(part, under) } != 0
+    };
+    for _ in 0..3 {
+        wait_in_front(editor);
+        if within_3s(on_part) {
+            return;
+        }
+        unsafe { SetWindowPos(editor, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE) };
+        pump(300);
+    }
+    let under = unsafe { WindowFromPoint(at) };
+    panic!("({}, {}) is under {}, not the part clicked", at.x, at.y, class_of(under));
 }
 
 /// Click the part `id` of `editor`.
@@ -374,24 +395,12 @@ fn open_set(app: &Running, set: &str) -> HWND {
 /// Choose key `i` of a set shown down one column, by clicking it in the
 /// sample, and wait for its label to show.
 fn choose_key(editor: HWND, i: i32, label: &str) {
-    wait_in_front(editor);
+    let sample = part(editor, SAMPLE);
     let at = sample_cell(editor, 0, i);
-    // What the click lands on, to tell why a key goes unchosen (Issue #103).
-    let under = unsafe { WindowFromPoint(at) };
-    let front = unsafe { GetForegroundWindow() };
+    reach(editor, sample, at);
     click(at);
     pump(300);
-    if !within_3s(|| text(editor, LABEL) == label) {
-        let s = window_rect(part(editor, SAMPLE));
-        let mut cursor = POINT { x: 0, y: 0 };
-        unsafe { GetCursorPos(&mut cursor) };
-        panic!(
-            "key {i}, {label}, chosen: {:?}; clicked ({}, {}) on {} (the sample: {}), front: {}, focus on the sample: {},              sample ({}, {})-({}, {}), cursor ({}, {}), editor {:?}",
-            text(editor, LABEL), at.x, at.y, class_of(under), under == part(editor, SAMPLE), front == editor,
-            focus_of(editor) == part(editor, SAMPLE), s.left, s.top, s.right, s.bottom, cursor.x, cursor.y,
-            { let r = window_rect(editor); (r.left, r.top, r.right, r.bottom) },
-        );
-    }
+    assert!(within_3s(|| text(editor, LABEL) == label), "key {i}, {label}, chosen: {:?}", text(editor, LABEL));
 }
 
 // AC1
