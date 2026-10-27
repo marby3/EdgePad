@@ -22,6 +22,8 @@
 //!   page's target 1062 and the pie's key set 1063 (drop-down lists), the
 //!   pie's figure 1064 and what it says of its items 1065 (a Static);
 //! - KLE から読み込む 1066 (Issue #101);
+//! - the kind レイヤー 1029, its key set 1067 (a drop-down list), and
+//!   押している間 1068 and 押すたびに切り替える 1069 (Issue #104);
 //! - on 操作, 押して取り込む beside hotkey: 21.
 //!
 //! The sample draws the panel 8 logical pixels in from its top left corner,
@@ -953,4 +955,30 @@ fn a_free_sets_key_edited_keeps_its_place_and_the_layout() {
     let bee = key_of(&saved, "spare", "Bee");
     let options: Vec<String> = bee[3].split(',').map(|o| o.replace(' ', "")).collect();
     assert_eq!(options, ["x=1.5", "y=0", "w=2", "h=0.75"], "{bee:?}");
+}
+
+// Issue #104: the kind レイヤー, its key set and how it turns.
+const LAYER_KIND: i32 = 9;
+const LAYER_SET: i32 = 1067;
+const LAYER_HOLD: i32 = 1068;
+const LAYER_TOGGLE: i32 = 1069;
+
+// Issue #104, AC8
+#[test]
+fn a_key_becomes_a_layer_key_of_a_set_held_or_toggled() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_set(&app, "mods");
+    choose_key(editor, 0, "Esc");
+    click_id(editor, KINDS + LAYER_KIND);
+    assert!(within_3s(|| shown(editor, LAYER_SET) && shown(editor, LAYER_HOLD) && shown(editor, LAYER_TOGGLE)), "the layer's fields");
+    assert!(!shown(editor, SENDS), "no keys sent");
+    choose(editor, LAYER_SET, "spare");
+    click_id(editor, LAYER_TOGGLE);
+    let saved = save_until(&app, editor, "mode=toggle");
+    assert_eq!(key_of(&saved, "mods", "Esc"), ["Esc", "layer", "spare", "mode=toggle"]);
+    click_id(editor, LAYER_HOLD);
+    save(editor);
+    assert!(within_3s(|| !file(&app).contains("mode=toggle")), "held: no mode written\n{}", file(&app));
+    assert_eq!(key_of(&file(&app), "mods", "Esc"), ["Esc", "layer", "spare"]);
 }
