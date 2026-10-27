@@ -21,6 +21,7 @@
 //!   1059, a wait's time 1060, the text or what is run 1061 (an Edit), the
 //!   page's target 1062 and the pie's key set 1063 (drop-down lists), the
 //!   pie's figure 1064 and what it says of its items 1065 (a Static);
+//! - KLE から読み込む 1066 (Issue #101);
 //! - on 操作, 押して取り込む beside hotkey: 21.
 //!
 //! The sample draws the panel 8 logical pixels in from its top left corner,
@@ -252,14 +253,20 @@ fn chosen(hwnd: HWND) -> Option<String> {
 fn choose(editor: HWND, id: i32, option: &str) {
     let combo = part(editor, id);
     let at = items(combo).iter().position(|o| o == option).unwrap_or_else(|| panic!("no {option} in {:?}", items(combo)));
-    click_on(editor, combo);
-    press(VK_ESCAPE);
-    press(VK_HOME);
-    for _ in 0..at {
-        press(VK_DOWN);
+    // A key pressed as the list opens can be lost: try again.
+    for _ in 0..3 {
+        click_on(editor, combo);
+        press(VK_ESCAPE);
+        press(VK_HOME);
+        for _ in 0..at {
+            press(VK_DOWN);
+        }
+        pump(300);
+        if within_3s(|| chosen(combo).as_deref() == Some(option)) {
+            return;
+        }
     }
-    pump(300);
-    assert!(within_3s(|| chosen(combo).as_deref() == Some(option)), "{option} chosen in {id}");
+    panic!("{option} chosen in {id}");
 }
 
 /// Click item `option` of the ListBox `id`.
@@ -862,4 +869,88 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     assert!(within_3s(|| text(editor, LABEL) == "Ctrl"), "↓: the next key, {:?}", text(editor, LABEL));
     arrow(&[], VK_UP);
     assert!(within_3s(|| text(editor, LABEL) == "Esc"), "↑: back, {:?}", text(editor, LABEL));
+}
+
+// Issue #101: KLE から読み込む, and a free set's keys edited.
+const KLE: i32 = 1066;
+
+/// The dialog box (a file dialog, or a question) `editor` has open.
+fn dialog_of(editor: HWND) -> Option<HWND> {
+    let class = wide("#32770");
+    let mut after = null_mut();
+    loop {
+        after = unsafe { FindWindowExW(null_mut(), after, class.as_ptr(), std::ptr::null()) };
+        if after.is_null() {
+            return None;
+        }
+        if visible(after) && unsafe { GetWindow(after, GW_OWNER) } == editor {
+            return Some(after);
+        }
+    }
+}
+
+/// Press KLE から読み込む and choose `file` in the file dialog.
+fn import(editor: HWND, file: &std::path::Path) {
+    click_id(editor, KLE);
+    assert!(within_3s(|| dialog_of(editor).is_some()), "a file dialog opens");
+    wait_in_front(dialog_of(editor).unwrap());
+    pump(500);
+    type_text(&file.display().to_string());
+    press(VK_RETURN);
+    pump(500);
+}
+
+// Issue #101, AC9
+#[test]
+fn a_kle_file_is_imported_into_the_settings_folder_for_the_chosen_set() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let dir = exe_dir(&app);
+    let from = dir.join("from");
+    std::fs::create_dir_all(&from).expect("a folder to import from");
+    let raw = r#"["A","B"],["C"]"#;
+    std::fs::write(from.join("pad.json"), raw).expect("write the KLE file");
+    std::fs::write(from.join("bad.json"), r#"[{r:15},"A"]"#).expect("write the KLE file");
+    let editor = open_set(&app, "spare");
+
+    // A file that does not read: not copied, why on the status line.
+    import(editor, &from.join("bad.json"));
+    assert!(within_3s(|| dialog_of(editor).is_none() && status(editor).contains("bad.json") && status(editor).contains("回転")), "why: {:?}", status(editor));
+    assert!(!dir.join("bad.json").exists(), "not copied");
+
+    // The same name, other content: asked first; on yes, copied over.
+    std::fs::write(dir.join("pad.json"), r#"["X"]"#).expect("write a file in the way");
+    import(editor, &from.join("pad.json"));
+    // A message box's text is its item 0xFFFF.
+    let asked = || dialog_of(editor).is_some_and(|d| text_of(unsafe { GetDlgItem(d, 0xFFFF) }).contains("pad.json"));
+    assert!(within_3s(asked), "asked whether to write over pad.json");
+    let question = dialog_of(editor).unwrap();
+    wait_in_front(question);
+    press(b'Y' as u16);
+    assert!(within_3s(|| dialog_of(editor).is_none()), "the question answered");
+    assert_eq!(std::fs::read_to_string(dir.join("pad.json")).unwrap(), raw, "copied over");
+
+    // Written with the set's keys as they were, on 保存.
+    let saved = save_until(&app, editor, "layout = kle:pad.json");
+    assert!(section(&saved, "spare").contains("layout = kle:pad.json"), "{saved}");
+    assert_eq!(keys_of(&saved, "spare"), [["A", "shortcut", "A"]], "the key kept");
+}
+
+// Issue #101, AC10
+#[test]
+fn a_free_sets_key_edited_keeps_its_place_and_the_layout() {
+    let _desktop = desktop();
+    let text = SETTINGS.replace(
+        "[set.spare]\nkey = A | shortcut | A\n",
+        "[set.spare]\nlayout = free\nkey = A | shortcut | A | x=0, y=0\nkey = B | shortcut | B | x=1.5, y=0, w=2, h=0.75\n",
+    );
+    let app = launch_with(Some(&text), None);
+    let editor = open_set(&app, "spare");
+    choose_key(editor, 1, "B");
+    enter(editor, LABEL, "Bee");
+    let saved = save_until(&app, editor, "Bee");
+    assert!(section(&saved, "spare").contains("layout = free"), "{saved}");
+    let bee = key_of(&saved, "spare", "Bee");
+    let options: Vec<String> = bee[3].split(',').map(|o| o.replace(' ', "")).collect();
+    assert_eq!(options, ["x=1.5", "y=0", "w=2", "h=0.75"], "{bee:?}");
 }

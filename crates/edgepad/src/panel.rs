@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use edgepad_core::config::{Accent, Action, Edge, Handle, KeyDef, KeySet, Monitor, Page, Step, Theme};
 use edgepad_core::gesture::{self, Swipe};
 use edgepad_core::keys::{Combo, Key, Mods};
-use edgepad_core::layout::{self, Rect};
+use edgepad_core::layout::{self, Place, Rect};
 use edgepad_core::modifier::{LatchMode, Modifier};
 use edgepad_core::press::Presses;
 use edgepad_core::theme::Palette;
@@ -42,6 +42,8 @@ struct PanelKey {
     label: Vec<u16>,
     /// In keys along the edge.
     width: usize,
+    /// Where it sits in a free layout (Issue #101).
+    place: Option<Place>,
     /// Where it sits inside the panel; none while it does not fit.
     rect: Option<Rect>,
     sends: Sends,
@@ -49,7 +51,8 @@ struct PanelKey {
 
 impl PanelKey {
     fn of(k: &KeyDef) -> PanelKey {
-        PanelKey { label: k.label.encode_utf16().collect(), width: k.width as usize, rect: None, sends: Sends::of(&k.action) }
+        let label = k.label.encode_utf16().collect();
+        PanelKey { label, width: k.width as usize, place: k.place, rect: None, sends: Sends::of(&k.action) }
     }
 
     /// Whether it is on every page: it turns them.
@@ -81,6 +84,8 @@ enum Sends {
     /// Opens a pie menu of the key set it names while pressed (spec 4.6).
     /// Nothing is sent yet.
     Pie(String),
+    /// Nothing at all: a KLE layout's key no key line is given to.
+    Nothing,
 }
 
 impl Sends {
@@ -112,6 +117,7 @@ impl Sends {
             Action::Run(command) => Sends::Run(command.clone()),
             Action::Page(page) => Sends::Page(page.clone()),
             Action::Pie(set) => Sends::Pie(set.clone()),
+            Action::None => Sends::Nothing,
         }
     }
 }
@@ -787,8 +793,18 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
 }
 
 /// Put the keys of the page shown in place on the panel's monitor; the keys
-/// of other pages get no place. The panel takes the size of the page.
+/// of other pages get no place. The panel takes the size of the page. A
+/// free layout is one page, every key where it is placed (spec 5.2).
 fn place_keys(panel: &mut Panel) {
+    let places: Option<Vec<Place>> = panel.keys.iter().map(|k| k.place).collect();
+    if let Some(places) = places.filter(|p| !p.is_empty()) {
+        let (rect, rects) = layout::free_panel(panel.screen, panel.edge, panel.key, &places);
+        (panel.pages, panel.page, panel.rect) = (1, 0, rect);
+        for (key, r) in panel.keys.iter_mut().zip(rects) {
+            key.rect = Some(r);
+        }
+        return;
+    }
     let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
     let sticky: Vec<bool> = panel.keys.iter().map(PanelKey::turns_pages).collect();
     let pages = layout::pages(panel.screen, panel.edge, panel.key, panel.lines, &widths, &sticky);
@@ -1338,7 +1354,7 @@ unsafe fn act(panels: &mut [Panel], i: usize, sends: &Sends) {
             Sends::Text(text) => send::text(text),
             Sends::Run(command) => launch::run(command),
             Sends::Page(page) => turn(&mut panels[i], page),
-            Sends::Hold(_) | Sends::Modifier { .. } | Sends::Repeat { .. } | Sends::Pie(_) => {}
+            Sends::Hold(_) | Sends::Modifier { .. } | Sends::Repeat { .. } | Sends::Pie(_) | Sends::Nothing => {}
         }
     }
 }

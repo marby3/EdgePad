@@ -6,6 +6,8 @@
 //! mistake is collected with its line number, so one read reports them all.
 
 use crate::keys::{Combo, Key};
+use crate::kle::{self, KleKey};
+use crate::layout::Place;
 use crate::modifier::LatchMode;
 
 /// Largest settings file read; anything bigger is refused unread.
@@ -208,6 +210,8 @@ pub struct Handle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeySet {
     pub name: String,
+    /// In a free layout (`layout = free` or `kle:`, Issue #101), every
+    /// key has its `place`; along the edge, none does.
     pub keys: Vec<KeyDef>,
 }
 
@@ -217,6 +221,8 @@ pub struct KeyDef {
     pub action: Action,
     /// In keys: 2 is twice as wide as a plain key.
     pub width: u8,
+    /// Where it sits in a free layout (x, y, w, h).
+    pub place: Option<Place>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -237,6 +243,8 @@ pub enum Action {
     Page(Page),
     /// Opens a pie menu of another key set's keys (spec 4.6).
     Pie(String),
+    /// Nothing: a key of a KLE layout no key line is given to (Issue #101).
+    None,
 }
 
 impl Action {
@@ -252,6 +260,7 @@ impl Action {
             Action::Run(_) => "run",
             Action::Page(_) => "page",
             Action::Pie(_) => "pie",
+            Action::None => "none",
         }
     }
 
@@ -261,7 +270,7 @@ impl Action {
     pub fn is_pie_item(&self) -> bool {
         match self {
             Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Run(_) | Action::Page(_) => true,
-            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) => false,
+            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) | Action::None => false,
         }
     }
 }
@@ -311,10 +320,16 @@ pub(crate) fn text_of(bytes: &[u8]) -> Result<(bool, &str), Error> {
     }
 }
 
-/// Read a settings file.
+/// Read a settings file, with no other file to read: a KLE layout cannot.
 pub fn parse(bytes: &[u8]) -> Result<Config, Vec<Error>> {
+    parse_with(bytes, &mut |_| Err("ほかのファイルは読めない".into()))
+}
+
+/// Read a settings file, `read` giving the content of the file a KLE
+/// layout names (as written after `kle:`), or why it cannot.
+pub fn parse_with(bytes: &[u8], read: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>) -> Result<Config, Vec<Error>> {
     let (_, text) = text_of(bytes).map_err(|e| vec![e])?;
-    let mut parser = Parser::default();
+    let mut parser = Parser { read: Some(read), ..Parser::default() };
     for (i, line) in text.split('\n').enumerate() {
         parser.line(i + 1, strip_comment(line.trim_end_matches('\r')).trim());
     }
@@ -346,8 +361,21 @@ enum Section {
     Profile(usize),
 }
 
-struct Parser {
+/// How a key set's keys are laid out, as its `layout` says.
+enum SetLayout {
+    Edge,
+    Free,
+    /// From a KLE file: the `layout` line, and the file's keys.
+    Kle(usize, Vec<KleKey>),
+}
+
+struct Parser<'a> {
     config: Config,
+    /// Gives the files KLE layouts name.
+    read: Option<&'a mut dyn FnMut(&str) -> Result<Vec<u8>, String>>,
+    /// Each set's layout, and the line of each of its keys.
+    layouts: Vec<SetLayout>,
+    key_lines: Vec<Vec<usize>>,
     section: Section,
     /// Section names seen so far (lower case).
     seen: Vec<String>,
@@ -370,9 +398,12 @@ struct Parser {
     errors: Vec<Error>,
 }
 
-impl Default for Parser {
+impl Default for Parser<'_> {
     fn default() -> Self {
         Parser {
+            read: None,
+            layouts: Vec::new(),
+            key_lines: Vec::new(),
             config: Config {
                 general: General::default(),
                 edges: [EdgeConfig::default(); 4],
@@ -393,7 +424,7 @@ impl Default for Parser {
     }
 }
 
-impl Parser {
+impl Parser<'_> {
     fn error(&mut self, line: usize, reason: impl Into<String>) {
         self.errors.push(Error { line, reason: reason.into() });
     }
@@ -460,6 +491,8 @@ impl Parser {
             Some(("set", set)) if valid_name(set) => {
                 self.config.sets.push(KeySet { name: set.into(), keys: Vec::new() });
                 self.set_lines.push((n, false));
+                self.layouts.push(SetLayout::Edge);
+                self.key_lines.push(Vec::new());
                 Section::Set(self.config.sets.len() - 1)
             }
             Some(("profile", profile)) if valid_name(profile) => {
@@ -555,11 +588,15 @@ impl Parser {
     }
 
     fn key(&mut self, n: usize, set: usize, name: &str, value: &str) -> Result<(), String> {
+        if name == "layout" {
+            return self.layout(n, set, value);
+        }
         if name != "key" {
-            return Err(format!("[set.*] に書けるのは key だけ（「{name}」）"));
+            return Err(format!("[set.*] に書けるのは key と layout だけ（「{name}」）"));
         }
         self.set_lines[set].1 = true;
         let key = key_def(value)?;
+        self.key_lines[set].push(n);
         // Only a key that is read checks the sets it names.
         match &key.action {
             Action::Page(Page::Set(set)) => self.refs.push((n, set.clone())),
@@ -570,6 +607,29 @@ impl Parser {
             _ => {}
         }
         self.config.sets[set].keys.push(key);
+        Ok(())
+    }
+
+    /// A set's `layout`: free, or a KLE file's, read now.
+    fn layout(&mut self, n: usize, set: usize, value: &str) -> Result<(), String> {
+        if value.eq_ignore_ascii_case("free") {
+            self.layouts[set] = SetLayout::Free;
+            return Ok(());
+        }
+        let Some(file) = value.get(..4).filter(|p| p.eq_ignore_ascii_case("kle:")).map(|_| value[4..].trim()) else {
+            return Err(format!("layout は free か kle:ファイル名（「{value}」）"));
+        };
+        if file.is_empty() {
+            return Err("layout の kle: のあとにファイル名がない".into());
+        }
+        let read = match self.read.as_mut() {
+            Some(read) => read(file),
+            None => Err("ほかのファイルは読めない".to_string()),
+        };
+        let keys = read
+            .map_err(|why| format!("KLE のファイル「{file}」を読めない: {why}"))
+            .and_then(|bytes| kle_keys(&bytes).map_err(|why| format!("KLE のファイル「{file}」: {why}")))?;
+        self.layouts[set] = SetLayout::Kle(n, keys);
         Ok(())
     }
 
@@ -607,8 +667,11 @@ impl Parser {
                 let _ = self.edge(edge, &name, &value);
             }
         }
-        for (set, &(line, had_keys)) in self.config.sets.iter().zip(&self.set_lines) {
-            if !had_keys {
+        let kle: Vec<bool> = self.layouts.iter().map(|l| matches!(l, SetLayout::Kle(..))).collect();
+        self.lay_out_sets();
+        for (i, (set, &(line, had_keys))) in self.config.sets.iter().zip(&self.set_lines).enumerate() {
+            // A KLE layout has keys of its own.
+            if !had_keys && !kle[i] {
                 self.errors.push(Error { line, reason: format!("[set.{}] にキーが1つもない", set.name) });
             }
         }
@@ -638,6 +701,58 @@ impl Parser {
         self.errors.sort_by_key(|e| e.line);
         Err(self.errors)
     }
+}
+
+impl Parser<'_> {
+    /// Give each set's keys their places, as its layout says: x, y, w and
+    /// h only in a free layout, and there on every key; a KLE layout's
+    /// keys to its key lines in order, the rest sending nothing.
+    fn lay_out_sets(&mut self) {
+        for (i, layout) in std::mem::take(&mut self.layouts).into_iter().enumerate() {
+            let lines = std::mem::take(&mut self.key_lines[i]);
+            let set = &mut self.config.sets[i];
+            let placed: Vec<bool> = set.keys.iter().map(|k| k.place.is_some()).collect();
+            let lines_where = |want: bool| lines.iter().zip(&placed).filter(move |(_, p)| **p == want).map(|(l, _)| *l);
+            match layout {
+                SetLayout::Edge => {
+                    for line in lines_where(true) {
+                        self.errors.push(Error { line, reason: "x・y・w・h は layout = free のキーセットで書く".into() });
+                    }
+                }
+                SetLayout::Free => {
+                    for line in lines_where(false) {
+                        self.errors.push(Error { line, reason: "layout = free のキーには x と y を書く".into() });
+                    }
+                }
+                SetLayout::Kle(layout_line, kle) => {
+                    for line in lines_where(true) {
+                        self.errors.push(Error { line, reason: "layout = kle: のキーの位置は KLE のファイルから読む".into() });
+                    }
+                    if let Some(&line) = lines.get(kle.len()) {
+                        let reason = format!("KLE の配列のキーは {} 個（{layout_line} 行目の layout）で、key 行が多い", kle.len());
+                        self.errors.push(Error { line, reason });
+                    }
+                    for (k, (place, label)) in kle.into_iter().enumerate() {
+                        match set.keys.get_mut(k) {
+                            Some(key) => key.place = Some(place),
+                            None => set.keys.push(KeyDef { label, action: Action::None, width: 1, place: Some(place) }),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The keys of a KLE file's content, or why not. The settings window
+/// checks a file with this before taking it in.
+pub fn kle_keys(bytes: &[u8]) -> Result<Vec<KleKey>, String> {
+    if bytes.len() > MAX_BYTES {
+        return Err(format!("ファイルが大きすぎる（{} KiB まで）", MAX_BYTES / 1024));
+    }
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let text = std::str::from_utf8(bytes).map_err(|_| "UTF-8 ではない文字がある".to_string())?;
+    kle::parse(text)
 }
 
 /// Why a pie key cannot open a menu of key set `set`, in the parser's
@@ -686,6 +801,16 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
     }
     let mut take = |want: &str| options.iter().position(|(k, _)| k == want).map(|i| options.remove(i).1);
     let width = take("width").map(|v| number("width", v, 1, 3)).transpose()?.unwrap_or(1) as u8;
+    let mut place_part = |name: &str| {
+        let (min, max) = if matches!(name, "x" | "y") { (0, 4 * MAX_PLACE) } else { (1, 4 * MAX_SIZE) };
+        take(name).map(|v| quarters(name, v, min, max)).transpose()
+    };
+    let (x, y, w, h) = (place_part("x")?, place_part("y")?, place_part("w")?, place_part("h")?);
+    let place = match (x, y) {
+        (Some(x), Some(y)) => Some(Place { x, y, w: w.unwrap_or(4), h: h.unwrap_or(4) }),
+        (None, None) if w.is_none() && h.is_none() => None,
+        _ => return Err("キーの位置は x と y を両方書く".into()),
+    };
     let action = match kind.as_str() {
         "modifier" => match Key::parse(content) {
             Some(key) if key.modifier().is_some() => Action::Modifier(key),
@@ -731,7 +856,43 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
     if let Some((k, _)) = options.first() {
         return Err(format!("{kind} キーに知らないオプション「{k}」がある"));
     }
-    Ok(KeyDef { label: label.into(), action, width })
+    Ok(KeyDef { label: label.into(), action, width, place })
+}
+
+/// Furthest a free layout's key sits from its top left, and largest a key
+/// is, in keys.
+const MAX_PLACE: i32 = 40;
+const MAX_SIZE: i32 = 8;
+
+/// `value` in quarters of a key: a number of keys in steps of 0.25 (1,
+/// 1.5, 0.25, 2.75), from `min` to `max` quarters.
+fn quarters(name: &str, value: &str, min: i32, max: i32) -> Result<i32, String> {
+    let (whole, part) = value.split_once('.').unwrap_or((value, ""));
+    let digits = !whole.is_empty() && whole.len() <= 3 && whole.bytes().all(|b| b.is_ascii_digit());
+    let part = match part {
+        "" | "0" | "00" => Some(0),
+        "25" => Some(1),
+        "5" | "50" => Some(2),
+        "75" => Some(3),
+        _ => None,
+    };
+    let q = match (digits, part) {
+        (true, Some(part)) => Some(whole.parse::<i32>().unwrap_or(i32::MAX / 8) * 4 + part),
+        _ => None,
+    };
+    q.filter(|q| (min..=max).contains(q))
+        .ok_or_else(|| format!("{name} は {}〜{} の 0.25 刻みの数（「{value}」）", show_quarters(min), show_quarters(max)))
+}
+
+/// `q` quarters as a number of keys, as the file writes it.
+pub fn show_quarters(q: i32) -> String {
+    let whole = q / 4;
+    match q % 4 {
+        0 => format!("{whole}"),
+        1 => format!("{whole}.25"),
+        2 => format!("{whole}.5"),
+        _ => format!("{whole}.75"),
+    }
 }
 
 /// The program (or file, folder or URL) a run key starts, and the arguments
@@ -955,6 +1116,6 @@ pub fn fallback_keys() -> Vec<KeyDef> {
     crate::keys::M0_LABELS
         .iter()
         .zip(actions)
-        .map(|(label, action)| KeyDef { label: (*label).into(), action, width: 1 })
+        .map(|(label, action)| KeyDef { label: (*label).into(), action, width: 1, place: None })
         .collect()
 }
