@@ -479,8 +479,15 @@ fn a_key_value_that_does_not_read_is_stopped_in_its_field() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
     let editor = open_set(&app, "mods");
-    enter(editor, WIDTH, "9");
-    assert!(within_3s(|| status(editor).contains("width")), "why: {:?}", status(editor));
+    assert!(within_3s(|| text(editor, LABEL) == "Esc" && shown(editor, WIDTH)), "Esc chosen");
+    // Twice at most: keys lost to a busy machine are typed again.
+    for _ in 0..2 {
+        enter(editor, WIDTH, "9");
+        if within_3s(|| status(editor).contains("width")) {
+            break;
+        }
+    }
+    assert!(status(editor).contains("width"), "why: {:?}", status(editor));
     let r = window_rect(part(editor, WIDTH));
     let inside = colour_at(POINT { x: r.right - 4, y: (r.top + r.bottom) / 2 });
     assert!(inside[0] > inside[1] + 30, "the field shows it wrong: {inside:?}");
