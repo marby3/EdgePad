@@ -300,7 +300,6 @@ fn profiles_are_added_from_the_apps_open_or_by_name_and_removed() {
     assert!(!candidates.iter().any(|c| c.eq_ignore_ascii_case("edgepad.exe")), "EdgePad is not one: {candidates:?}");
     // Chosen from the list.
     click_id(editor, CANDIDATES);
-    press(VK_ESCAPE);
     for _ in 0..candidates.len() {
         if text(editor, CANDIDATES).eq_ignore_ascii_case(OTHER_EXE) {
             break;
@@ -314,7 +313,6 @@ fn profiles_are_added_from_the_apps_open_or_by_name_and_removed() {
     for name in ["Foo.exe", "foo.EXE"] {
         click_id(editor, ADD_APP);
         click_id(editor, CANDIDATES);
-        press(VK_ESCAPE);
         type_text(name);
         click_id(editor, ADD);
     }

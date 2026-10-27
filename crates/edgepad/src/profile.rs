@@ -119,6 +119,28 @@ pub fn shown() -> Option<(String, bool)> {
     configured.then(|| (ACTIVE.with_borrow(String::clone), PINNED.get()))
 }
 
+/// Where the profile shown is among the profiles, as the settings file has
+/// them, counting from 1; 0 with the fixed keys. The settings window asks
+/// it (`ACTIVE_MESSAGE`), to mark the app whose profile is in effect.
+pub fn active_index() -> usize {
+    CONFIG.with_borrow(|config| {
+        let Some(config) = config else { return 0 };
+        ACTIVE.with_borrow(|active| config.profiles.iter().position(|p| p.name == *active).map_or(0, |i| i + 1))
+    })
+}
+
+/// "EdgePadActiveProfile", sent by the settings window's process to the
+/// running EdgePad's tray window: answered with `active_index`. Registered
+/// by name: the name is the contract between the two processes.
+pub fn active_message() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static ID: AtomicU32 = AtomicU32::new(0);
+    if ID.load(Ordering::Relaxed) == 0 {
+        ID.store(unsafe { windows_sys::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(windows_sys::w!("EdgePadActiveProfile")) }, Ordering::Relaxed);
+    }
+    ID.load(Ordering::Relaxed)
+}
+
 /// Pin the profile shown, or unpin it and follow the app in front again.
 pub unsafe fn toggle_pin() {
     if shown().is_none() {
