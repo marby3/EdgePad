@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Dwm::DwmFlush;
+use windows_sys::Win32::Graphics::Gdi::MapWindowPoints;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
@@ -461,6 +462,10 @@ impl Drop for Dark {
     }
 }
 
+fn ltrb(r: RECT) -> [i32; 4] {
+    [r.left, r.top, r.right, r.bottom]
+}
+
 fn colour_at(p: POINT) -> [i32; 3] {
     unsafe { DwmFlush() };
     channels(capture(RECT { left: p.x, top: p.y, right: p.x + 1, bottom: p.y + 1 })[0])
@@ -499,11 +504,25 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
     pump(300);
     assert!((width(PROCESS) - process0 * 3 / 2).abs() <= 3, "the process field grows: {process0} -> {}", width(PROCESS));
-    // The figure grows too, as far as the room beside the list (CI's
-    // 1024 x 768 screen has less than half as much again).
-    assert!(width(FIGURE) > figure0, "the figure grows: {figure0} -> {}", width(FIGURE));
+    // The figure keeps inside the window, off the list, and the edges'
+    // lists inside it, apart: on CI's 1024 x 768 screen too, where the
+    // window has no room to grow as much (Issue #99).
+    let mut client: RECT = unsafe { zeroed() };
+    unsafe { GetClientRect(editor, &mut client) };
+    let mut corners = [POINT { x: 0, y: 0 }, POINT { x: client.right, y: client.bottom }];
+    unsafe { MapWindowPoints(editor, null_mut(), corners.as_mut_ptr(), 2) };
+    let (f, list) = (window_rect(part(editor, FIGURE)), window_rect(part(editor, APPS)));
+    assert!(f.left >= corners[0].x && f.right <= corners[1].x && f.top >= corners[0].y && f.bottom <= corners[1].y, "the figure in the window: {:?}", ltrb(f));
+    assert!(f.left >= list.right, "the figure off the list: {:?} {:?}", ltrb(f), ltrb(list));
+    for id in [LEFT, RIGHT, TOP, BOTTOM] {
+        let r = window_rect(part(editor, id));
+        assert!(r.left >= f.left && r.right <= f.right && r.top >= f.top && r.bottom <= f.bottom, "{id} on the figure: {:?} {:?}", ltrb(r), ltrb(f));
+    }
+    let (l, r, t, b) = (window_rect(part(editor, LEFT)), window_rect(part(editor, RIGHT)), window_rect(part(editor, TOP)), window_rect(part(editor, BOTTOM)));
+    assert!(l.right <= r.left && t.bottom <= l.top && l.bottom <= b.top, "the edges' lists apart: {:?}", [l, r, t, b].map(ltrb));
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
     pump(300);
+    assert_eq!(width(FIGURE), figure0, "the figure back as it was");
     drop(dark);
 
     // The keyboard: from the list, Tab reaches the figure; → and Enter
