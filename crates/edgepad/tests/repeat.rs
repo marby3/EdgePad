@@ -34,7 +34,16 @@ const BRACKET: u16 = VK_OEM_4;
 /// How many times `log` holds the press-and-release of `vk`, checking that
 /// nothing else is in it.
 fn taps(log: &KeyLog, vk: u16) -> usize {
-    let keys = log.keys();
+    // Read between a send's press and its release, the release is waited
+    // for (Issue #123).
+    let mut keys = log.keys();
+    for _ in 0..50 {
+        if keys.len() % 2 == 0 {
+            break;
+        }
+        pump(10);
+        keys = log.keys();
+    }
     assert!(keys.chunks(2).all(|pair| pair == [d(vk), u(vk)]), "only taps of {vk:#x}: {keys:?}");
     keys.len() / 2
 }

@@ -11,7 +11,7 @@
 mod common;
 
 use windows_sys::Win32::Foundation::{POINT, RECT};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetCursorPos, SPI_GETWORKAREA, SetCursorPos, SystemParametersInfoW, WindowFromPoint};
 use common::editor::within_3s;
 use common::*;
 
@@ -29,6 +29,24 @@ fn bottom_panel(app: &Running) -> Option<RECT> {
 fn top_panel(app: &Running) -> RECT {
     let m = primary_monitor();
     panels(app).into_iter().find(|r| r.bottom < (m.top + m.bottom) / 2).expect("a panel on the top edge")
+}
+
+/// How far up the taskbar reaches from the primary monitor's bottom, in
+/// logical pixels; 0 if it is elsewhere or hides. Where it is, at the
+/// bottom on CI's runners, a finger or the mouse near the screen's edge is
+/// on it, and may open what it shows (Issue #123): the strip a test uses
+/// is kept clear of it.
+fn taskbar() -> i32 {
+    let (m, work) = (primary_monitor(), work_area());
+    let px_per_96 = px(96);
+    ((m.bottom - work.bottom).max(0) * 96 + px_per_96 - 1) / px_per_96
+}
+
+/// The primary monitor's work area: less the taskbar.
+fn work_area() -> RECT {
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut RECT as *mut _, 0) };
+    r
 }
 
 /// A finger put down at `p` and lifted where it was.
@@ -52,13 +70,18 @@ fn the_bottom_panel_and_handle_keep_off_the_screens_edge_and_the_others_do_not()
     assert_eq!(top.top, m.top, "the top panel against the edge");
 
     // Hidden: its handle is off the edge too. A finger between it and the
-    // edge is not on it; on it, it shows the panel.
+    // edge is not on it; on it, it shows the panel. Kept off past the
+    // taskbar, if it is at the bottom: the strip is clear of it.
+    drop(app);
+    let gap = taskbar() + 16;
+    let app = launch_with(Some(&pads(&format!("[edge.bottom]\ngap = {gap}\n"))), None);
+    find_panel(&app);
     choose(&app, "下辺");
     assert!(within_3s(|| bottom_panel(&app).is_none()), "precondition: the bottom panel hidden");
     let x = (m.left + m.right) / 2;
-    tap(POINT { x, y: m.bottom - px(8) });
+    tap(POINT { x, y: m.bottom - px(gap) + px(8) });
     assert!(bottom_panel(&app).is_none(), "a tap between the handle and the edge is not on it");
-    tap(POINT { x, y: m.bottom - px(16) - px(3) });
+    tap(POINT { x, y: m.bottom - px(gap) - px(3) });
     assert!(within_3s(|| bottom_panel(&app).is_some()), "a tap on the handle shows the panel");
 
     // gap = 0: against the edge, as before.
@@ -87,12 +110,38 @@ fn the_mouse_at_the_screens_edge_still_shows_a_panel_kept_off_it() {
     let m = primary_monitor();
     let away = POINT { x: (m.left + m.right) / 2, y: (m.top + m.bottom) / 2 };
     mouse_move_to(away);
-    let app = launch_with(Some(&pads("[general]\nhover_ms = 400\n")), None);
+    // Off past the taskbar, if it is at the bottom: the mouse rests on the
+    // strip at the taskbar's top. With none, at the very edge, where the
+    // mouse stops.
+    let gap = taskbar() + 16;
+    let text = pads(&format!("[general]\nhover_ms = 400\n[edge.bottom]\ngap = {gap}\n"));
+    let app = launch_with_args(Some(&text), None, &["--debug"]);
     find_panel(&app);
     choose(&app, "下辺");
     assert!(within_3s(|| bottom_panel(&app).is_none()), "precondition: the bottom panel hidden");
-    // Against the very edge, where the mouse stops.
-    mouse_move_to(POINT { x: away.x, y: m.bottom - 1 });
+    let at = POINT { x: away.x, y: work_area().bottom.min(m.bottom) - 1 };
+    // Moved on to it, then along it, as a mouse goes: on CI's runners, one
+    // jump onto a window just shown was seen to bring it nothing.
+    mouse_move_to(POINT { x: at.x - 4, y: at.y });
+    mouse_move_to(at);
     pump(700);
-    assert!(within_3s(|| bottom_panel(&app).is_some()), "resting at the edge shows the panel");
+    let under = unsafe { WindowFromPoint(at) };
+    let mut class = [0u16; 64];
+    let n = unsafe { GetClassNameW(under, class.as_mut_ptr(), 64) };
+    let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+    let r = work_area();
+    if !within_3s(|| bottom_panel(&app).is_some()) {
+        // What the run did, and whether the handle shown takes the mouse.
+        let log = std::fs::read_to_string(exe_dir(&app).join("edgepad-debug.log")).unwrap_or_default();
+        mouse_move_to(away);
+        pump(300);
+        mouse_move_to(POINT { x: away.x, y: m.bottom - px(gap) - px(3) });
+        pump(700);
+        let on_shown = within_3s(|| bottom_panel(&app).is_some());
+        panic!(
+            "resting at the edge shows the panel: {class:?} under ({}, {}), work area bottom {}, screen bottom {}; \
+             on the handle shown it {}; log:\n{log}",
+            at.x, at.y, r.bottom, m.bottom, if on_shown { "shows" } else { "does not show either" }
+        );
+    }
 }

@@ -71,8 +71,13 @@ fn saving_checks_with_the_parser_and_writes_only_what_reads() {
     let before = file(&app);
 
     change(editor, 150);
-    click_button(editor, "保存");
-    let _ = within_3s(|| !status(editor).is_empty());
+    // A click lost on a busy runner is tried again (Issue #123).
+    for _ in 0..2 {
+        click_button(editor, "保存");
+        if within_3s(|| status(editor).contains("行目")) {
+            break;
+        }
+    }
     let said = status(editor);
     assert!(said.contains("3 行目") && said.contains("150"), "the line and the reason: {said:?}");
     assert_eq!(file(&app), before, "nothing written");

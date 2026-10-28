@@ -142,7 +142,7 @@ fn click_id(editor: HWND, id: i32) {
     assert!(visible(hwnd), "part {id} shown");
     wait_in_front(editor);
     click(centre(window_rect(hwnd)));
-    pump(300);
+    settle(editor);
 }
 
 /// Type `text` as characters, wherever the focus is.
@@ -159,7 +159,7 @@ fn type_text(text: &str) {
             }
         }
     }
-    pump(200);
+    settle(unsafe { GetForegroundWindow() });
 }
 
 fn press(vk: u16) {
@@ -180,7 +180,7 @@ fn arrow(vk: u16) {
         }
         pump(100);
     }
-    pump(200);
+    settle(unsafe { GetForegroundWindow() });
 }
 
 /// The items of the ComboBox or ListBox `hwnd`.
@@ -223,7 +223,7 @@ fn choose_app(editor: HWND, name: &str) {
     wait_in_front(editor);
     click(POINT { x: o.left + (r.left + r.right) / 2, y: o.top + 2 + (r.top + r.bottom) / 2 });
     assert!(within_3s(|| chosen(list).is_some_and(|c| unmarked(&c) == name)), "{name} chosen: {:?}", chosen(list));
-    pump(200);
+    settle(editor);
 }
 
 /// Choose `option` in the drop-down list `id`, by keyboard: Home, then Down
@@ -237,7 +237,7 @@ fn choose(editor: HWND, id: i32, option: &str) {
     for _ in 0..at {
         press(VK_DOWN);
     }
-    pump(300);
+    settle(editor);
     assert!(within_3s(|| chosen(combo).as_deref() == Some(option)), "{option} chosen in {id}: {:?}", chosen(combo));
 }
 
@@ -503,7 +503,9 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     let new = dpi * 3 / 2;
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
-    pump(300);
+    // Laid out again once the window is free: waited for (Issue #123).
+    assert!(within_3s(|| width(PROCESS) != process0 && width(FIGURE) != figure0), "laid out again: {process0} {figure0}");
+    settle(editor);
     // The process field and the figure grow with the window; where the
     // window has no room to grow as much (CI's 1024 x 768 screen), they
     // keep inside it, the figure off the list and the edges' lists inside
@@ -530,7 +532,7 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
         }
     }
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
-    pump(300);
+    settle(editor);
     assert_eq!(width(FIGURE), figure0, "the figure back as it was");
     drop(dark);
 

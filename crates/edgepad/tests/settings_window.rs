@@ -179,14 +179,14 @@ fn its_parts_are_windows_own_controls_of_comctl32_v6_asking_as_before() {
     change(editor, 50);
     unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
     assert!(within_3s(|| child(editor, "Button", "キャンセル").is_some()), "asked about closing");
-    assert!(child(editor, "Button", "保存する").is_some() && child(editor, "Button", "保存せずに閉じる").is_some());
+    assert!(within_3s(|| child(editor, "Button", "保存する").is_some() && child(editor, "Button", "保存せずに閉じる").is_some()));
     assert!(status(editor).contains("保存していない変更"), "{:?}", status(editor));
     click_button(editor, "キャンセル");
     assert!(within_3s(|| child(editor, "Button", "キャンセル").is_none()), "answered");
 
     std::fs::write(exe_dir(&app).join("edgepad.ini"), settings().replace("opacity = 90", "opacity = 80")).unwrap();
     assert!(within_3s(|| child(editor, "Button", "読み直す").is_some()), "told of the change outside");
-    assert!(child(editor, "Button", "画面の内容を保つ").is_some());
+    assert!(within_3s(|| child(editor, "Button", "画面の内容を保つ").is_some()));
     assert!(status(editor).contains("外で書き換わりました"), "{:?}", status(editor));
 }
 

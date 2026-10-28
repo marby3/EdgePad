@@ -36,6 +36,9 @@ use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
 const HANDLE_OPACITY: u8 = 77;
+/// A handle's strip to the screen's edge: all but clear. A window of a
+/// constant alpha takes the mouse however faint it is.
+const STRIP_OPACITY: u8 = 1;
 
 /// One key as the panel needs it.
 struct PanelKey {
@@ -215,12 +218,15 @@ struct Panel {
     /// Where each pointer down on the panel started.
     starts: Vec<Start>,
     handle: Option<Handle>,
-    /// The handle's window; null with `handle = none`. The window reaches
-    /// the screen's edge; the handle shown is `handle_shown` of it, the
-    /// rest the mouse's alone.
+    /// The handle's window; null with `handle = none`. Kept off the
+    /// screen's edge (`gap`), the strip between it and the edge is a window
+    /// of its own, all but clear, there for the mouse alone (Issue #117):
+    /// drawn as one window, its clear pixels took no mouse on CI's runners
+    /// (Issue #123). `handle_reach` spans both.
     handle_hwnd: HWND,
-    handle_rect: Rect,
-    handle_shown: Rect,
+    strip_hwnd: HWND,
+    handle_reach: Rect,
+    strip: Rect,
     /// From the settings; 0 is off.
     hover_ms: u32,
     auto_hide_ms: u32,
@@ -343,7 +349,9 @@ pub unsafe fn restyle() -> bool {
         for panel in panels.iter() {
             unsafe {
                 draw(panel);
-                draw_handle(panel);
+                if !panel.handle_hwnd.is_null() {
+                    InvalidateRect(panel.handle_hwnd, null(), 1);
+                }
             }
         }
         true
@@ -452,7 +460,99 @@ unsafe fn create_handle() -> HWND {
             instance,
             null(),
         );
+        if !hwnd.is_null() {
+            SetLayeredWindowAttributes(hwnd, 0, HANDLE_OPACITY, LWA_ALPHA);
+        }
         hwnd
+    }
+}
+
+/// The strip between a handle at `r` and `edge` of `screen`: empty when
+/// the handle is against the edge.
+fn strip_of(r: Rect, screen: Rect, edge: Edge) -> Rect {
+    let line = match edge {
+        Edge::Left => Rect { w: 0, ..r },
+        Edge::Right => Rect { x: r.x + r.w, w: 0, ..r },
+        Edge::Top => Rect { h: 0, ..r },
+        Edge::Bottom => Rect { y: r.y + r.h, h: 0, ..r },
+    };
+    layout::to_edge(line, screen, edge)
+}
+
+/// Make the window of a handle's strip, hidden: all but clear, by a
+/// constant alpha, which takes the mouse as any window does.
+unsafe fn create_strip() -> HWND {
+    unsafe {
+        let instance = GetModuleHandleW(null());
+        let mut wc: WNDCLASSW = zeroed();
+        wc.lpfnWndProc = Some(strip_proc);
+        wc.hInstance = instance;
+        wc.hCursor = LoadCursorW(null_mut(), IDC_HAND);
+        wc.lpszClassName = w!("EdgePadHandleStrip");
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            return null_mut();
+        }
+        let hwnd = CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            w!("EdgePadHandleStrip"),
+            w!("EdgePad"),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            null_mut(),
+            null_mut(),
+            instance,
+            null(),
+        );
+        if !hwnd.is_null() {
+            SetLayeredWindowAttributes(hwnd, 0, STRIP_OPACITY, LWA_ALPHA);
+        }
+        hwnd
+    }
+}
+
+/// Show or hide `panel`'s strip with its handle: not while it has no room.
+unsafe fn show_strip(panel: &Panel, up: bool) {
+    let s = panel.strip;
+    if !panel.strip_hwnd.is_null() {
+        let on = up && s.w > 0 && s.h > 0;
+        unsafe { ShowWindow(panel.strip_hwnd, if on { SW_SHOWNOACTIVATE } else { SW_HIDE }) };
+    }
+}
+
+/// The strip of a handle: the mouse resting on it rests on the handle. A
+/// finger or a pen there is not on the handle: Windows takes a swipe from
+/// so near the edge.
+unsafe extern "system" fn strip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let handle = || {
+        PANELS.with(|panels| {
+            let panels = panels.try_borrow().ok()?;
+            panels.iter().find(|p| p.strip_hwnd == hwnd).map(|p| p.handle_hwnd)
+        })
+    };
+    unsafe {
+        match msg {
+            WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+            WM_POINTERUPDATE if hovering_mouse(wp) => {
+                if let Some(h) = handle() {
+                    hover_on(h);
+                    mouse_on_handle(h, true);
+                }
+                0
+            }
+            WM_POINTERLEAVE => {
+                if let Some(h) = handle() {
+                    hover_off(h);
+                    mouse_on_handle(h, false);
+                }
+                0
+            }
+            // Taken, not passed on: no mouse messages made of them.
+            WM_POINTERDOWN | WM_POINTERUP | WM_POINTERUPDATE => 0,
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
     }
 }
 
@@ -494,6 +594,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         let rect = Rect { x: 0, y: 0, w: 0, h: 0 };
         let (edge, monitor, lines) = (p.edge, p.monitor, p.lines);
         let handle_hwnd = if p.handle.is_some() { create_handle() } else { null_mut() };
+        let strip_hwnd = if handle_hwnd.is_null() { null_mut() } else { create_strip() };
         let mut panel = Panel {
             hwnd,
             edge,
@@ -523,8 +624,9 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             starts: Vec::new(),
             handle: p.handle,
             handle_hwnd,
-            handle_rect: rect,
-            handle_shown: rect,
+            strip_hwnd,
+            handle_reach: rect,
+            strip: rect,
             hover_ms: panels.hover_ms,
             auto_hide_ms: panels.auto_hide_ms,
             mouse_out: false,
@@ -545,6 +647,9 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             if !handle_hwnd.is_null() {
                 DestroyWindow(handle_hwnd);
             }
+            if !strip_hwnd.is_null() {
+                DestroyWindow(strip_hwnd);
+            }
             // Nothing fitting is no failure: there is just no panel.
             return !fits;
         }
@@ -557,6 +662,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
         }
         if show_handle && !handle_hwnd.is_null() {
             ShowWindow(handle_hwnd, SW_SHOWNOACTIVATE);
+            with_panel(hwnd, |panel| show_strip(panel, true));
         }
         if show {
             with_panel(hwnd, |panel| {
@@ -596,6 +702,9 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
             DestroyWindow(panel.hwnd);
             if !panel.handle_hwnd.is_null() {
                 DestroyWindow(panel.handle_hwnd);
+            }
+            if !panel.strip_hwnd.is_null() {
+                DestroyWindow(panel.strip_hwnd);
             }
         }
         let held = HOLDS.replace([0; 256]);
@@ -752,6 +861,7 @@ unsafe fn apply_visibility() {
             let handle = handle_visible(panel.edge);
             if !panel.handle_hwnd.is_null() && handle != (IsWindowVisible(panel.handle_hwnd) != 0) {
                 ShowWindow(panel.handle_hwnd, if handle { SW_SHOWNOACTIVATE } else { SW_HIDE });
+                show_strip(panel, handle);
             }
         }
     });
@@ -838,11 +948,16 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
         panel.room = layout::inset(screen, panel.edge, layout::scale(panel.gap as i32, dpi));
         place_keys(panel);
         if let (Some(h), false) = (panel.handle, panel.handle_hwnd.is_null()) {
-            let shown = layout::handle(panel.room, panel.edge, layout::scale(h.width as i32, dpi), h.length, h.position);
-            let r = layout::to_edge(shown, screen, panel.edge);
-            (panel.handle_rect, panel.handle_shown) = (r, shown);
+            let r = layout::handle(panel.room, panel.edge, layout::scale(h.width as i32, dpi), h.length, h.position);
+            panel.handle_reach = layout::to_edge(r, screen, panel.edge);
+            panel.strip = strip_of(r, screen, panel.edge);
             SetWindowPos(panel.handle_hwnd, HWND_TOPMOST, r.x, r.y, r.w, r.h, SWP_NOACTIVATE);
-            draw_handle(panel);
+            let s = panel.strip;
+            if !panel.strip_hwnd.is_null() && s.w > 0 && s.h > 0 {
+                SetWindowPos(panel.strip_hwnd, HWND_TOPMOST, s.x, s.y, s.w, s.h, SWP_NOACTIVATE);
+            }
+            let up = IsWindowVisible(panel.handle_hwnd) != 0;
+            show_strip(panel, up);
         }
         // Moved or resized: a docked panel takes the room it needs now.
         if panel.docked {
@@ -1149,11 +1264,6 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 hover_off(hwnd);
                 if let Some(kind) = finger_or_mouse(id) {
                     let (x, y) = pointer_at(lp);
-                    // A finger between the handle and the screen's edge is
-                    // not on it: Windows takes a swipe from there.
-                    if kind != PT_MOUSE && !on_shown_handle(hwnd, (x, y)) {
-                        return 0;
-                    }
                     HANDLE_DRAGS.with_borrow_mut(|drags| {
                         drags.retain(|d| d.id != id);
                         drags.push(Start { hwnd, id, x, y, at: Instant::now() });
@@ -1182,64 +1292,17 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 hover_over(hwnd);
                 0
             }
+            WM_ERASEBKGND => {
+                let mut r: RECT = zeroed();
+                GetClientRect(hwnd, &mut r);
+                // Held keys are the accent, as plain as it comes.
+                let brush = CreateSolidBrush(colorref(palette().held));
+                FillRect(wp as HDC, &r, brush);
+                DeleteObject(brush);
+                1
+            }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
-    }
-}
-
-/// Whether screen point `at` is on the part of handle `hwnd` shown.
-fn on_shown_handle(hwnd: HWND, (x, y): (i32, i32)) -> bool {
-    PANELS.with(|panels| {
-        let Ok(panels) = panels.try_borrow() else { return true };
-        panels.iter().find(|p| p.handle_hwnd == hwnd).is_none_or(|p| p.handle_shown.contains(x, y))
-    })
-}
-
-/// Draw `panel`'s handle: held keys' accent, as plain as it comes, at
-/// HANDLE_OPACITY over the part shown; the strip to the screen's edge all
-/// but clear, there for the mouse (a pixel of no alpha takes no input).
-unsafe fn draw_handle(panel: &Panel) {
-    let (hwnd, r, shown) = (panel.handle_hwnd, panel.handle_rect, panel.handle_shown);
-    if hwnd.is_null() || r.w <= 0 || r.h <= 0 {
-        return;
-    }
-    unsafe {
-        let screen = GetDC(null_mut());
-        let mem = CreateCompatibleDC(screen);
-        let mut bmi: BITMAPINFO = zeroed();
-        bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = r.w;
-        bmi.bmiHeader.biHeight = -r.h;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-        let mut bits = null_mut();
-        let dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-        if dib.is_null() || bits.is_null() {
-            DeleteDC(mem);
-            ReleaseDC(null_mut(), screen);
-            return;
-        }
-        let old_bitmap = SelectObject(mem, dib);
-        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (r.w * r.h) as usize);
-        // Premultiplied: 0xAARRGGBB, each colour scaled by the alpha.
-        let [red, green, blue] = palette().held;
-        let a = HANDLE_OPACITY as u32;
-        let scaled = |c: u8| c as u32 * a / 255;
-        let lit = a << 24 | scaled(red) << 16 | scaled(green) << 8 | scaled(blue);
-        for y in 0..r.h {
-            for x in 0..r.w {
-                let on = shown.contains(r.x + x, r.y + y);
-                pixels[(y * r.w + x) as usize] = if on { lit } else { 1 << 24 };
-            }
-        }
-        let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
-        let (at, size, from) = (POINT { x: r.x, y: r.y }, SIZE { cx: r.w, cy: r.h }, POINT { x: 0, y: 0 });
-        UpdateLayeredWindow(hwnd, screen, &at, &size, mem, &from, 0, &blend, ULW_ALPHA);
-        SelectObject(mem, old_bitmap);
-        DeleteObject(dib);
-        DeleteDC(mem);
-        ReleaseDC(null_mut(), screen);
     }
 }
 
@@ -1757,9 +1820,9 @@ fn in_reach(panel: &Panel, (x, y): (i32, i32)) -> bool {
     if panel.rect.contains(x, y) {
         return true;
     }
-    let mut r: RECT = unsafe { zeroed() };
-    let up = !panel.handle_hwnd.is_null() && unsafe { IsWindowVisible(panel.handle_hwnd) != 0 && GetWindowRect(panel.handle_hwnd, &mut r) != 0 };
-    up && x >= r.left && x < r.right && y >= r.top && y < r.bottom
+    // The handle, and its strip to the screen's edge.
+    let up = !panel.handle_hwnd.is_null() && unsafe { IsWindowVisible(panel.handle_hwnd) != 0 };
+    up && panel.handle_reach.contains(x, y)
 }
 
 /// Whether a pointer message is the mouse, button up: hovering.
@@ -1782,6 +1845,7 @@ fn handle_panel(hwnd: HWND) -> Option<(Edge, u32)> {
 unsafe fn hover_on(hwnd: HWND) {
     let Some((edge, ms)) = handle_panel(hwnd) else { return };
     if ms > 0 && HIDDEN.get()[edge as usize] && HOVERING.get() != hwnd {
+        debug_log!("ハンドル {}: マウスが乗った", edge_name(edge));
         HOVERING.set(hwnd);
         if unsafe { SetTimer(hwnd, HOVER_TIMER, ms, None) } == 0 {
             HOVERING.set(null_mut());

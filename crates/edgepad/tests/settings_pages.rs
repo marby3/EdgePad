@@ -60,7 +60,7 @@ fn field(editor: HWND, name: &str) -> HWND {
 fn click_on(editor: HWND, hwnd: HWND) {
     wait_in_front(editor);
     click(centre(window_rect(hwnd)));
-    pump(300);
+    settle(editor);
 }
 
 fn show_page(editor: HWND, page: usize) {
@@ -93,13 +93,12 @@ fn type_text(text: &str) {
             }
         }
     }
-    pump(200);
+    settle(unsafe { GetForegroundWindow() });
 }
 
 fn press(vk: u16) {
     keyboard(vk, true);
     keyboard(vk, false);
-    pump(100);
 }
 
 /// Type `text` into `hwnd`, in place of what it has, and press Enter.
@@ -110,7 +109,7 @@ fn enter_into(editor: HWND, hwnd: HWND, text: &str) {
     keyboard(VK_CONTROL, false);
     type_text(text);
     press(VK_RETURN);
-    pump(300);
+    settle(editor);
 }
 
 fn items(combo: HWND) -> Vec<String> {
@@ -135,7 +134,7 @@ fn choose(editor: HWND, combo: HWND, option: &str) {
         for _ in 0..at {
             press(VK_DOWN);
         }
-        pump(300);
+        settle(editor);
         let chosen = unsafe { SendMessageW(combo, CB_GETCURSEL, 0, 0) };
         if chosen == at as isize {
             return;
@@ -218,7 +217,7 @@ fn a_range_shows_only_while_its_field_has_the_focus_or_the_mouse() {
     let note = part(editor, NOTE + row(editor, "key_size"));
     // The mouse on the sidebar, the focus there too.
     mouse_at(centre(sidebar_item(editor, LOOK_PAGE)), 0);
-    pump(300);
+    settle(editor);
     assert!(!visible(note), "no range at first");
     click_on(editor, field(editor, "key_size"));
     assert!(within_3s(|| visible(note) && text_of(note).contains('〜')), "with the focus: {:?}", text_of(note));
@@ -319,7 +318,7 @@ fn the_keyboard_reaches_every_page_and_field_and_the_pages_follow_the_dpi() {
     let editor = open(&app, open_id(&app));
     wait_in_front(editor);
     click(centre(sidebar_item(editor, 0)));
-    pump(300);
+    settle(editor);
     for page in 1..PAGES.len() {
         press(VK_DOWN);
         assert!(within_3s(|| heading(editor) == PAGES[page]), "↓ to {}: {:?}", PAGES[page], heading(editor));
@@ -329,19 +328,26 @@ fn the_keyboard_reaches_every_page_and_field_and_the_pages_follow_the_dpi() {
         // From the sidebar, Tab reaches each field of the page, and
         // Shift+Tab goes back to it.
         let fields: Vec<HWND> = names.iter().filter_map(|n| row_of(editor, n)).map(|i| part(editor, FIELD + i)).collect();
+        let enabled = fields.iter().filter(|&&f| unsafe { IsWindowEnabled(f) } != 0).count();
         let mut seen = Vec::new();
+        // Until each field is reached; 40 at most.
         for _ in 0..40 {
+            if seen.len() >= enabled {
+                break;
+            }
             press(VK_TAB);
             let f = focus_of(editor);
             if fields.contains(&f) && !seen.contains(&f) {
                 seen.push(f);
             }
         }
-        let enabled = fields.iter().filter(|&&f| unsafe { IsWindowEnabled(f) } != 0).count();
         assert!(seen.len() >= enabled, "{}: Tab reached {} of {enabled}", PAGES[page], seen.len());
         // Shift+Tab goes back over them.
         let mut back = Vec::new();
         for _ in 0..40 {
+            if back.len() >= enabled {
+                break;
+            }
             keyboard(VK_SHIFT, true);
             press(VK_TAB);
             keyboard(VK_SHIFT, false);
@@ -361,8 +367,8 @@ fn the_keyboard_reaches_every_page_and_field_and_the_pages_follow_the_dpi() {
     let new = dpi * 3 / 2;
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
-    pump(300);
+    settle(editor);
     assert!((width(f) - w0 * 3 / 2).abs() <= 3, "the field grows: {w0} -> {}", width(f));
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
-    pump(300);
+    settle(editor);
 }

@@ -147,7 +147,7 @@ fn click_on(editor: HWND, hwnd: HWND) {
     let at = centre(window_rect(hwnd));
     reach(editor, hwnd, at);
     click(at);
-    pump(300);
+    settle(editor);
 }
 
 /// Bring `editor` in front with `part` at `at` on top, nothing over it: in
@@ -168,7 +168,7 @@ fn reach(editor: HWND, part: HWND, at: POINT) {
             return;
         }
         unsafe { SetWindowPos(editor, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE) };
-        pump(300);
+        settle(editor);
     }
     let under = unsafe { WindowFromPoint(at) };
     let r = window_rect(part);
@@ -202,7 +202,7 @@ fn type_text(text: &str) {
             }
         }
     }
-    pump(200);
+    settle(unsafe { GetForegroundWindow() });
 }
 
 fn press(vk: u16) {
@@ -235,12 +235,11 @@ fn arrow(modifiers: &[u16], vk: u16) {
             input.Anonymous.ki.dwExtraInfo = KEYBOARD_TAG;
             assert_eq!(SendInput(1, &input, size_of::<INPUT>() as i32), 1, "SendInput");
         }
-        pump(100);
+        settle(unsafe { GetForegroundWindow() });
     }
     for &m in modifiers.iter().rev() {
         keyboard(m, false);
     }
-    pump(200);
 }
 
 /// Click into the Edit `id`, select what is there, type `text` in its
@@ -250,7 +249,7 @@ fn enter(editor: HWND, id: i32, text: &str) {
     press_with(&[VK_CONTROL], b'A' as u16);
     type_text(text);
     press(VK_RETURN);
-    pump(300);
+    settle(editor);
 }
 
 /// The items of the ComboBox or ListBox `hwnd`.
@@ -287,7 +286,7 @@ fn choose(editor: HWND, id: i32, option: &str) {
         for _ in 0..at {
             press(VK_DOWN);
         }
-        pump(300);
+        settle(editor);
         if within_3s(|| chosen(combo).as_deref() == Some(option)) {
             return;
         }
@@ -367,9 +366,14 @@ fn sample_cell(editor: HWND, column: i32, row: i32) -> POINT {
 /// Give the sample the focus, clicking its corner, clear of its keys.
 fn focus_sample(editor: HWND) {
     let r = window_rect(part(editor, SAMPLE));
-    wait_in_front(editor);
-    click(POINT { x: r.right - 3, y: r.bottom - 3 });
-    assert!(within_3s(|| focus_of(editor) == part(editor, SAMPLE)), "the sample has the focus");
+    for _ in 0..3 {
+        wait_in_front(editor);
+        click(POINT { x: r.right - 3, y: r.bottom - 3 });
+        if within_3s(|| focus_of(editor) == part(editor, SAMPLE)) {
+            return;
+        }
+    }
+    panic!("the sample has the focus");
 }
 
 /// Open the window on キー配置, with set `set` chosen.
@@ -548,7 +552,7 @@ fn keys_are_added_removed_and_reordered() {
     click_id(editor, ADD_KEY);
     assert!(within_3s(|| text(editor, LABEL) == new), "another, chosen");
     click_id(editor, REMOVE_KEY);
-    pump(300);
+    settle(editor);
     // Alt+↑ and ↑ move a key back toward the top: Ctrl first now.
     choose_key(editor, 0, "Ctrl");
     click_id(editor, KEY_DOWN);
@@ -575,7 +579,7 @@ fn the_label_field_says_when_the_panel_cuts_it() {
     assert!(within_3s(|| shown(editor, CUT)), "said while typing");
     assert_eq!(text(editor, CUT), "パネルでは切れます");
     press(VK_RETURN);
-    pump(300);
+    settle(editor);
     press_with(&[VK_CONTROL], b'A' as u16);
     type_text("戻る");
     assert!(within_3s(|| !shown(editor, CUT)), "a label that fits: not said");
@@ -606,7 +610,7 @@ fn the_keys_sent_are_chosen_from_lists_or_captured() {
     click_on(editor, capture);
     assert!(within_3s(|| text_of(capture) == "押して取り込む"), "called off");
     press(b'J' as u16);
-    pump(300);
+    settle(editor);
     assert_eq!(text(editor, SUMMARY), "Shift+K を送る", "nothing taken once called off");
 
     // A modifier key: a modifier alone, one at a time.
@@ -815,11 +819,11 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     let new = dpi * 3 / 2;
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
-    pump(300);
-    assert!((width(LABEL) - label0 * 3 / 2).abs() <= 3, "the label's field grows: {label0} -> {}", width(LABEL));
-    assert!((width(MODS) - sample0 * 3 / 2).abs() <= 3, "the buttons grow: {sample0} -> {}", width(MODS));
+    // Laid out again once the window is free: waited for (Issue #123).
+    assert!(within_3s(|| (width(LABEL) - label0 * 3 / 2).abs() <= 3), "the label's field grows: {label0} -> {}", width(LABEL));
+    assert!(within_3s(|| (width(MODS) - sample0 * 3 / 2).abs() <= 3), "the buttons grow: {sample0} -> {}", width(MODS));
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
-    pump(300);
+    assert!(within_3s(|| width(LABEL) == label0), "back to its size: {label0} -> {}", width(LABEL));
     drop(dark);
 
     // The keyboard: Shift+Tab reaches the sample, just before the label
@@ -991,7 +995,7 @@ fn drag(editor: HWND, from: POINT, to: POINT) {
         mouse_move_to(POINT { x: from.x + (to.x - from.x) * i / 4, y: from.y + (to.y - from.y) * i / 4 });
     }
     mouse_up_at(to);
-    pump(300);
+    settle(editor);
 }
 
 /// Choose `option` in 並べ方 from its list, opened, and Enter: the items
@@ -1006,7 +1010,7 @@ fn arrange(editor: HWND, option: &str) {
             press(VK_DOWN);
         }
         press(VK_RETURN);
-        pump(300);
+        settle(editor);
         if within_3s(|| chosen(combo).as_deref() == Some(option)) {
             return;
         }
@@ -1036,7 +1040,7 @@ fn follow_fault(editor: HWND) {
     wait_in_front(editor);
     let r = window_rect(part(editor, STATUS));
     click(POINT { x: r.left + 12, y: r.top + 8 });
-    pump(300);
+    settle(editor);
 }
 
 // Issue #109, AC1
