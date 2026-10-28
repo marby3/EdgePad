@@ -608,7 +608,7 @@ fn the_keys_sent_are_chosen_from_lists_or_captured() {
 
     // A modifier key: a modifier alone, one at a time.
     choose_key(editor, 1, "Ctrl");
-    assert!(within_3s(|| checked(part(editor, GROUP_TABS + 2))), "修飾キー");
+    assert!(within_3s(|| checked(part(editor, GROUP_TABS))), "基本, its modifier keys");
     click_id(editor, button_named(editor, MOD_KEYS, 4, "Alt"));
     assert!(within_3s(|| text(editor, SUMMARY).contains("Alt")), "{:?}", text(editor, SUMMARY));
     assert!(!checked(part(editor, button_named(editor, MOD_KEYS, 4, "Ctrl"))), "one at a time");
@@ -663,7 +663,7 @@ fn each_kind_has_its_own_fields() {
     enter(editor, RUN_CONTENT, "notepad.exe");
     // macro: steps of keys and waits, added, removed and reordered.
     first("元に戻す");
-    click_id(editor, GROUP_TABS + 4);
+    click_id(editor, GROUP_TABS + 2);
     click_id(editor, STEP_WAIT);
     assert!(within_3s(|| items(part(editor, STEPS)) == ["Ctrl+Z", "待つ 100 ms"]), "{:?}", items(part(editor, STEPS)));
     assert!(within_3s(|| shown(editor, WAIT)), "a wait's time");
@@ -672,13 +672,13 @@ fn each_kind_has_its_own_fields() {
     assert!(within_3s(|| items(part(editor, STEPS)).len() == 3), "{:?}", items(part(editor, STEPS)));
     click_id(editor, GROUP_TABS);
     press_key(editor, "Esc");
-    click_id(editor, GROUP_TABS + 4);
+    click_id(editor, GROUP_TABS + 2);
     click_id(editor, STEP_UP);
     click_id(editor, STEP_WAIT);
     click_id(editor, STEP_REMOVE);
     // text: what is typed.
     choose(editor, SET, "spare");
-    click_id(editor, GROUP_TABS + 5);
+    click_id(editor, GROUP_TABS + 3);
     enter(editor, CONTENT, "こんにちは");
 
     let saved = save_until(&app, editor, "こんにちは");
@@ -935,7 +935,7 @@ fn a_key_becomes_a_layer_key_of_a_set_held_or_toggled() {
     let app = launch_with(Some(SETTINGS), None);
     let editor = open_map(&app, "mods");
     choose_key(editor, 0, "Esc");
-    click_id(editor, GROUP_TABS + 3);
+    click_id(editor, GROUP_TABS + 1);
     assert!(within_3s(|| shown(editor, LAYER_SET) && shown(editor, LAYER_HOLD) && shown(editor, LAYER_TOGGLE)), "the layer's fields");
     choose(editor, LAYER_SET, "spare");
     click_id(editor, LAYER_TOGGLE);
@@ -1044,7 +1044,7 @@ fn the_shape_is_laid_out_on_one_page_and_what_keys_send_on_the_next() {
     let app = launch_with(Some(SETTINGS), None);
     let editor = open_set(&app, "mods");
     let layout = [SET, ADD_SET, RENAME, REMOVE_SET, KLE, USED, SAMPLE, ADD_KEY, REMOVE_KEY, KEY_UP, KEY_DOWN, ARRANGE, WIDTH];
-    let mapping = [LABEL, SUMMARY, MOTIONS, GROUP_TABS, GROUP_TABS + 6];
+    let mapping = [LABEL, SUMMARY, MOTIONS, GROUP_TABS, GROUP_TABS + 4];
     assert!(within_3s(|| layout.iter().all(|&id| shown(editor, id))), "キー配置: {:?}", layout.map(|id| shown(editor, id)));
     assert!(mapping.iter().all(|&id| !shown(editor, id)), "no mapping on キー配置: {:?}", mapping.map(|id| shown(editor, id)));
 
@@ -1283,18 +1283,19 @@ fn a_free_key_is_placed_by_its_fields_and_by_dragging() {
 // Issue #111: キーマッピング as Vial has it. Its parts: what the chosen
 // key does, in a sentence 1076 (a Static); the text and the program fields
 // of 文字・起動 1061 and 1077 (Edits); the motions 押した時に送る, 押している間
-// and 連打 1080 to 1082 and the seven groups 1090 to 1096 (buttons, the
+// and 連打 1080 to 1082 and the five groups 1090 to 1094 (buttons, the
 // chosen one checked); the layers' tabs from 1200 (buttons, the set shown
-// checked); the keyboard of 基本 from 1300, the number pad's of テンキー
-// from 1400, and the modifiers of 修飾キー from 1450 (buttons named as the
-// keys are, the key sent checked). The modifiers that go with a key are
+// checked); and on 基本, the keyboard from 1300, the number pad from 1400,
+// and the modifier keys from 1450 (buttons named as the keys are, the key
+// sent checked). 基本 had テンキー and 修飾キー apart at first: too empty to
+// read, they are one group. The modifiers that go with a key are
 // still 1030 to 1033, 押して取り込む 1051 and the interval 1053.
 const SUMMARY: i32 = 1076;
 const RUN_CONTENT: i32 = 1077;
 const MOTIONS: i32 = 1080;
 const MOTION_NAMES: [&str; 3] = ["押した時に送る", "押している間", "連打"];
 const GROUP_TABS: i32 = 1090;
-const GROUP_TAB_NAMES: [&str; 7] = ["基本", "テンキー", "修飾キー", "レイヤー", "マクロ", "文字・起動", "ページ・パイ"];
+const GROUP_TAB_NAMES: [&str; 5] = ["基本", "レイヤー", "マクロ", "文字・起動", "ページ・パイ"];
 const LAYER_TABS: i32 = 1200;
 const KEYBOARD: i32 = 1300;
 const NUMPAD: i32 = 1400;
@@ -1367,6 +1368,10 @@ fn the_layers_tabs_follow_the_layer_keys_and_keep_the_key_chosen() {
     click_id(editor, LAYER_TABS + 1);
     assert!(within_3s(|| text(editor, LABEL) == "M"), "num's second key: {:?}", text(editor, LABEL));
     assert!(checked(part(editor, LAYER_TABS + 1)) && !checked(part(editor, LAYER_TABS)), "num shown");
+    // Another key chosen there: the tabs stay base's.
+    choose_key(editor, 0, "1");
+    assert!(within_3s(|| layer_tabs(editor) == ["base", "num", "sym", "more"]), "{:?}", layer_tabs(editor));
+    assert_eq!(chosen(part(editor, SET)).as_deref(), Some("base"), "the drop-down list keeps base");
     click_id(editor, LAYER_TABS + 3);
     assert!(within_3s(|| text(editor, LABEL) == "X"), "more's first key: {:?}", text(editor, LABEL));
     // Changed there, it is more's key.
@@ -1418,11 +1423,11 @@ fn the_modifiers_and_the_motion_go_with_the_key_pressed() {
 
 // Issue #111, AC4
 #[test]
-fn the_seven_groups_assign_every_kind() {
+fn the_five_groups_assign_every_kind() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
     let editor = open_map(&app, "mods");
-    let names: Vec<String> = (0..7).map(|i| text(editor, GROUP_TABS + i)).collect();
+    let names: Vec<String> = (0..5).map(|i| text(editor, GROUP_TABS + i)).collect();
     assert_eq!(names, GROUP_TAB_NAMES);
     let rect = |name: &str| window_rect(part(editor, button_named(editor, KEYBOARD, 100, name)));
     // 基本: as a US keyboard.
@@ -1432,38 +1437,47 @@ fn the_seven_groups_assign_every_kind() {
     assert!(rect("Q").right <= rect("W").left && rect("Q").bottom <= rect("A").top, "Q left of W, above A");
     assert!(rect("1").bottom <= rect("Q").top && rect("Space").top >= rect("Z").bottom, "the rows in order");
 
-    // テンキー.
-    click_id(editor, GROUP_TABS + 1);
+    // The number pad on its right, the modifier keys over it.
     let seven = button_named(editor, NUMPAD, 20, "7");
-    assert!(within_3s(|| shown(editor, seven)), "the number pad");
-    assert!(!shown(editor, button_named(editor, KEYBOARD, 100, "Q")), "not 基本's keys");
+    let shift = button_named(editor, MOD_KEYS, 4, "Shift");
+    assert!(shown(editor, seven) && shown(editor, shift), "the number pad and the modifier keys on 基本");
+    let pad = window_rect(part(editor, seven));
+    assert!(pad.left >= rect("Enter").right && pad.left >= rect("→").right, "the number pad right of the keyboard");
+    assert!(window_rect(part(editor, shift)).bottom <= pad.top, "the modifier keys over it");
     click_id(editor, seven);
     saved_as(&app, editor, "mods", "Esc", &["Esc", "shortcut", "Numpad7"]);
-    // 修飾キー: a modifier key.
-    click_id(editor, GROUP_TABS + 2);
-    click_id(editor, button_named(editor, MOD_KEYS, 4, "Shift"));
+    // A modifier key.
+    click_id(editor, shift);
     saved_as(&app, editor, "mods", "Esc", &["Esc", "modifier", "Shift"]);
     // レイヤー: a layer key, toggled.
-    click_id(editor, GROUP_TABS + 3);
+    click_id(editor, GROUP_TABS + 1);
     choose(editor, LAYER_SET, "spare");
     click_id(editor, LAYER_TOGGLE);
     saved_as(&app, editor, "mods", "Esc", &["Esc", "layer", "spare", "mode=toggle"]);
     // マクロ: a step added makes a macro; a key step takes 基本's keys.
-    click_id(editor, GROUP_TABS + 4);
+    click_id(editor, GROUP_TABS + 2);
     click_id(editor, STEP_KEY);
     assert!(within_3s(|| text(editor, SUMMARY).contains("マクロ")), "{:?}", text(editor, SUMMARY));
     click_id(editor, GROUP_TABS);
     press_key(editor, "B");
-    click_id(editor, GROUP_TABS + 4);
+    click_id(editor, GROUP_TABS + 2);
     assert!(within_3s(|| items(part(editor, STEPS)).contains(&"B".to_string())), "{:?}", items(part(editor, STEPS)));
+    // A wait chosen: a key pressed is no step of keys, and the macro stays.
+    click_id(editor, STEP_WAIT);
+    let steps = items(part(editor, STEPS));
+    click_id(editor, GROUP_TABS);
+    press_key(editor, "C");
+    assert!(within_3s(|| status(editor).contains("手順")), "why: {:?}", status(editor));
+    click_id(editor, GROUP_TABS + 2);
+    assert_eq!(items(part(editor, STEPS)), steps, "the macro kept");
     // 文字・起動: the field entered.
-    click_id(editor, GROUP_TABS + 5);
+    click_id(editor, GROUP_TABS + 3);
     enter(editor, CONTENT, "こんにちは");
     saved_as(&app, editor, "mods", "Esc", &["Esc", "text", "こんにちは"]);
     enter(editor, RUN_CONTENT, "calc.exe");
     saved_as(&app, editor, "mods", "Esc", &["Esc", "run", "calc.exe"]);
     // ページ・パイ: a page, then a pie and what it says of its items.
-    click_id(editor, GROUP_TABS + 6);
+    click_id(editor, GROUP_TABS + 4);
     choose(editor, TARGET, "次のページ");
     saved_as(&app, editor, "mods", "Esc", &["Esc", "page", "next"]);
     choose(editor, PIE, "transform");
@@ -1478,9 +1492,9 @@ fn a_key_chosen_shows_its_assignment_in_the_groups_and_the_keyboard() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
     let editor = open_map(&app, "mods");
-    // Ctrl: 修飾キー, its Ctrl on.
+    // Ctrl: 基本, its modifier key Ctrl on.
     choose_key(editor, 1, "Ctrl");
-    assert!(within_3s(|| checked(part(editor, GROUP_TABS + 2))), "修飾キー opened");
+    assert!(within_3s(|| checked(part(editor, GROUP_TABS))), "基本 opened");
     assert!(checked(part(editor, button_named(editor, MOD_KEYS, 4, "Ctrl"))), "Ctrl on");
     // 元に戻す, Ctrl+Z: 基本, Z and Ctrl on, sent when pressed.
     choose(editor, SET, "tools");
@@ -1506,7 +1520,7 @@ fn a_key_chosen_shows_its_assignment_in_the_groups_and_the_keyboard() {
         arrow(&[], VK_DOWN);
     }
     assert!(within_3s(|| text(editor, LABEL) == "電卓"), "{:?}", text(editor, LABEL));
-    assert!(within_3s(|| checked(part(editor, GROUP_TABS + 5))), "文字・起動 opened");
+    assert!(within_3s(|| checked(part(editor, GROUP_TABS + 3))), "文字・起動 opened");
     assert_eq!(text(editor, CONTENT), "やあ");
 }
 
