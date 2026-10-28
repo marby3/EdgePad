@@ -52,7 +52,7 @@ use windows_sys::w;
 use crate::colors::{self, colorref};
 use crate::log::debug_log;
 use crate::panel::{pointer_at, pointer_id};
-use crate::{settings, tray, watch};
+use crate::{icon, settings, tray, watch};
 
 mod apps;
 mod fields;
@@ -617,6 +617,7 @@ unsafe fn open() -> bool {
         }
         let dpi = GetDpiForWindow(hwnd).max(96);
         DPI.set(dpi);
+        icon::set_on(hwnd, dpi);
         let context = make_context();
         let parts = in_context(context, || {
             let list = LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT;
@@ -1447,6 +1448,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     }
                     e.dpi = dpi;
                     DPI.set(dpi);
+                    icon::set_on(hwnd, dpi);
                     set_fonts(e);
                     DeleteObject(old.0);
                     DeleteObject(old.1);

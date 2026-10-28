@@ -6,6 +6,7 @@ mod autostart;
 mod colors;
 mod editor;
 mod editor_process;
+mod icon;
 mod instance;
 mod launch;
 mod log;
