@@ -364,9 +364,14 @@ pub(super) fn parts(e: &Editor) -> Vec<HWND> {
 pub(super) unsafe fn set_name_font(e: &Editor, font: HFONT) {
     unsafe {
         let mut lf: LOGFONTW = std::mem::zeroed();
-        GetObjectW(font as _, size_of::<LOGFONTW>() as i32, &mut lf as *mut LOGFONTW as _);
+        if GetObjectW(font as _, size_of::<LOGFONTW>() as i32, &mut lf as *mut LOGFONTW as _) == 0 {
+            return;
+        }
         lf.lfHeight = lf.lfHeight * 4 / 5;
         let small = CreateFontIndirectW(&lf);
+        if small.is_null() {
+            return;
+        }
         for row in &e.rows {
             SendMessageW(row.name, WM_SETFONT, small as WPARAM, 1);
         }
@@ -519,6 +524,12 @@ pub(super) unsafe fn show(e: &Editor) {
     if LAID.replace((e.page, e.edge)) != (e.page, e.edge) {
         unsafe { RedrawWindow(e.hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN) };
     }
+}
+
+/// The mouse has left the window, or it is no longer in front: no row is
+/// under the mouse.
+pub(super) fn unhover() -> bool {
+    HOVER.replace(None).is_some()
 }
 
 /// The mouse is over `hwnd`: the note of its row shows, and only that.
@@ -752,10 +763,13 @@ pub(super) unsafe fn commit(id: usize, always: bool) -> bool {
             }
             // 色を指定 with no colour yet: its field to give one in.
             Accent if !accent_given(e) => "auto".into(),
+            // 色を指定 with no colour yet: Windows's accent to start from, in
+            // the file at once, so the list and the file agree.
             Accent if text_of(hex).trim().is_empty() => {
-                show(e);
-                SetFocus(hex);
-                return;
+                let [r, g, b] = crate::colors::palette(edgepad_core::config::Theme::Auto, edgepad_core::config::Accent::Auto).held;
+                let start = format!("#{r:02X}{g:02X}{b:02X}");
+                set_text(hex, &start);
+                start
             }
             Accent => text_of(hex).trim().to_string(),
             Check => (SendMessageW(row.field, BM_GETCHECK, 0, 0) == 1).to_string(),
@@ -775,6 +789,9 @@ pub(super) unsafe fn commit(id: usize, always: bool) -> bool {
                 tell(e, &reason);
                 e.rows[i].reason = Some(reason);
                 InvalidateRect(e.rows[i].field, null(), 1);
+                if i == ACCENT {
+                    InvalidateRect(hex, null(), 1);
+                }
             }
             Ok(()) => {
                 refresh_rows(e, rows_of(i));
@@ -810,7 +827,12 @@ pub(super) unsafe fn reset(id: usize) {
 /// Whether the field `hwnd` shows a value turned away.
 pub(super) fn is_wrong(hwnd: HWND) -> bool {
     super::EDITOR.with(|e| {
-        e.try_borrow().ok().is_some_and(|e| e.as_ref().is_some_and(|e| e.rows.iter().any(|r| r.field == hwnd && r.reason.is_some())))
+        e.try_borrow().ok().is_some_and(|e| {
+            e.as_ref().is_some_and(|e| {
+                let accent_wrong = hwnd == accent_hex(e) && e.rows[ACCENT].reason.is_some();
+                accent_wrong || e.rows.iter().any(|r| r.field == hwnd && r.reason.is_some())
+            })
+        })
     })
 }
 
@@ -880,6 +902,13 @@ pub(super) fn locate(section: Option<&str>, name: Option<&str>) -> (usize, Optio
             group(spec) && named
         })
     });
+    // columns on the top or bottom, rows on the left or right: no field.
+    let shown = |i: &usize| match (ROWS[*i].kind, edge) {
+        (Columns, Some(k)) => EDGES[k].0.is_side(),
+        (Rows, Some(k)) => !EDGES[k].0.is_side(),
+        _ => true,
+    };
+    let row = row.filter(shown);
     let page = match (row.map(|i| ROWS[i].group), section) {
         (Some(L), _) => LOOK_PAGE,
         (Some(T), _) => TOUCH_PAGE,

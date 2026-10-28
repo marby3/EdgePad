@@ -1,7 +1,6 @@
-//! Acceptance tests for Issue #83: the 辺と表示 and 操作 pages of the
-//! settings window, with a field for every setting of [general] and
-//! [edge.*], and the 辺と表示 page's figure of the screen's four edges
-//! (spec 7.1).
+//! Acceptance tests for Issue #83: the pages of the settings window with a
+//! field for every setting of [general] and [edge.*] (辺と表示 and 操作
+//! then), and the figure of the screen's four edges (spec 7.1).
 //!
 //! Since Issue #107 the rows are on the pages 辺ごとの設定 (the figure and
 //! the edge's rows), 見た目, タッチと修飾キー and 表示と非表示.
@@ -251,7 +250,7 @@ fn enter_accent(editor: HWND, colour: &str) {
 
 // AC1
 #[test]
-fn the_edges_page_has_a_field_for_each_display_setting_with_its_range() {
+fn the_look_page_has_a_field_for_each_display_setting_with_its_range() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
     let editor = open_page(&app, LOOK_PAGE);
@@ -379,7 +378,7 @@ fn the_chosen_edge_has_its_fields_under_the_figure() {
 
 // AC4
 #[test]
-fn the_operation_page_has_a_field_for_each_operation_setting_with_its_range() {
+fn the_touch_and_show_pages_have_a_field_for_each_operation_setting_with_its_range() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
     let editor = open_page(&app, TOUCH_PAGE);
@@ -389,13 +388,17 @@ fn the_operation_page_has_a_field_for_each_operation_setting_with_its_range() {
         (TOUCH_PAGE, "pen_presses", "Button", ""),
         (SHOW_PAGE, "hover_ms", "Edit", "0 でオフ、100〜5000"),
         (SHOW_PAGE, "auto_hide_ms", "Edit", "0 でオフ、1000〜3600000"),
-        (SHOW_PAGE, "hotkey", "Edit", ""),
+        (SHOW_PAGE, "hotkey", "Edit", "-"),
     ] {
         if heading(editor) != PAGES[page] {
             show_page(editor, page);
         }
         assert_eq!(class_of(field(editor, name)), class, "the field of {name}");
-        assert!(note(editor, name).contains(takes), "{name} takes {takes}: {:?}", note(editor, name));
+        // hotkey's 押して取り込む is where its note would be: it has none.
+        match takes {
+            "-" => assert_eq!(note(editor, name), "", "{name}: no note"),
+            _ => assert!(note(editor, name).contains(takes), "{name} takes {takes}: {:?}", note(editor, name)),
+        }
     }
     show_page(editor, TOUCH_PAGE);
     assert_eq!(options(editor, "latch"), ["1 回使うと解ける", "もう一度押すまで続く"]);

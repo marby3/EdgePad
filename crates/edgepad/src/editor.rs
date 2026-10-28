@@ -792,7 +792,7 @@ unsafe fn lay_out() {
         let left = m + s(SIDEBAR_W) + 2 * m;
         let width = (client.right - m - left).max(0);
         MoveWindow(heading, left, m, width, s(HEADING_H), 1);
-        MoveWindow(GetDlgItem(hwnd, NOTICE as i32), left + width / 2, m, width / 2, s(HEADING_H), 1);
+        MoveWindow(GetDlgItem(hwnd, NOTICE as i32), left + width / 3, m, width - width / 3, s(HEADING_H), 1);
         // The rows, down to the status line, a row of answers left room for.
         let rows_bottom = side_bottom - bh - m - s(STATUS_H) - m;
         with_editor(|e| {
@@ -1247,11 +1247,17 @@ unsafe fn command(id: usize) {
             } else {
                 // Saved with a field's value turned away: that value is not
                 // in the file, which the status line goes on saying.
-                with_editor(|e| {
-                    notify(e, said);
-                    match standing_reason(e).filter(|_| id == SAVE) {
-                        Some(reason) => set_status(e, &format!("保存していない値があります: {reason}")),
-                        None => set_status(e, ""),
+                with_editor(|e| match () {
+                    // Kept with the change outside: a warning, which stays.
+                    _ if id == KEEP => set_status(e, said),
+                    _ => {
+                        if !said.is_empty() {
+                            notify(e, said);
+                        }
+                        match standing_reason(e).filter(|_| id == SAVE) {
+                            Some(reason) => set_status(e, &format!("保存していない値があります: {reason}")),
+                            None => set_status(e, ""),
+                        }
                     }
                 });
             }
@@ -1504,6 +1510,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     });
                 }
                 if wp & 0xFFFF == WA_INACTIVE as usize {
+                    // Another window in front: the mouse is over none of
+                    // the rows.
+                    if fields::unhover() {
+                        with_editor(|e| fields::show(e));
+                    }
                     let focus = GetFocus();
                     if IsChild(hwnd, focus) != 0 {
                         with_editor(|e| e.focus = focus);

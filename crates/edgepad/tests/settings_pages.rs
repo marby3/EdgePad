@@ -274,7 +274,12 @@ fn what_is_done_shows_in_a_band_for_a_while_and_what_to_fix_in_the_status_line()
     let band_rect = window_rect(band);
     let heading_rect = window_rect(part(editor, HEADING));
     assert!(band_rect.top <= heading_rect.bottom, "at the top of the window");
-    assert!(within_3s(|| !visible(band)) || within_3s(|| !visible(band)), "gone after a few seconds");
+    // Shown for 4 s: gone within 6 s of the save.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    while visible(band) && std::time::Instant::now() < end {
+        pump(100);
+    }
+    assert!(!visible(band), "gone after a few seconds");
     // A value turned away: in the status line, as before.
     enter_into(editor, field(editor, "key_size"), "5");
     assert!(within_3s(|| status(editor).contains("key_size")), "the reason: {:?}", status(editor));
@@ -334,6 +339,18 @@ fn the_keyboard_reaches_every_page_and_field_and_the_pages_follow_the_dpi() {
         }
         let enabled = fields.iter().filter(|&&f| unsafe { IsWindowEnabled(f) } != 0).count();
         assert!(seen.len() >= enabled, "{}: Tab reached {} of {enabled}", PAGES[page], seen.len());
+        // Shift+Tab goes back over them.
+        let mut back = Vec::new();
+        for _ in 0..40 {
+            keyboard(VK_SHIFT, true);
+            press(VK_TAB);
+            keyboard(VK_SHIFT, false);
+            let f = focus_of(editor);
+            if fields.contains(&f) && !back.contains(&f) {
+                back.push(f);
+            }
+        }
+        assert!(back.len() >= enabled, "{}: Shift+Tab reached {} of {enabled}", PAGES[page], back.len());
     }
     // The DPI: a field of 見た目 grows with it.
     show_page(editor, LOOK_PAGE);
