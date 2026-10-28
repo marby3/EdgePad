@@ -79,7 +79,7 @@ fn the_spec_example_reads_without_errors_and_every_value_comes_through() {
     assert_eq!(g.theme, Theme::Auto);
 
     let left = &config.edges[Edge::Left as usize];
-    assert_eq!(*left, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false });
+    assert_eq!(*left, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false, gap: 0 });
     let right = &config.edges[Edge::Right as usize];
     assert_eq!((right.enabled, right.monitor, right.lines), (true, Monitor::Primary, 2));
 
@@ -160,8 +160,10 @@ top = more
     assert_eq!(g.hotkey, None);
     assert_eq!((g.key_size, g.opacity, g.dim_opacity, g.latch_ms), (56, 100, 35, 250));
     assert_eq!((g.pen_presses, g.theme), (false, Theme::Auto));
-    for edge in &config.edges {
-        assert_eq!(*edge, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false });
+    // The bottom kept off the screen's edge since Issue #117.
+    for (i, edge) in config.edges.iter().enumerate() {
+        let gap = if i == Edge::Bottom as usize { BOTTOM_GAP } else { 0 };
+        assert_eq!(*edge, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false, gap });
     }
     assert_eq!(config.default_profile().edges, [None, None, Some("more".into()), None]);
 }
