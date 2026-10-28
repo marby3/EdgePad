@@ -160,3 +160,17 @@ fn rebuilt_panels_take_the_room_their_new_settings_give() {
     save(&docked.app, &pad("[edge.left]\ndock = true\n"));
     assert!(work_area_becomes(narrowed(base, key)), "dock on again: one key taken");
 }
+
+// Issue #117, AC4: an edge kept off the screen's edge docks its gap too, so
+// a maximised window does not slip under the panel.
+#[test]
+fn a_docked_edge_kept_off_the_screens_edge_takes_its_gap_too() {
+    let _desktop = desktop();
+    let base = work_area();
+    let key = key_px();
+    let text = "[edge.bottom]\ndock = true\n[set.pad]\nkey = A | hold | A\nkey = B | hold | B\n[profile.default]\nbottom = pad\n";
+    let docked = Docked::launch(text);
+    let want = RECT { bottom: base.bottom - key - px(16), ..base };
+    assert!(work_area_becomes(want), "docked: work area {:?}, want {:?}", rect(work_area()), rect(want));
+    drop(docked);
+}

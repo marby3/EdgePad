@@ -58,3 +58,21 @@ fn a_wrong_common_setting_is_an_error_with_its_line() {
     assert_eq!(lines, [2, 3, 4, 5], "{errors:?}");
     assert!(errors[1].reason.contains("colour"), "{errors:?}");
 }
+
+// Issue #117, AC2: how far each edge keeps off the screen's edge, `gap`, in
+// logical pixels: the bottom 16 unless written, the others 0.
+#[test]
+fn gap_keeps_an_edge_off_the_screen_bottom_by_default_and_reads_in_range() {
+    let e = edges("");
+    assert_eq!([e[0].gap, e[1].gap, e[2].gap, e[3].gap], [0, 0, 0, 16], "the bottom alone, by default");
+    let e = edges("[edge.bottom]\ngap = 0\n");
+    assert_eq!(e[Edge::Bottom as usize].gap, 0, "gap = 0: against the edge");
+    let e = edges("[edge]\ngap = 8\n[edge.top]\ngap = 64\n");
+    assert_eq!([e[0].gap, e[1].gap, e[2].gap, e[3].gap], [8, 8, 64, 8], "[edge]'s, and an edge's own");
+    for (value, says) in [("65", "0〜64"), ("-1", "0〜64"), ("遠く", "gap")] {
+        let text = format!("[edge.bottom]\ngap = {value}\n{KEYS}");
+        let errors = parse(text.as_bytes()).expect_err(value);
+        assert_eq!(errors[0].line, 2, "{value}: the gap's line, {errors:?}");
+        assert!(errors[0].reason.contains(says), "{value}: says {says}, {errors:?}");
+    }
+}
