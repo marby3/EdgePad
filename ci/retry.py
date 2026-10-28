@@ -57,13 +57,18 @@ def reruns(output):
 
 
 def run(args):
-    """Run cargo test with `args`, echoing its output; its output and
-    whether it passed."""
-    done = subprocess.run(CARGO + args, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    output = done.stdout + done.stderr
-    sys.stdout.write(output)
-    sys.stdout.flush()
-    return output, done.returncode == 0
+    """Run cargo test with `args`, echoing its output as it comes; its
+    output and whether it passed. cargo says which binary runs on stderr
+    and the tests write theirs to stdout: one stream keeps them in order."""
+    lines = []
+    with subprocess.Popen(
+        CARGO + args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
+    ) as cargo:
+        for line in cargo.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            lines.append(line)
+    return "".join(lines), cargo.returncode == 0
 
 
 def main():
