@@ -11,7 +11,7 @@
 mod common;
 
 use windows_sys::Win32::Foundation::{POINT, RECT};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, SPI_GETWORKAREA, SetCursorPos, SystemParametersInfoW};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetCursorPos, SPI_GETWORKAREA, SetCursorPos, SystemParametersInfoW, WindowFromPoint};
 use common::editor::within_3s;
 use common::*;
 
@@ -118,7 +118,17 @@ fn the_mouse_at_the_screens_edge_still_shows_a_panel_kept_off_it() {
     find_panel(&app);
     choose(&app, "下辺");
     assert!(within_3s(|| bottom_panel(&app).is_none()), "precondition: the bottom panel hidden");
-    mouse_move_to(POINT { x: away.x, y: work_area().bottom.min(m.bottom) - 1 });
+    let at = POINT { x: away.x, y: work_area().bottom.min(m.bottom) - 1 };
+    mouse_move_to(at);
     pump(700);
-    assert!(within_3s(|| bottom_panel(&app).is_some()), "resting at the edge shows the panel");
+    let under = unsafe { WindowFromPoint(at) };
+    let mut class = [0u16; 64];
+    let n = unsafe { GetClassNameW(under, class.as_mut_ptr(), 64) };
+    let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+    let r = work_area();
+    assert!(
+        within_3s(|| bottom_panel(&app).is_some()),
+        "resting at the edge shows the panel: {class:?} under ({}, {}), work area bottom {}, screen bottom {}",
+        at.x, at.y, r.bottom, m.bottom
+    );
 }
