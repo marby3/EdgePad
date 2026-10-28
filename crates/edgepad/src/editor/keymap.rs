@@ -32,22 +32,28 @@
 //! pages. A field rewritten keeps the spaces around it, and a shorter value
 //! is padded to the old one's length, so columns lined up by hand stay so.
 //! Whether the key sets a page or pie key names are there, and a pie's
-//! items fit it, is the whole file's to say, on saving; the pie's fields
-//! tell of its items at once.
+//! items fit it, is the whole file's to say, on saving.
+//!
+//! A pie key chosen on キーマッピング shows its fan in place of the sample
+//! (Issue #113): its items, its key set's keys, are chosen on it and
+//! assigned as the panel's keys are, added and removed over it, until
+//! パネルに戻る. A set only pie keys name is a pie's items: made with the
+//! key, by パイにする, gone with it, and listed nowhere.
 
 use std::cell::{Cell, RefCell};
 use std::mem::zeroed;
 use std::ptr::{null, null_mut};
 
-use edgepad_core::config::{self, Accent, Edge, KeySet, Theme};
+use edgepad_core::config::{self, Accent, Edge, PIE_ITEMS, Theme};
 use edgepad_core::document::Document;
 use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Place};
+use edgepad_core::pie;
 use edgepad_core::theme::Palette;
 use windows_sys::Win32::Foundation::{FreeLibrary, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_DOWN, VK_END, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
+    EnableWindow, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_DOWN, VK_END, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
     VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_UP,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -104,8 +110,8 @@ const STEP_DOWN: usize = 1059;
 const WAIT: usize = 1060;
 const CONTENT: usize = 1061;
 const TARGET: usize = 1062;
+/// パイにする, and why an item cannot be some things (Issue #113).
 const PIE: usize = 1063;
-const PIE_FIGURE: usize = 1064;
 const PIE_NOTE: usize = 1065;
 const KLE: usize = 1066;
 const LAYER_SET: usize = 1067;
@@ -122,6 +128,10 @@ const SUMMARY: usize = 1076;
 const RUN_CONTENT: usize = 1077;
 const TITLE_RUN: usize = 1078;
 const MOTIONS: usize = 1080;
+/// Over a pie's fan: パネルに戻る, ＋ and 削除.
+const PIE_BACK: usize = 1083;
+const PIE_ADD: usize = 1084;
+const PIE_REMOVE: usize = 1085;
 const GROUP_TABS: usize = 1090;
 const LAYER_TABS: usize = 1200;
 const KEYBOARD: usize = 1300;
@@ -143,15 +153,13 @@ const TITLE_WAIT: usize = 1108;
 const WAIT_NOTE: usize = 1109;
 const TITLE_CONTENT: usize = 1110;
 const TITLE_TARGET: usize = 1111;
-const TITLE_PIE: usize = 1112;
 const TITLE_LAYER: usize = 1113;
 const TITLE_ARRANGE: usize = 1114;
 const TITLE_PLACE: usize = 1115;
 const PLACE_NOTE: usize = 1119;
 
-/// The sample's and the pie figure's window classes.
+/// The sample's window class.
 pub(super) const SAMPLE_CLASS: *const u16 = w!("EdgePadSettingsSample");
-pub(super) const PIE_CLASS: *const u16 = w!("EdgePadSettingsPie");
 
 /// The kinds, as the file writes them and as their buttons name them, and
 /// what each does, in a line.
@@ -291,6 +299,7 @@ const PLACE_NAMES: [&str; 4] = ["x", "y", "w", "h"];
 
 /// What a key gets when it is added, and a step of each kind.
 const NEW_KEY: &str = "新しいキー | shortcut | A";
+const NEW_ITEM: &str = "新しい項目 | none | -";
 const NEW_STEP: &str = "A";
 const NEW_WAIT: &str = "wait 100";
 
@@ -323,7 +332,6 @@ enum Class {
     /// The key list: in columns.
     Keys,
     Sample,
-    Figure,
 }
 
 use Class::*;
@@ -338,6 +346,10 @@ const PARTS: &[(usize, Class, &str)] = &[
     (REMOVE_SET, Button, "削除"),
     (KLE, Button, "KLE から読み込む"),
     (USED, Text, ""),
+    (PIE_BACK, Button, "パネルに戻る"),
+    (PIE_ADD, Button, "＋"),
+    (PIE_REMOVE, Button, "削除"),
+    (PIE_NOTE, Text, "パイの項目には、押している間・連打・修飾キー・レイヤー・パイは使えません"),
     (SAMPLE, Sample, ""),
     (ADD_KEY, Button, "追加"),
     (REMOVE_KEY, Button, "削除"),
@@ -413,10 +425,7 @@ const PARTS: &[(usize, Class, &str)] = &[
     (RUN_CONTENT, Edit, ""),
     (TITLE_TARGET, Text, "切り替え先"),
     (TARGET, Combo, ""),
-    (TITLE_PIE, Text, "項目のキーセット"),
-    (PIE, Combo, ""),
-    (PIE_FIGURE, Figure, ""),
-    (PIE_NOTE, Text, ""),
+    (PIE, Button, "パイにする"),
     (TITLE_LAYER, Text, "切り替え先"),
     (LAYER_SET, Combo, ""),
     (LAYER_HOLD, Toggle, "押している間"),
@@ -456,6 +465,9 @@ pub(super) struct Keymap {
     tab: usize,
     motion: usize,
     mods: Mods,
+    /// While a pie key's fan shows: the set and the key it is of, `set`
+    /// and `key` being its items' set and the item chosen (Issue #113).
+    pie: Option<(String, usize)>,
     /// Whether the name field is out, naming the set.
     naming: bool,
     capture: Option<Capture>,
@@ -484,6 +496,18 @@ struct Sample {
     /// Whether the keys are dragged about: a free layout's, on キー配置.
     movable: bool,
     drag: Option<Drag>,
+    /// A pie's fan in place of the panel, from this edge: its keys the
+    /// items (Issue #113).
+    fan: Option<Edge>,
+}
+
+/// A fan in a sample: its middle, its keys' size, and its ring.
+struct Fan {
+    edge: Edge,
+    middle: (i32, i32),
+    key: i32,
+    ring: pie::Ring,
+    items: usize,
 }
 
 /// What a drag takes along: the key's place, or the right or the bottom
@@ -551,9 +575,38 @@ impl Sample {
         (key, back, cells)
     }
 
+    /// Where the fan goes in `client`, at `dpi`, if one is drawn: as the
+    /// pie menu opens from its edge, its middle `INSET` in from that side,
+    /// as large as the room goes.
+    fn fan(&self, client: RECT, dpi: u32) -> Option<Fan> {
+        let edge = self.fan?;
+        let items = self.labels.len().clamp(*PIE_ITEMS.start(), *PIE_ITEMS.end());
+        let inset = scale(INSET, dpi);
+        let (w, h) = (client.right, client.bottom);
+        let room = if edge.is_side() { (w - 2 * inset).min(h / 2 - inset) } else { (h - 2 * inset).min(w / 2 - inset) };
+        // The ring is as wide as its keys, by the items.
+        let per_key = pie::Ring::new(items, 64).outer / 64.0;
+        let key = ((f64::from(room) / per_key) as i32).max(1);
+        let middle = match edge {
+            Edge::Left => (inset, h / 2),
+            Edge::Right => (w - inset, h / 2),
+            Edge::Top => (w / 2, inset),
+            Edge::Bottom => (w / 2, h - inset),
+        };
+        Some(Fan { edge, middle, key, ring: pie::Ring::new(items, key), items })
+    }
+
     /// The key a point of the sample is on: of keys over one another, the
-    /// one on top, as drawn (`order`).
+    /// one on top, as drawn (`order`). On a fan, its item.
     fn hit(&self, client: RECT, dpi: u32, p: POINT) -> Option<(usize, RECT, i32)> {
+        if let Some(f) = self.fan(client, dpi) {
+            let (dx, dy) = (p.x - f.middle.0, p.y - f.middle.1);
+            if f64::from(dx).hypot(f64::from(dy)) > f.ring.outer {
+                return None;
+            }
+            let i = pie::item(f.edge, dx, dy, f.key, f.items)?;
+            return Some((i, RECT { left: 0, top: 0, right: 0, bottom: 0 }, f.key));
+        }
         let (key, _, cells) = self.lay_out(client, dpi);
         let on = |r: &RECT| p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
         let i = self.order(cells.len()).into_iter().rev().find(|&i| on(&cells[i]))?;
@@ -632,8 +685,6 @@ fn edge_places(doc: &Document, set: &str, widths: &[usize]) -> Vec<Place> {
 
 thread_local! {
     static SAMPLE_VIEW: RefCell<Sample> = RefCell::new(Sample::default());
-    // How many items the pie figure draws.
-    static PIE_ITEMS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// A key as written after `key =`: its fields, without the spaces around.
@@ -876,6 +927,43 @@ fn set_names(doc: &Document) -> Vec<String> {
     doc.sections().into_iter().filter_map(|s| s.strip_prefix("set.").map(String::from)).collect()
 }
 
+/// The key sets the lists show: a pie's items not (Issue #113).
+pub(super) fn listed_sets(doc: &Document) -> Vec<String> {
+    set_names(doc).into_iter().filter(|s| !is_items(doc, s)).collect()
+}
+
+/// Whether key set `set` is a pie's items: pie keys name it, and nothing
+/// else does, no edge, no page key and no layer key.
+fn is_items(doc: &Document, set: &str) -> bool {
+    let mut pie = false;
+    for section in doc.sections() {
+        for (name, value) in doc.values(&section) {
+            if section.starts_with("profile.") && Edge::parse(&name).is_some() && value.eq_ignore_ascii_case(set) {
+                return false;
+            }
+            let line = Line::of(&value);
+            if !section.starts_with("set.") || name != "key" || !line.content.eq_ignore_ascii_case(set) {
+                continue;
+            }
+            match line.kind() {
+                Some(PIE_KIND) => pie = true,
+                Some(PAGE_KIND | LAYER_KIND) => return false,
+                _ => {}
+            }
+        }
+    }
+    pie
+}
+
+/// Take key set `set` away, if it was a pie's items that nothing names
+/// any longer: its pie key is gone, or another kind now.
+fn drop_items(e: &mut Editor, set: &str) {
+    let section = format!("set.{}", set.to_ascii_lowercase());
+    if e.doc.sections().contains(&section) && used_by(&e.doc, set).is_empty() {
+        e.doc.remove_section(&section);
+    }
+}
+
 /// Where key set `set` is used: the profiles' edges that show it, and the
 /// pie and page keys that open it.
 fn used_by(doc: &Document, set: &str) -> Vec<String> {
@@ -1003,12 +1091,10 @@ pub(super) unsafe fn make(parent: HWND) -> bool {
                 WS_TABSTOP | WS_HSCROLL | (LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_MULTICOLUMN) as u32,
             ),
             Sample => (0, SAMPLE_CLASS, WS_TABSTOP),
-            Figure => (0, PIE_CLASS, 0),
         };
-        // The pie's note runs on over lines; what a key does ends in "…".
+        // What is said ends in "…" if it is too long.
         let style = match id {
-            PIE_NOTE => super::SS_NOPREFIX,
-            SUMMARY => style | SS_ENDELLIPSIS,
+            PIE_NOTE | SUMMARY => style | SS_ENDELLIPSIS,
             _ => style,
         };
         let text = wide(&text);
@@ -1093,13 +1179,14 @@ fn shows_shape(e: &Editor, id: usize, key: bool, way: &Arrangement) -> bool {
 
 /// Whether part `id` shows now, on キーマッピング, for the chosen key of
 /// kind `kind`, its chosen step a wait or not, with `tabs` layers' tabs
-/// and group `tab` open.
-fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab: usize) -> bool {
+/// and group `tab` open; over a pie's fan, with `pie`.
+fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab: usize, pie: bool) -> bool {
     let key = kind.is_some();
     let open = |t: usize| key && tab == t;
     match id {
         TITLE_SET | SET | SAMPLE => true,
-        _ if (LAYER_TABS..LAYER_TABS + TAB_COUNT).contains(&id) => id - LAYER_TABS < tabs,
+        _ if (LAYER_TABS..LAYER_TABS + TAB_COUNT).contains(&id) => !pie && id - LAYER_TABS < tabs,
+        PIE_BACK | PIE_ADD | PIE_REMOVE | PIE_NOTE => pie,
         CUT => key && cut,
         TITLE_LABEL | LABEL | SUMMARY | CAPTURE => key,
         _ if (MODS..MODS + 4).contains(&id) || (MOTIONS..MOTIONS + 3).contains(&id) => key,
@@ -1112,8 +1199,7 @@ fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab
         TITLE_STEPS | STEPS | STEP_KEY | STEP_WAIT | STEP_REMOVE | STEP_UP | STEP_DOWN => open(MACRO_TAB),
         TITLE_WAIT | WAIT | WAIT_NOTE => open(MACRO_TAB) && kind == Some(MACRO) && wait,
         TITLE_CONTENT | CONTENT | TITLE_RUN | RUN_CONTENT => open(TEXT_TAB),
-        TITLE_TARGET | TARGET | TITLE_PIE | PIE => open(PAGE_TAB),
-        PIE_FIGURE | PIE_NOTE => open(PAGE_TAB) && kind == Some(PIE_KIND),
+        TITLE_TARGET | TARGET | PIE => open(PAGE_TAB),
         _ => false,
     }
 }
@@ -1203,13 +1289,26 @@ pub(super) unsafe fn show(e: &Editor) {
     let cut = line.as_ref().is_some_and(|l| is_cut(&text_of(part_of(e, LABEL)), length_of(e, l), panel_key(&e.doc)));
     let way = e.keymap.set.as_ref().map_or(Arrangement::Edge, |s| arrangement(&e.doc, &format!("set.{s}")));
     let tabs = e.keymap.root.as_deref().map_or(0, |r| layers(&e.doc, r).len());
+    let pie = e.keymap.pie.is_some() && e.page == MAP_PAGE;
     for (id, ..) in every_part() {
         let on = match e.page {
             PAGE => shows_shape(e, id, kind.is_some(), &way),
-            MAP_PAGE => shows(id, kind, wait, cut, tabs, e.keymap.tab),
+            MAP_PAGE => shows(id, kind, wait, cut, tabs, e.keymap.tab, pie),
             _ => false,
         };
         unsafe { ShowWindow(part_of(e, id), if on { SW_SHOWNA } else { SW_HIDE }) };
+    }
+    // What an item cannot be is not pressed; and the items go from two
+    // to eight.
+    let count = keys_of(e).len();
+    let mut barred: Vec<usize> = vec![MOTIONS + 1, MOTIONS + 2, GROUP_TABS + LAYER_TAB, PIE];
+    barred.extend((0..MOD_KEYS.len()).map(|i| MOD_BUTTONS + i));
+    for id in barred {
+        unsafe { EnableWindow(part_of(e, id), !pie as i32) };
+    }
+    unsafe {
+        EnableWindow(part_of(e, PIE_ADD), (count < *PIE_ITEMS.end()) as i32);
+        EnableWindow(part_of(e, PIE_REMOVE), (count > *PIE_ITEMS.start()) as i32);
     }
 }
 
@@ -1274,6 +1373,13 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     if !names.is_empty() {
         unsafe { lay_row(e, LAYER_TABS, &names, left, top + pitch, width.min(s(120) * names.len() as i32), h) };
     }
+    // Over a pie's fan, in the tabs' place: its buttons, and what is said.
+    let mut x = left;
+    for (id, w) in [(PIE_BACK, 104), (PIE_ADD, 40), (PIE_REMOVE, 56)] {
+        at(id, x, top + pitch, s(w), h);
+        x += s(w) + gap;
+    }
+    at(PIE_NOTE, x + gap, top + pitch, (left + width - x - gap).max(0), h);
     let mut x = left;
     for (id, w) in [(TITLE_LABEL, 48), (LABEL, 150)] {
         at(id, x, yl, s(w), h);
@@ -1353,17 +1459,14 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
 
     e.keymap.laid_macro.set(is_macro(e));
 
-    // A text and a program; a page's target and a pie's set.
+    // A text and a program; a page's target and パイにする.
     at(TITLE_CONTENT, rx, y1, s(120), h);
     at(CONTENT, rx + s(124), y1, rw - s(124), h);
     at(TITLE_RUN, rx, y1 + pitch, s(120), h);
     at(RUN_CONTENT, rx + s(124), y1 + pitch, rw - s(124), h);
     at(TITLE_TARGET, rx, y1, s(96), h);
     at(TARGET, rx + s(100), y1, s(200), s(LIST_H));
-    at(TITLE_PIE, rx, y1 + pitch, s(96), h);
-    at(PIE, rx + s(100), y1 + pitch, s(200), s(LIST_H));
-    at(PIE_FIGURE, rx, y1 + 2 * pitch, s(120), s(100));
-    at(PIE_NOTE, rx + s(128), y1 + 2 * pitch, rw - s(128), s(100));
+    at(PIE, rx + s(100), y1 + pitch, s(200), h);
     at(TITLE_LAYER, rx, y1, s(96), h);
     at(LAYER_SET, rx + s(100), y1, s(200), s(LIST_H));
     at(LAYER_HOLD, rx, y1 + pitch, s(120), h);
@@ -1412,10 +1515,26 @@ fn is_macro(e: &Editor) -> bool {
 /// and when Windows's colours change too: the sample follows the
 /// panels' look, set on the other pages or by Windows.
 pub(super) unsafe fn refresh(e: &mut Editor) {
-    let sets = set_names(&e.doc);
+    let all = set_names(&e.doc);
+    // The fan, while its key is still a pie of the items shown, on
+    // キーマッピング; else that key again.
+    if let Some((panel, key)) = e.keymap.pie.clone() {
+        let line = e.doc.keys(&format!("set.{panel}")).get(key).map(|raw| Line::of(raw));
+        let items = line.filter(|l| l.kind() == Some(PIE_KIND)).map(|l| l.content.to_ascii_lowercase());
+        let open = e.page == MAP_PAGE && items.is_some() && items == e.keymap.set && all.contains(items.as_ref().unwrap());
+        if !open {
+            e.keymap.pie = None;
+            if all.contains(&panel) {
+                (e.keymap.set, e.keymap.key, e.keymap.step) = (Some(panel), key, 0);
+                follow_group(e);
+            }
+        }
+    }
+    let sets = listed_sets(&e.doc);
     let k = &mut e.keymap;
-    if !k.set.as_ref().is_some_and(|s| sets.contains(s)) {
-        k.set = sets.first().cloned();
+    let known = k.set.as_ref().is_some_and(|s| if k.pie.is_some() { all.contains(s) } else { sets.contains(s) });
+    if !known {
+        k.set = sets.first().or(all.first()).cloned();
         (k.key, k.step) = (0, 0);
         follow_group(e);
     }
@@ -1423,27 +1542,28 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
     let k = &mut e.keymap;
     k.key = k.key.min(count.saturating_sub(1));
     let set = k.set.clone().unwrap_or_default();
+    // The set of the panel: the fan's key's, while it shows.
+    let panel = k.pie.as_ref().map_or(set.clone(), |(p, _)| p.clone());
     // The tabs are the root's layers, the set shown among them.
-    let root = k.root.clone().filter(|r| sets.contains(r) && layers(&e.doc, r).contains(&set)).unwrap_or_else(|| set.clone());
+    let root = k.root.clone().filter(|r| all.contains(r) && layers(&e.doc, r).contains(&panel)).unwrap_or_else(|| panel.clone());
     e.keymap.root = Some(root.clone());
     let tabs = layers(&e.doc, &root);
     unsafe {
         let combo = part_of(e, SET);
         fill(combo, &sets, false);
-        let listed = if e.page == MAP_PAGE { &root } else { &set };
+        let listed = if e.page == MAP_PAGE { &root } else { &panel };
         choose_item(combo, sets.iter().position(|s| s == listed), false);
         for i in 0..TAB_COUNT {
             let tab = part_of(e, LAYER_TABS + i);
             set_text(tab, tabs.get(i).map_or("", String::as_str));
-            SendMessageW(tab, BM_SETCHECK, (tabs.get(i) == Some(&set)) as WPARAM, 0);
+            SendMessageW(tab, BM_SETCHECK, (tabs.get(i) == Some(&panel)) as WPARAM, 0);
         }
         let used = used_by(&e.doc, &set);
         let used = if used.is_empty() { "どこでも使っていません".into() } else { used.join("、") };
         set_text(part_of(e, USED), &format!("使っている場所: {used}"));
         let targets: Vec<String> = PAGE_TURNS.iter().map(|(_, n)| n.to_string()).chain(sets.iter().cloned()).collect();
         fill(part_of(e, TARGET), &targets, false);
-        fill(part_of(e, PIE), &sets, false);
-        let others: Vec<String> = sets.iter().filter(|s| **s != set).cloned().collect();
+        let others: Vec<String> = sets.iter().filter(|s| **s != panel).cloned().collect();
         fill(part_of(e, LAYER_SET), &others, false);
         let way = arrangement(&e.doc, &format!("set.{set}"));
         let mut ways: Vec<String> = ARRANGEMENTS.iter().map(|w| w.to_string()).collect();
@@ -1561,36 +1681,16 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
         let set_named = |of: usize| sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(of));
         let turn = PAGE_TURNS.iter().position(|(t, _)| t.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(PAGE_KIND));
         choose_item(part_of(e, TARGET), turn.or_else(|| set_named(PAGE_KIND).map(|i| i + PAGE_TURNS.len())), false);
-        choose_item(part_of(e, PIE), set_named(PIE_KIND), false);
-        let others: Vec<&String> = sets.iter().filter(|s| Some(s.as_str()) != k.set.as_deref()).collect();
+        set_text(part_of(e, PIE), if kind == Some(PIE_KIND) { "項目を編集" } else { "パイにする" });
+        let own = k.pie.as_ref().map_or(k.set.as_deref(), |(p, _)| Some(p.as_str()));
+        let others: Vec<&String> = sets.iter().filter(|s| Some(s.as_str()) != own).collect();
         let layer_at = others.iter().position(|s| s.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(LAYER_KIND));
         choose_item(part_of(e, LAYER_SET), layer_at, false);
         let layer = kind == Some(LAYER_KIND);
         let toggle = line.option("mode").is_some_and(|m| m.eq_ignore_ascii_case("toggle"));
         SendMessageW(part_of(e, LAYER_HOLD), BM_SETCHECK, (layer && !toggle) as WPARAM, 0);
         SendMessageW(part_of(e, LAYER_TOGGLE), BM_SETCHECK, (layer && toggle) as WPARAM, 0);
-        let (items, note) = pie_note(&e.doc, &line.content);
-        set_text(part_of(e, PIE_NOTE), &note);
-        PIE_ITEMS.set(items);
-        InvalidateRect(part_of(e, PIE_FIGURE), null(), 0);
     }
-}
-
-/// How many items a pie menu of key set `set` has, and what its note says
-/// of them: how many, and why they cannot be, if they cannot.
-fn pie_note(doc: &Document, set: &str) -> (usize, String) {
-    let section = format!("set.{set}");
-    if !doc.sections().contains(&section.to_ascii_lowercase()) {
-        return (0, format!("キーセット「{set}」がありません"));
-    }
-    let raw = doc.keys(&section);
-    let keys = raw.iter().filter_map(|k| config::key_def(k).ok()).collect();
-    let problems = config::pie_problems(&KeySet { name: set.to_ascii_lowercase(), keys });
-    let mut note = format!("項目 {} 個", raw.len());
-    for p in problems {
-        note += &format!("\n{p}");
-    }
-    (raw.len(), note)
 }
 
 /// Tell the sample what to draw, and draw it.
@@ -1598,6 +1698,8 @@ fn update_sample(e: &Editor) {
     let lines: Vec<Line> = keys_of(e).iter().map(|k| Line::of(k)).collect();
     let set = e.keymap.set.clone().unwrap_or_default();
     let (edge, rows) = first_edge(&e.doc, &set).map_or((None, 1), |(edge, n)| (Some(edge), n));
+    // A fan opens as the pie menu does, from the panel's edge.
+    let fan = e.keymap.pie.as_ref().filter(|_| e.page == MAP_PAGE).map(|(panel, _)| first_edge(&e.doc, panel).map_or(Edge::Left, |(edge, _)| edge));
     let mut labels: Vec<String> = lines.iter().map(|l| l.label.clone()).collect();
     let way = arrangement(&e.doc, &format!("set.{set}"));
     let places = match &way {
@@ -1620,6 +1722,10 @@ fn update_sample(e: &Editor) {
         v.palette = Some(panel_palette(&e.doc));
         v.chosen = e.keymap.key;
         v.movable = way == Arrangement::Free && e.page == PAGE;
+        v.fan = fan;
+        if fan.is_some() {
+            v.places = None;
+        }
     });
     unsafe { InvalidateRect(part_of(e, SAMPLE), null(), 0) };
 }
@@ -1629,6 +1735,8 @@ fn update_sample(e: &Editor) {
 unsafe fn change(e: &mut Editor, field: usize, edit: impl FnOnce(&mut Line) -> Result<(), String>) -> bool {
     let Some((raw, mut line)) = chosen_line(e) else { return false };
     let set = format!("set.{}", e.keymap.set.clone().unwrap_or_default());
+    let items = line.content.clone().to_ascii_lowercase();
+    let was_pie = line.kind() == Some(PIE_KIND) && is_items(&e.doc, &items);
     let changed = edit(&mut line).and_then(|()| {
         if [&line.label, &line.content].iter().any(|f| f.contains('|')) {
             return Err("「|」は欄の区切りなので書けない".into());
@@ -1637,6 +1745,10 @@ unsafe fn change(e: &mut Editor, field: usize, edit: impl FnOnce(&mut Line) -> R
         config::key_def(&text)?;
         if text == raw || e.doc.set_key(&set, e.keymap.key, &text) { Ok(()) } else { Err("この値はファイルに書けない".into()) }
     });
+    // A pie of another kind now: its items go, unless named elsewhere.
+    if changed.is_ok() && was_pie {
+        drop_items(e, &items);
+    }
     unsafe { taken(e, field, changed) }
 }
 
@@ -1851,9 +1963,10 @@ pub(super) unsafe fn command(id: usize, code: u32) {
         match id {
             SET if code == CBN_SELCHANGE => {
                 let at = SendMessageW(part_of(e, SET), CB_GETCURSEL, 0, 0);
-                if let Some(name) = usize::try_from(at).ok().and_then(|i| set_names(&e.doc).get(i).cloned()) {
+                if let Some(name) = usize::try_from(at).ok().and_then(|i| listed_sets(&e.doc).get(i).cloned()) {
                     // The layers' tabs start from the set chosen here.
                     e.keymap.root = Some(name.clone());
+                    e.keymap.pie = None;
                     choose(e, Some(name), 0);
                 }
                 None
@@ -1898,9 +2011,13 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 None
             }
             REMOVE_KEY if clicked => {
+                let pie = chosen_line(e).filter(|(_, l)| l.kind() == Some(PIE_KIND)).map(|(_, l)| l.content);
                 if count <= 1 {
                     tell(e, "キーセットにはキーが 1 つ以上要ります（キーセットごと消すには上の「削除」）");
                 } else if e.doc.remove_key(&section, k) {
+                    if let Some(items) = pie.filter(|p| is_items(&e.doc, p) || !used_by(&e.doc, p).is_empty()) {
+                        drop_items(e, &items);
+                    }
                     choose(e, Some(set), k.min(count - 2));
                     mark_unsaved(e);
                 }
@@ -1980,6 +2097,7 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             _ if clicked && (LAYER_TABS..LAYER_TABS + TAB_COUNT).contains(&id) => {
                 let root = e.keymap.root.clone().unwrap_or(set.clone());
                 if let Some(to) = layers(&e.doc, &root).get(id - LAYER_TABS).cloned() {
+                    e.keymap.pie = None;
                     let count = e.doc.keys(&format!("set.{to}")).len();
                     let key = if k < count { k } else { 0 };
                     choose(e, Some(to), key);
@@ -2045,7 +2163,7 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             TARGET if code == CBN_SELCHANGE => {
                 let at = SendMessageW(part_of(e, TARGET), CB_GETCURSEL, 0, 0);
-                let sets = set_names(&e.doc);
+                let sets = listed_sets(&e.doc);
                 let Ok(at) = usize::try_from(at) else { return None };
                 let target = PAGE_TURNS.get(at).map(|(t, _)| t.to_string()).or_else(|| sets.get(at - PAGE_TURNS.len()).cloned());
                 if let Some(target) = target {
@@ -2059,7 +2177,7 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             LAYER_SET if code == CBN_SELCHANGE => {
                 let at = SendMessageW(part_of(e, LAYER_SET), CB_GETCURSEL, 0, 0);
-                let others: Vec<String> = set_names(&e.doc).into_iter().filter(|s| *s != set).collect();
+                let others: Vec<String> = listed_sets(&e.doc).into_iter().filter(|s| *s != set).collect();
                 if let Some(target) = usize::try_from(at).ok().and_then(|i| others.get(i).cloned()) {
                     change(e, LAYER_SET, |line| {
                         set_kind(line, LAYER_KIND);
@@ -2081,14 +2199,29 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 });
                 None
             }
-            PIE if code == CBN_SELCHANGE => {
-                let at = SendMessageW(part_of(e, PIE), CB_GETCURSEL, 0, 0);
-                if let Some(target) = usize::try_from(at).ok().and_then(|i| set_names(&e.doc).get(i).cloned()) {
-                    change(e, PIE, |line| {
-                        set_kind(line, PIE_KIND);
-                        line.content = target;
-                        Ok(())
-                    });
+            PIE if clicked => {
+                make_pie(e);
+                None
+            }
+            PIE_BACK if clicked => {
+                if let Some((panel, key)) = e.keymap.pie.take() {
+                    choose(e, Some(panel), key);
+                }
+                None
+            }
+            // An item that sends nothing after the chosen one, or the
+            // chosen one gone: from two items to eight.
+            PIE_ADD if clicked && e.keymap.pie.is_some() => {
+                if count < *PIE_ITEMS.end() && e.doc.insert_key(&section, k + 1, NEW_ITEM) {
+                    choose(e, Some(set), k + 1);
+                    mark_unsaved(e);
+                }
+                None
+            }
+            PIE_REMOVE if clicked && e.keymap.pie.is_some() => {
+                if count > *PIE_ITEMS.start() && e.doc.remove_key(&section, k) {
+                    choose(e, Some(set), k.min(count - 2));
+                    mark_unsaved(e);
                 }
                 None
             }
@@ -2167,22 +2300,76 @@ unsafe fn press_button(e: &mut Editor, id: usize, key: Key) {
     }
 }
 
-/// Choose key `key` of the set shown: from the sample.
+/// Choose key `key` of the set shown: from the sample. A pie key on
+/// キーマッピング opens its fan; on the fan, an item is chosen.
 pub(super) unsafe fn choose_key(key: usize) {
     with_editor(|e| unsafe {
-        if key < keys_of(e).len() {
-            let set = e.keymap.set.clone();
+        let Some(line) = keys_of(e).get(key).map(|raw| Line::of(raw)) else { return };
+        let set = e.keymap.set.clone();
+        let items = line.content.to_ascii_lowercase();
+        if e.page == MAP_PAGE && e.keymap.pie.is_none() && line.kind() == Some(PIE_KIND) && set_names(&e.doc).contains(&items) {
+            e.keymap.pie = set.map(|s| (s, key));
+            choose(e, Some(items), 0);
+        } else {
             choose(e, set, key);
         }
     });
 }
 
-/// Choose key set `name` and its key `key`: the ones a save failed in.
+/// パイにする: make the chosen key a pie, its items a set of their own,
+/// two that send nothing, named for the key (Issue #113); and open its fan.
+/// A pie already, its fan opens.
+unsafe fn make_pie(e: &mut Editor) {
+    let Some((_, line)) = chosen_line(e) else { return };
+    let all = set_names(&e.doc);
+    let key = e.keymap.key;
+    if line.kind() != Some(PIE_KIND) || !all.contains(&line.content.to_ascii_lowercase()) {
+        let ascii: String = line.label.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let base = if ascii.is_empty() { "pie".to_string() } else { format!("pie-{ascii}") };
+        let Some(name) = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(|n| !all.contains(n)) else { return };
+        let section = format!("set.{name}");
+        if !(e.doc.add_section(&section) && e.doc.insert_key(&section, 0, NEW_ITEM) && e.doc.insert_key(&section, 1, NEW_ITEM)) {
+            e.doc.remove_section(&section);
+            return tell(e, "パイの項目を作れません");
+        }
+        let made = unsafe {
+            change(e, PIE, |l| {
+                set_kind(l, PIE_KIND);
+                l.content = name.clone();
+                Ok(())
+            })
+        };
+        if !made {
+            e.doc.remove_section(&section);
+            return;
+        }
+    }
+    let set = e.keymap.set.clone();
+    let items = chosen_line(e).map(|(_, l)| l.content.to_ascii_lowercase());
+    e.keymap.pie = set.map(|s| (s, key));
+    unsafe { choose(e, items, 0) };
+}
+
+/// Choose key set `name` and its key `key`: the ones a save failed in. A
+/// pie's items, on the fan of the first pie key that names them.
 pub(super) unsafe fn choose_set(name: &str, key: usize) {
     with_editor(|e| unsafe {
-        if set_names(&e.doc).iter().any(|s| s == name) {
-            choose(e, Some(name.into()), key);
+        if !set_names(&e.doc).iter().any(|s| s == name) {
+            return;
         }
+        if is_items(&e.doc, name) {
+            let pie = set_names(&e.doc).into_iter().find_map(|s| {
+                let at = e.doc.keys(&format!("set.{s}")).iter().position(|raw| {
+                    let l = Line::of(raw);
+                    l.kind() == Some(PIE_KIND) && l.content.eq_ignore_ascii_case(name)
+                })?;
+                Some((s, at))
+            });
+            e.keymap.pie = pie;
+        } else {
+            e.keymap.pie = None;
+        }
+        choose(e, Some(name.into()), key);
     });
 }
 
@@ -2794,6 +2981,9 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
         fill(&client, look.sidebar);
         SAMPLE_VIEW.with_borrow(|v| {
             let Some(palette) = v.palette.filter(|_| !v.labels.is_empty()) else { return };
+            if let Some(f) = v.fan(client, dpi) {
+                return draw_fan(dc, look, palette, v, &f, client);
+            }
             let (key, back, cells) = v.lay_out(client, dpi);
             fill(&back, palette.background);
 
@@ -2831,61 +3021,58 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
     }
 }
 
-/// The pie's figure: a half ring opening to the right, as from a left
-/// edge, split among its items.
-pub(super) unsafe extern "system" fn pie_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+/// A pie's fan, its items in the panel's colours, the chosen one as held:
+/// drawn as the pie menu is (`pie_menu::draw`), over the sample's ground.
+unsafe fn draw_fan(dc: HDC, look: super::Look, palette: Palette, v: &Sample, f: &Fan, client: RECT) {
+    let (w, h) = (client.right.max(1), client.bottom.max(1));
+    let gap = f64::from(panel::key_gap(f.key));
     unsafe {
-        match msg {
-            WM_ERASEBKGND => 1,
-            WM_PAINT => {
-                let mut ps: PAINTSTRUCT = zeroed();
-                let dc = BeginPaint(hwnd, &mut ps);
-                if let Some(paint) = PAINT.get() {
-                    draw_pie(hwnd, dc, paint.look);
-                }
-                EndPaint(hwnd, &ps);
-                0
-            }
-            _ => DefWindowProcW(hwnd, msg, wp, lp),
-        }
-    }
-}
-
-unsafe fn draw_pie(hwnd: HWND, dc: HDC, look: super::Look) {
-    unsafe {
-        let s = |v| scale(v, window_dpi(hwnd));
-        let mut r: RECT = zeroed();
-        GetClientRect(hwnd, &mut r);
-        let back = CreateSolidBrush(colorref(look.background));
-        FillRect(dc, &r, back);
-        let items = PIE_ITEMS.get().min(8);
-        let Some(palette) = SAMPLE_VIEW.with_borrow(|v| v.palette).filter(|_| items > 0) else {
-            DeleteObject(back);
+        let mem = CreateCompatibleDC(dc);
+        let mut bmi: BITMAPINFO = zeroed();
+        bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = w;
+        bmi.bmiHeader.biHeight = -h;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        let mut bits = null_mut();
+        let dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if dib.is_null() || bits.is_null() {
+            DeleteDC(mem);
             return;
-        };
-        let radius = ((r.bottom - r.top) / 2 - s(4)).min(r.right - r.left - s(8)).max(1);
-        let (cx, cy) = (r.left + s(4), (r.top + r.bottom) / 2);
-        let face = CreateSolidBrush(colorref(palette.face));
-        let pen = CreatePen(PS_SOLID, s(2).max(1), colorref(look.background));
-        let old_brush = SelectObject(dc, face);
-        let old_pen = SelectObject(dc, pen);
-        let point = |a: f64| (cx + (radius as f64 * a.cos()).round() as i32, cy + (radius as f64 * a.sin()).round() as i32);
-        let share = std::f64::consts::PI / items as f64;
-        for i in 0..items {
-            // From the top, down: counterclockwise as GDI goes, from the
-            // sector's lower radius to its upper.
-            let from = -std::f64::consts::FRAC_PI_2 + share * i as f64;
-            let (start, end) = (point(from + share), point(from));
-            Pie(dc, cx - radius, cy - radius, cx + radius, cy + radius, start.0, start.1, end.0, end.1);
         }
-        let hole = radius / 4;
-        SelectObject(dc, back);
-        SelectObject(dc, GetStockObject(NULL_PEN));
-        Ellipse(dc, cx - hole, cy - hole, cx + hole + 1, cy + hole + 1);
-        SelectObject(dc, old_pen);
-        SelectObject(dc, old_brush);
-        DeleteObject(pen);
-        DeleteObject(face);
-        DeleteObject(back);
+        let old_bitmap = SelectObject(mem, dib);
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
+        // Each pixel the ring covers mixed with the ground by how much.
+        let mix = |a: [u8; 3], b: [u8; 3], t: f64| {
+            let c = |i: usize| (f64::from(a[i]) * (1.0 - t) + f64::from(b[i]) * t).round() as u32;
+            c(0) << 16 | c(1) << 8 | c(2)
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let (dx, dy) = (f64::from(x - f.middle.0) + 0.5, f64::from(y - f.middle.1) + 0.5);
+                let (cover, sector) = f.ring.cover(f.edge, f.items, gap, dx, dy);
+                let colour = if sector == v.chosen { palette.held } else { palette.face };
+                pixels[(y * w + x) as usize] = mix(look.sidebar, colour, cover);
+            }
+        }
+        let font = panel::key_font(f.key);
+        let old_font = SelectObject(mem, font);
+        SetBkMode(mem, TRANSPARENT as i32);
+        let half_width = ((f.ring.label_width(f.items) - 2.0 * gap) / 2.0).max(f64::from(f.key) / 2.0) as i32;
+        let half_height = f.key / 2;
+        for (i, (&(lx, ly), label)) in f.ring.labels(f.edge, f.items).iter().zip(&v.labels).enumerate() {
+            let (x, y) = (f.middle.0 + lx, f.middle.1 + ly);
+            let mut cell = RECT { left: x - half_width, top: y - half_height, right: x + half_width, bottom: y + half_height };
+            SetTextColor(mem, colorref(if i == v.chosen { palette.held_text } else { palette.text }));
+            DrawTextW(mem, label.as_ptr(), label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        SelectObject(mem, old_font);
+        DeleteObject(font);
+        GdiFlush();
+        BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old_bitmap);
+        DeleteObject(dib);
+        DeleteDC(mem);
     }
 }

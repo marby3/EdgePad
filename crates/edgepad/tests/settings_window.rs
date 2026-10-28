@@ -171,7 +171,7 @@ fn its_parts_are_windows_own_controls_of_comctl32_v6_asking_as_before() {
         // sample of the panel and the pie's figure; since #88 the screen of
         // アプリ別.
         let own = ["Button", "ListBox", "Static", "SysLink", "Edit", "ComboBox"].contains(&class.as_str());
-        let drawn = ["EdgePadSettingsEdges", "EdgePadSettingsSample", "EdgePadSettingsPie", "EdgePadSettingsApps"].contains(&class.as_str());
+        let drawn = ["EdgePadSettingsEdges", "EdgePadSettingsSample", "EdgePadSettingsApps"].contains(&class.as_str());
         assert!(own || drawn, "a part of Windows's own, not {class:?}");
     }
 

@@ -270,11 +270,12 @@ impl Action {
 
     /// Whether it can be an item of a pie menu: items run once, when the
     /// finger lifts. Held keys cannot, and a pie inside a pie would need a
-    /// menu opened from a menu.
+    /// menu opened from a menu. One that sends nothing closes the menu, as
+    /// an item the settings window has just added is (Issue #113).
     pub fn is_pie_item(&self) -> bool {
         match self {
-            Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Run(_) | Action::Page(_) => true,
-            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) | Action::Layer { .. } | Action::None => false,
+            Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Run(_) | Action::Page(_) | Action::None => true,
+            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) | Action::Layer { .. } => false,
         }
     }
 }

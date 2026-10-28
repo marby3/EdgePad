@@ -1716,7 +1716,7 @@ fn a_key_made_a_pie_gets_its_own_items_and_loses_them_as_another_kind() {
     click_id(editor, GROUP_TABS + 4);
     assert!(within_3s(|| shown(editor, PIE_MAKE)), "パイにする");
     assert_eq!(text(editor, PIE_MAKE), "パイにする");
-    assert!(!shown(editor, 1064), "no figure on the tab");
+    assert!(unsafe { GetDlgItem(editor, 1064) }.is_null(), "no figure on the tab");
     click_id(editor, PIE_MAKE);
     assert!(within_3s(|| shown(editor, PIE_BACK)), "the fan opened");
     let saved = save_until(&app, editor, "[set.pie-esc-2]");
