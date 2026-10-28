@@ -100,10 +100,24 @@ pub struct Place {
 /// screen edge, as on the bottom. Labels are never turned, so neither is
 /// anything here.
 pub fn free_panel(monitor: Rect, edge: Edge, key: i32, places: &[Place]) -> (Rect, Vec<Rect>) {
+    free_panel_in(monitor, edge, key, places, frame(places))
+}
+
+/// The left, top, width and height of the layout `places` spans, in
+/// quarters.
+pub fn frame(places: &[Place]) -> Place {
     let left = places.iter().map(|p| p.x).min().unwrap_or(0);
     let top = places.iter().map(|p| p.y).min().unwrap_or(0);
     let wide = places.iter().map(|p| p.x + p.w).max().unwrap_or(0) - left;
     let tall = places.iter().map(|p| p.y + p.h).max().unwrap_or(0) - top;
+    Place { x: left, y: top, w: wide, h: tall }
+}
+
+/// `free_panel`, the layout taken to span `frame`: the settings window's
+/// sample keeps the frame a drag started in, so the keys not dragged stay
+/// where they are.
+pub fn free_panel_in(monitor: Rect, edge: Edge, key: i32, places: &[Place], frame: Place) -> (Rect, Vec<Rect>) {
+    let Place { x: left, y: top, w: wide, h: tall } = frame;
     // Quarters to pixels, each edge on its own: keys that touch still do.
     let px = |q: i32| (q * key + 2) / 4;
     let span = |from: i32, len: i32| (px(from), px(from + len) - px(from));

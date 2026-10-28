@@ -154,6 +154,8 @@ const RUN: usize = 6;
 const PAGE_KIND: usize = 7;
 const PIE_KIND: usize = 8;
 const LAYER_KIND: usize = 9;
+/// A key that sends nothing, `none`: of no kind of the ten.
+const NO_KIND: usize = usize::MAX;
 
 const MOD_KEYS: [(Key, &str); 4] = [(Key::Ctrl, "Ctrl"), (Key::Shift, "Shift"), (Key::Alt, "Alt"), (Key::Win, "Win")];
 const GROUP_NAMES: [&str; 5] = ["英数字", "F1〜F24", "移動・編集", "記号", "テンキー"];
@@ -378,6 +380,16 @@ impl Sample {
         let edge = self.edge.unwrap_or(Edge::Left);
         let screen = layout::Rect { x: 0, y: 0, w: UNIT * 4096, h: UNIT * 4096 };
         let (panel, keys) = match &self.places {
+            // Mid-drag, in the frame the drag started in, as large as
+            // takes the key dragged: the other keys stay where they are.
+            Some(places) if self.drag.is_some() => {
+                let (left, top, wide, tall) = self.drag.map_or((0, 0, 0, 0), |d| d.frame);
+                let now = layout::frame(places);
+                let (x, y) = (left.min(now.x), top.min(now.y));
+                let w = (left + wide).max(now.x + now.w) - x;
+                let h = (top + tall).max(now.y + now.h) - y;
+                layout::free_panel_in(screen, edge, UNIT, places, Place { x, y, w, h })
+            }
             Some(places) => layout::free_panel(screen, edge, UNIT, places),
             None => layout::edge_panel(screen, edge, UNIT, self.lines.max(1), &self.widths),
         };
@@ -429,11 +441,8 @@ impl Sample {
 
 /// The layout `places` spans: its left, top, width and height, in quarters.
 fn frame(places: &[Place]) -> (i32, i32, i32, i32) {
-    let left = places.iter().map(|p| p.x).min().unwrap_or(0);
-    let top = places.iter().map(|p| p.y).min().unwrap_or(0);
-    let right = places.iter().map(|p| p.x + p.w).max().unwrap_or(0);
-    let bottom = places.iter().map(|p| p.y + p.h).max().unwrap_or(0);
-    (left, top, right - left, bottom - top)
+    let f = layout::frame(places);
+    (f.x, f.y, f.w, f.h)
 }
 
 /// How a key set is laid out: along its edge, free, or by a KLE file.
@@ -759,7 +768,7 @@ fn used_by(doc: &Document, set: &str) -> Vec<String> {
     places
 }
 
-/// The first edge that shows key set `set`, of the first profile, as
+/// The first edge that shows key set `set`, of the profiles in the order
 /// written, and how many lines of keys it has; none if no edge does.
 fn first_edge(doc: &Document, set: &str) -> Option<(Edge, usize)> {
     let edge = doc
@@ -952,7 +961,8 @@ fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool) -> bool {
 /// shown; else hide them all.
 pub(super) unsafe fn show(e: &Editor) {
     let line = chosen_line(e).map(|(_, l)| l);
-    let kind = line.as_ref().map(|l| l.kind().unwrap_or(SHORTCUT));
+    // A key sending nothing has none of the kinds' fields.
+    let kind = line.as_ref().map(|l| l.kind().unwrap_or(if l.kind.eq_ignore_ascii_case("none") { NO_KIND } else { SHORTCUT }));
     let wait = line.as_ref().is_some_and(|l| l.kind() == Some(MACRO) && l.steps().get(e.keymap.step).is_some_and(|s| is_wait(s)));
     let cut = line.as_ref().is_some_and(|l| {
         let width = l.option("width").and_then(|w| w.parse().ok()).unwrap_or(1);
@@ -1466,6 +1476,16 @@ unsafe fn import_kle() {
     }
     with_editor(|e| unsafe {
         let section = format!("set.{set}");
+        // The file has the places now: the key lines' go (Issue #109).
+        for (i, raw) in e.doc.keys(&section).iter().enumerate() {
+            let mut line = Line::of(raw);
+            if config::key_place(raw).is_some() {
+                for name in PLACE_NAMES {
+                    line.set_option(name, None);
+                }
+                e.doc.set_key(&section, i, &rewrite(raw, &line));
+            }
+        }
         if e.doc.set_first(&section, "layout", &format!("kle:{name}")) {
             let key = e.keymap.key;
             choose(e, Some(set), key);
@@ -1593,7 +1613,9 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 move_by(e, if id == KEY_UP { -1 } else { 1 });
                 None
             }
-            ARRANGE if code == CBN_SELCHANGE => {
+            // With the list open, once one is chosen: going over the items
+            // changes no layout on the way.
+            ARRANGE if code == CBN_SELENDOK || (code == CBN_SELCHANGE && SendMessageW(part_of(e, ARRANGE), CB_GETDROPPEDSTATE, 0, 0) == 0) => {
                 match SendMessageW(part_of(e, ARRANGE), CB_GETCURSEL, 0, 0) {
                     0 => arrange(e, false),
                     1 => arrange(e, true),
@@ -1769,6 +1791,12 @@ pub(super) fn fault(doc: &Document, line: usize) -> Option<(usize, usize)> {
     Some((if shape { PAGE } else { MAP_PAGE }, key))
 }
 
+/// The chosen key's shape field shown, the width or x: where a fault in
+/// its shape leads.
+pub(super) fn shape_field(e: &Editor) -> Option<HWND> {
+    [WIDTH, PLACE].into_iter().map(|id| part_of(e, id)).find(|&f| unsafe { IsWindowVisible(f) } != 0)
+}
+
 /// Lay the chosen set out along its edge, or free: 並べ方 (Issue #109).
 /// Free, each key goes where the sample draws it, a KLE file's places
 /// written into the key lines, and its keys past them written as keys
@@ -1779,7 +1807,12 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
     let Some(set) = e.keymap.set.clone() else { return };
     let section = format!("set.{set}");
     let way = arrangement(&e.doc, &section);
-    if free == (way == Arrangement::Free) {
+    let already = match way {
+        Arrangement::Edge => !free,
+        Arrangement::Free => free,
+        Arrangement::Kle(_) => false,
+    };
+    if already {
         return;
     }
     let raws = e.doc.keys(&section);
@@ -1787,7 +1820,10 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
     let kle = match &way {
         Arrangement::Kle(name) => match kle_places(e, name) {
             Some(keys) => keys,
-            None => return tell(e, &format!("KLE のファイル「{name}」を読めません")),
+            None => {
+                tell(e, &format!("KLE のファイル「{name}」を読めません"));
+                return unsafe { refresh(e) };
+            }
         },
         _ => Vec::new(),
     };
@@ -1812,14 +1848,28 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
             line.set_option("width", Some(((place.w + 2) / 4).clamp(1, 3).to_string()).filter(|w| w != "1"));
         }
     }
+    // A KLE file's keys past the key lines: labels the file can hold.
+    let extras: Vec<String> = kle
+        .iter()
+        .skip(lines.len())
+        .filter(|_| free)
+        .map(|(place, label)| {
+            let label: String = label.chars().map(|c| if matches!(c, '|' | ';' | '#') || c.is_control() { '/' } else { c }).collect();
+            let label = if label.trim().is_empty() { "-".to_string() } else { label.trim().to_string() };
+            let mut extra = Line::of(&format!("{label} | none | -"));
+            set_place(&mut extra, *place);
+            format!("{label} | none | - | {}", extra.options_text())
+        })
+        .collect();
+    if let Some(why) = extras.iter().find_map(|k| config::key_def(k).err()) {
+        tell(e, &format!("並べ方を書き換えられません: {why}"));
+        return unsafe { refresh(e) };
+    }
     let mut written = lines.iter().zip(&raws).enumerate().all(|(i, (line, raw))| e.doc.set_key(&section, i, &rewrite(raw, line)));
     if free {
         written &= e.doc.set_first(&section, "layout", "free");
-        for (i, (place, label)) in kle.iter().enumerate().skip(lines.len()) {
-            let label = if label.trim().is_empty() { "-".into() } else { label.replace('|', "/") };
-            let mut extra = Line::of(&format!("{label} | none | -"));
-            set_place(&mut extra, *place);
-            written &= e.doc.insert_key(&section, i, &format!("{label} | none | - | {}", extra.options_text()));
+        for (i, extra) in extras.iter().enumerate() {
+            written &= e.doc.insert_key(&section, lines.len() + i, extra);
         }
     } else {
         written &= e.doc.set_value(&section, "layout", None);

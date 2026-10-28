@@ -249,12 +249,12 @@ impl Document {
 
     /// Set `name` in `section` to `value`, as `set_value` does, but a new
     /// setting goes first in the section, right after its header: where a
-    /// key set's `layout` is read before its keys.
+    /// key set's `layout` reads best, above its keys.
     pub fn set_first(&mut self, section: &str, name: &str, value: &str) -> bool {
         if self.get(section, name).is_some() {
             return self.set_value(section, name, Some(value));
         }
-        if !writable(value) || !setting_name_ok(name) {
+        if !writable(value) || !setting_name_ok(name) || !section_name_ok(section) {
             return false;
         }
         let Some((start, _)) = self.section(section) else { return false };

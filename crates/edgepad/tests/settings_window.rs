@@ -439,7 +439,7 @@ fn the_keyboard_alone_moves_along_its_parts_and_the_focus_shows() {
     assert!(shows_focus(list), "and shows it");
 
     press(VK_DOWN);
-    assert!(within_3s(|| heading(editor) == "アプリ別"), "down: アプリ別, not {:?}", heading(editor));
+    assert!(within_3s(|| heading(editor) == PAGES[1]), "down: {}, not {:?}", PAGES[1], heading(editor));
     press(VK_DOWN);
     press(VK_DOWN);
     assert!(within_3s(|| heading(editor) == PAGES[3]), "down twice more: {}", PAGES[3]);

@@ -947,6 +947,11 @@ unsafe fn go_to_fault() {
         }
         if let Some(set) = section.as_deref().and_then(|s| s.strip_prefix("set.")) {
             keymap::choose_set(set, key.unwrap_or(0));
+            if page == keymap::PAGE {
+                if let Some(field) = with_editor(|e| keymap::shape_field(e)).flatten() {
+                    SetFocus(field);
+                }
+            }
         }
         if let Some(field) = row.and_then(|i| with_editor(|e| fields::field(e, i))) {
             SetFocus(field);

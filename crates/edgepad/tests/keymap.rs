@@ -1082,6 +1082,26 @@ fn drag(editor: HWND, from: POINT, to: POINT) {
     pump(300);
 }
 
+/// Choose `option` in 並べ方 from its list, opened, and Enter: the items
+/// gone over on the way are not taken.
+fn arrange(editor: HWND, option: &str) {
+    let combo = part(editor, ARRANGE);
+    let at = items(combo).iter().position(|o| o == option).unwrap_or_else(|| panic!("no {option} in {:?}", items(combo)));
+    for _ in 0..3 {
+        click_on(editor, combo);
+        press(VK_HOME);
+        for _ in 0..at {
+            press(VK_DOWN);
+        }
+        press(VK_RETURN);
+        pump(300);
+        if within_3s(|| chosen(combo).as_deref() == Some(option)) {
+            return;
+        }
+    }
+    panic!("{option} chosen in 並べ方");
+}
+
 /// The options of key `label` of set `set` in `saved`, spaces taken out.
 fn options_of(saved: &str, set: &str, label: &str) -> Vec<String> {
     key_of(saved, set, label).get(3).map_or(Vec::new(), |o| o.split(',').map(|o| o.replace(' ', "")).collect())
@@ -1210,7 +1230,7 @@ fn the_arrangement_turns_keys_free_and_back_along_the_edge() {
     assert_eq!(chosen(part(editor, ARRANGE)).as_deref(), Some(ARRANGEMENTS[0]));
 
     // Along the bottom edge to free: each key where the sample has it.
-    choose(editor, ARRANGE, ARRANGEMENTS[1]);
+    arrange(editor, ARRANGEMENTS[1]);
     let saved = save_until(&app, editor, "layout = free\nkey = A");
     assert_eq!(options_of(&saved, "row", "A"), ["x=0", "y=0", "w=1", "h=1"], "{saved}");
     assert_eq!(options_of(&saved, "row", "Wide"), ["x=1", "y=0", "w=2", "h=1"], "{saved}");
@@ -1219,7 +1239,7 @@ fn the_arrangement_turns_keys_free_and_back_along_the_edge() {
 
     // Free to along the edge: in the order of y, then x; w rounded to 1-3.
     choose(editor, SET, "loose");
-    choose(editor, ARRANGE, ARRANGEMENTS[0]);
+    arrange(editor, ARRANGEMENTS[0]);
     save(editor);
     assert!(within_3s(|| !section(&file(&app), "loose").contains("layout")), "{}", file(&app));
     let saved = file(&app);
@@ -1237,12 +1257,24 @@ fn the_arrangement_turns_keys_free_and_back_along_the_edge() {
     assert!(within_3s(|| items(part(editor, ARRANGE)).len() == 3), "{:?}", items(part(editor, ARRANGE)));
     assert_eq!(items(part(editor, ARRANGE))[2], "KLE（from.json）");
     assert_eq!(chosen(part(editor, ARRANGE)).as_deref(), Some("KLE（from.json）"));
-    choose(editor, ARRANGE, ARRANGEMENTS[1]);
+    arrange(editor, ARRANGEMENTS[1]);
     let saved = save_until(&app, editor, "layout = free\nkey = A");
     assert!(!section(&saved, "spare").contains("kle:"), "{saved}");
     assert_eq!(key_of(&saved, "spare", "A"), ["A", "shortcut", "A", "x=0, y=0, w=1, h=1"]);
     assert_eq!(options_of(&saved, "spare", "B"), ["x=1", "y=0", "w=1", "h=1"], "{saved}");
     assert_eq!(options_of(&saved, "spare", "C"), ["x=0", "y=1", "w=1", "h=1"], "{saved}");
+
+    // KLE to along the edge: the layout and the places gone, the keys in
+    // the file's order.
+    choose(editor, SET, "mods");
+    import(editor, &dir.join("from.json"));
+    save_until(&app, editor, "[set.mods]   ; 修飾キー
+layout = kle:from.json");
+    arrange(editor, ARRANGEMENTS[0]);
+    save(editor);
+    assert!(within_3s(|| !section(&file(&app), "mods").contains("layout")), "{}", file(&app));
+    let labels: Vec<String> = keys_of(&file(&app), "mods").into_iter().map(|k| k[0].clone()).collect();
+    assert_eq!(labels, ["Esc", "Ctrl", "Space"], "{}", file(&app));
 }
 
 // Issue #109, AC4
