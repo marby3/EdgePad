@@ -1371,3 +1371,268 @@ fn a_free_key_is_placed_by_its_fields_and_by_dragging() {
     let saved = save_until(&app, editor, "kle:pad.json");
     assert!(!section(&saved, "spare").contains("x="), "not moved: {saved}");
 }
+
+// Issue #111: キーマッピング as Vial has it. Its parts: what the chosen
+// key does, in a sentence 1076 (a Static); the text and the program fields
+// of 文字・起動 1061 and 1077 (Edits); the motions 押した時に送る, 押している間
+// and 連打 1080 to 1082 and the seven groups 1090 to 1096 (buttons, the
+// chosen one checked); the layers' tabs from 1200 (buttons, the set shown
+// checked); the keyboard of 基本 from 1300, the number pad's of テンキー
+// from 1400, and the modifiers of 修飾キー from 1450 (buttons named as the
+// keys are, the key sent checked). The modifiers that go with a key are
+// still 1030 to 1033, 押して取り込む 1051 and the interval 1053.
+const SUMMARY: i32 = 1076;
+const RUN_CONTENT: i32 = 1077;
+const MOTIONS: i32 = 1080;
+const MOTION_NAMES: [&str; 3] = ["押した時に送る", "押している間", "連打"];
+const GROUP_TABS: i32 = 1090;
+const GROUP_TAB_NAMES: [&str; 7] = ["基本", "テンキー", "修飾キー", "レイヤー", "マクロ", "文字・起動", "ページ・パイ"];
+const LAYER_TABS: i32 = 1200;
+const KEYBOARD: i32 = 1300;
+const NUMPAD: i32 = 1400;
+const MOD_KEYS: i32 = 1450;
+
+/// The button of `editor` named `name` among ids `from`..`from + count`.
+fn button_named(editor: HWND, from: i32, count: i32, name: &str) -> i32 {
+    (from..from + count).find(|&id| text(editor, id) == name).unwrap_or_else(|| panic!("no button {name} from {from}"))
+}
+
+/// Press the key `name` of 基本's keyboard.
+fn press_key(editor: HWND, name: &str) {
+    click_id(editor, button_named(editor, KEYBOARD, 100, name));
+}
+
+/// The texts of the layers' tabs shown, in order.
+fn layer_tabs(editor: HWND) -> Vec<String> {
+    (LAYER_TABS..LAYER_TABS + 16).filter(|&id| shown(editor, id)).map(|id| text(editor, id)).collect()
+}
+
+/// The key `label` of `set` in the file, waited for to read `fields`.
+fn saved_as(app: &Running, editor: HWND, set: &str, label: &str, fields: &[&str]) {
+    save(editor);
+    let read = || keys_of(&file(app), set).into_iter().find(|k| k[0] == label);
+    assert!(within_3s(|| read().is_some_and(|k| k == fields)), "{label} as {fields:?}: {:?}, said {:?}", read(), status(editor));
+}
+
+// Issue #111, AC1
+#[test]
+fn the_mapping_page_has_the_layout_above_and_the_keyboard_below() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_map(&app, "mods");
+    let order = [SET, LAYER_TABS, SAMPLE, LABEL, MODS, GROUP_TABS, button_named(editor, KEYBOARD, 100, "Q")];
+    assert!(within_3s(|| order.iter().all(|&id| shown(editor, id))), "{:?}", order.map(|id| shown(editor, id)));
+    let tops: Vec<i32> = order.iter().map(|&id| window_rect(part(editor, id)).top).collect();
+    assert!(tops.windows(2).all(|t| t[0] < t[1]), "top to bottom: {tops:?}");
+    assert!(shown(editor, SUMMARY) && shown(editor, MOTIONS), "the sentence and the motions");
+    let width = |id: i32| window_rect(part(editor, id)).right - window_rect(part(editor, id)).left;
+    assert!(width(SAMPLE) >= width(HEADING) - s(editor, 16), "the layout as wide as the page: {} of {}", width(SAMPLE), width(HEADING));
+    assert!((KINDS..KINDS + 10).all(|id| !shown(editor, id)), "no buttons of the ten kinds");
+
+    // Chosen from the layout, by the mouse or the arrows, and said.
+    assert!(within_3s(|| text(editor, SUMMARY) == "Esc を送る"), "{:?}", text(editor, SUMMARY));
+    choose_key(editor, 2, "Space");
+    assert!(within_3s(|| text(editor, SUMMARY) == "押している間 Space"), "{:?}", text(editor, SUMMARY));
+    focus_sample(editor);
+    arrow(&[], VK_UP);
+    assert!(within_3s(|| text(editor, LABEL) == "Ctrl"), "↑: Ctrl, {:?}", text(editor, LABEL));
+}
+
+// Issue #111, AC2
+#[test]
+fn the_layers_tabs_follow_the_layer_keys_and_keep_the_key_chosen() {
+    let _desktop = desktop();
+    let source = "[set.base]\nkey = A | shortcut | A\nkey = L | layer | num\nkey = T | layer | sym | mode=toggle\n\n\
+        [set.num]\nkey = 1 | shortcut | 1\nkey = M | layer | more\n\n\
+        [set.sym]\nkey = Q | shortcut | Q\nkey = B | layer | base\n\n\
+        [set.more]\nkey = X | shortcut | X\n\n\
+        [set.other]\nkey = O | shortcut | O\n\n\
+        [profile.default]\nleft = base\n";
+    let app = launch_with(Some(source), None);
+    let editor = open_map(&app, "base");
+    assert!(within_3s(|| layer_tabs(editor) == ["base", "num", "sym", "more"]), "{:?}", layer_tabs(editor));
+    assert!(checked(part(editor, LAYER_TABS)), "base shown");
+    assert_eq!(text(editor, SUMMARY), "A を送る");
+    choose_key(editor, 1, "L");
+    assert_eq!(text(editor, SUMMARY), "num に切り替える（押している間）");
+    // The same key of num; more has none such: its first.
+    click_id(editor, LAYER_TABS + 1);
+    assert!(within_3s(|| text(editor, LABEL) == "M"), "num's second key: {:?}", text(editor, LABEL));
+    assert!(checked(part(editor, LAYER_TABS + 1)) && !checked(part(editor, LAYER_TABS)), "num shown");
+    click_id(editor, LAYER_TABS + 3);
+    assert!(within_3s(|| text(editor, LABEL) == "X"), "more's first key: {:?}", text(editor, LABEL));
+    // Changed there, it is more's key.
+    press_key(editor, "Y");
+    saved_as(&app, editor, "more", "X", &["X", "shortcut", "Y"]);
+    // No layer keys: one tab.
+    choose(editor, SET, "other");
+    assert!(within_3s(|| layer_tabs(editor) == ["other"]), "{:?}", layer_tabs(editor));
+}
+
+// Issue #111, AC3
+#[test]
+fn the_modifiers_and_the_motion_go_with_the_key_pressed() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_map(&app, "mods");
+    let names: Vec<String> = (0..3).map(|i| text(editor, MOTIONS + i)).collect();
+    assert_eq!(names, MOTION_NAMES);
+    let row = window_rect(part(editor, MODS)).top;
+    for id in [MOTIONS, MOTIONS + 2, CAPTURE] {
+        assert!(shown(editor, id) && (window_rect(part(editor, id)).top - row).abs() <= s(editor, 4), "{id} in the modifiers' row");
+    }
+    assert!(!shown(editor, INTERVAL), "no interval but for 連打");
+    // Esc: a modifier turned on changes it at once.
+    click_id(editor, MODS + CTRL_ON);
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "shortcut", "Ctrl+Esc"]);
+    click_id(editor, MOTIONS + 1);
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "hold", "Esc"]);
+    click_id(editor, MOTIONS + 2);
+    assert!(within_3s(|| shown(editor, INTERVAL)), "the interval for 連打");
+    press_key(editor, "Z");
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "repeat", "Ctrl+Z"]);
+    click_id(editor, MODS + CTRL_ON);
+    click_id(editor, MOTIONS);
+    assert!(within_3s(|| !shown(editor, INTERVAL)), "no interval now");
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "shortcut", "Z"]);
+    // 押している間 takes a key alone, whatever the modifiers.
+    click_id(editor, MODS + ALT_ON);
+    click_id(editor, MOTIONS + 1);
+    press_key(editor, "X");
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "hold", "X"]);
+    // Captured, as before.
+    click_id(editor, MOTIONS);
+    click_id(editor, CAPTURE);
+    assert!(within_3s(|| text(editor, CAPTURE).contains("取り込み中")), "{:?}", text(editor, CAPTURE));
+    press_with(&[VK_CONTROL, VK_SHIFT], b'K' as u16);
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "shortcut", "Ctrl+Shift+K"]);
+}
+
+// Issue #111, AC4
+#[test]
+fn the_seven_groups_assign_every_kind() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_map(&app, "mods");
+    let names: Vec<String> = (0..7).map(|i| text(editor, GROUP_TABS + i)).collect();
+    assert_eq!(names, GROUP_TAB_NAMES);
+    let rect = |name: &str| window_rect(part(editor, button_named(editor, KEYBOARD, 100, name)));
+    // 基本: as a US keyboard.
+    for name in ["F24", "Esc", "`", "Backspace", "Tab", "\\", "Enter", "/", "Space", "Home", "↑"] {
+        rect(name);
+    }
+    assert!(rect("Q").right <= rect("W").left && rect("Q").bottom <= rect("A").top, "Q left of W, above A");
+    assert!(rect("1").bottom <= rect("Q").top && rect("Space").top >= rect("Z").bottom, "the rows in order");
+
+    // テンキー.
+    click_id(editor, GROUP_TABS + 1);
+    let seven = button_named(editor, NUMPAD, 20, "7");
+    assert!(within_3s(|| shown(editor, seven)), "the number pad");
+    assert!(!shown(editor, button_named(editor, KEYBOARD, 100, "Q")), "not 基本's keys");
+    click_id(editor, seven);
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "shortcut", "Numpad7"]);
+    // 修飾キー: a modifier key.
+    click_id(editor, GROUP_TABS + 2);
+    click_id(editor, button_named(editor, MOD_KEYS, 4, "Shift"));
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "modifier", "Shift"]);
+    // レイヤー: a layer key, toggled.
+    click_id(editor, GROUP_TABS + 3);
+    choose(editor, LAYER_SET, "spare");
+    click_id(editor, LAYER_TOGGLE);
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "layer", "spare", "mode=toggle"]);
+    // マクロ: a step added makes a macro; a key step takes 基本's keys.
+    click_id(editor, GROUP_TABS + 4);
+    click_id(editor, STEP_KEY);
+    assert!(within_3s(|| text(editor, SUMMARY).contains("マクロ")), "{:?}", text(editor, SUMMARY));
+    click_id(editor, GROUP_TABS);
+    press_key(editor, "B");
+    click_id(editor, GROUP_TABS + 4);
+    assert!(within_3s(|| items(part(editor, STEPS)).contains(&"B".to_string())), "{:?}", items(part(editor, STEPS)));
+    // 文字・起動: the field entered.
+    click_id(editor, GROUP_TABS + 5);
+    enter(editor, CONTENT, "こんにちは");
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "text", "こんにちは"]);
+    enter(editor, RUN_CONTENT, "calc.exe");
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "run", "calc.exe"]);
+    // ページ・パイ: a page, then a pie and what it says of its items.
+    click_id(editor, GROUP_TABS + 6);
+    choose(editor, TARGET, "次のページ");
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "page", "next"]);
+    choose(editor, PIE, "transform");
+    saved_as(&app, editor, "mods", "Esc", &["Esc", "pie", "transform"]);
+    assert!(within_3s(|| text(editor, PIE_NOTE).contains("2")), "{:?}", text(editor, PIE_NOTE));
+    assert!(shown(editor, PIE_FIGURE));
+}
+
+// Issue #111, AC5
+#[test]
+fn a_key_chosen_shows_its_assignment_in_the_groups_and_the_keyboard() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_map(&app, "mods");
+    // Ctrl: 修飾キー, its Ctrl on.
+    choose_key(editor, 1, "Ctrl");
+    assert!(within_3s(|| checked(part(editor, GROUP_TABS + 2))), "修飾キー opened");
+    assert!(checked(part(editor, button_named(editor, MOD_KEYS, 4, "Ctrl"))), "Ctrl on");
+    // 元に戻す, Ctrl+Z: 基本, Z and Ctrl on, sent when pressed.
+    choose(editor, SET, "tools");
+    assert!(within_3s(|| text(editor, LABEL) == "元に戻す"), "{:?}", text(editor, LABEL));
+    assert!(within_3s(|| checked(part(editor, GROUP_TABS))), "基本 opened");
+    let z = button_named(editor, KEYBOARD, 100, "Z");
+    assert!(checked(part(editor, z)), "Z on");
+    assert!(!checked(part(editor, button_named(editor, KEYBOARD, 100, "X"))), "X not");
+    assert!(checked(part(editor, MODS + CTRL_ON)) && !checked(part(editor, MODS + ALT_ON)), "Ctrl on, Alt not");
+    assert!(checked(part(editor, MOTIONS)) && !checked(part(editor, MOTIONS + 2)), "押した時に送る");
+    assert_eq!(text(editor, SUMMARY), "Ctrl+Z を送る");
+    // Changed: said at once, the keyboard following.
+    press_key(editor, "X");
+    assert!(within_3s(|| text(editor, SUMMARY) == "Ctrl+X を送る"), "{:?}", text(editor, SUMMARY));
+    assert!(checked(part(editor, button_named(editor, KEYBOARD, 100, "X"))) && !checked(part(editor, z)), "X on now");
+    // A text key: 文字・起動.
+    let text_key = SETTINGS.replace("key = 電卓     | run      | calc.exe", "key = 電卓     | text     | やあ");
+    drop(app);
+    let app = launch_with(Some(&text_key), None);
+    let editor = open_map(&app, "tools");
+    focus_sample(editor);
+    for _ in 0..4 {
+        arrow(&[], VK_DOWN);
+    }
+    assert!(within_3s(|| text(editor, LABEL) == "電卓"), "{:?}", text(editor, LABEL));
+    assert!(within_3s(|| checked(part(editor, GROUP_TABS + 5))), "文字・起動 opened");
+    assert_eq!(text(editor, CONTENT), "やあ");
+}
+
+// Issue #111, AC6
+#[test]
+fn an_assignment_rewrites_its_line_alone_keeping_the_rest() {
+    let _desktop = desktop();
+    let source = SETTINGS.replace("key = A | shortcut | A\n", "key = 戻る | shortcut | Ctrl+Z | width=2   ; 手で書いた\n");
+    let app = launch_with(Some(&source), None);
+    let before = file(&app);
+    let editor = open_map(&app, "spare");
+    assert!(within_3s(|| text(editor, LABEL) == "戻る"), "{:?}", text(editor, LABEL));
+    press_key(editor, "Y");
+    let saved = save_until(&app, editor, "Ctrl+Y");
+    let (old, new): (Vec<&str>, Vec<&str>) = (before.lines().collect(), saved.lines().collect());
+    assert_eq!(old.len(), new.len(), "{saved}");
+    for (a, b) in old.iter().zip(&new) {
+        match a.contains("手で書いた") {
+            true => assert!(b.contains("戻る") && b.contains("Ctrl+Y") && b.contains("width=2") && b.ends_with("; 手で書いた"), "{b}"),
+            false => assert_eq!(a, b, "only the key's line changes"),
+        }
+    }
+    // A value that does not read stops in its field.
+    click_id(editor, MOTIONS + 2);
+    assert!(within_3s(|| shown(editor, INTERVAL)), "the interval");
+    for _ in 0..2 {
+        enter(editor, INTERVAL, "5");
+        if within_3s(|| is_wrong_field(editor, INTERVAL)) {
+            break;
+        }
+    }
+    assert!(is_wrong_field(editor, INTERVAL), "5 ms is stopped in its field: {:?}", status(editor));
+    assert!(status(editor).contains("interval"), "why: {:?}", status(editor));
+    save(editor);
+    assert!(within_3s(|| key_of(&file(&app), "spare", "戻る")[1] == "repeat"), "{}", file(&app));
+    assert!(!options_of(&file(&app), "spare", "戻る").contains(&"interval=5".to_string()), "not written: {}", file(&app));
+}
