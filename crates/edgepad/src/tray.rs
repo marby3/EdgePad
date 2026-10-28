@@ -143,9 +143,18 @@ unsafe fn add_icon(hwnd: HWND) {
         let mut data = icon_data(hwnd);
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = TRAY_CALLBACK;
+        let old = TRAY_ICON.load(Ordering::Relaxed);
         data.hIcon = tray_icon();
         fill(&mut data.szTip, "EdgePad");
         Shell_NotifyIconW(NIM_ADD, &data);
+        drop_old(old, data.hIcon);
+    }
+}
+
+/// Destroy the tray's last icon `old` once `new` is shown in its place.
+unsafe fn drop_old(old: HICON, new: HICON) {
+    if !old.is_null() && old != new {
+        unsafe { DestroyIcon(old) };
     }
 }
 
@@ -186,9 +195,7 @@ unsafe fn refresh_icon(hwnd: HWND) {
         data.hIcon = tray_icon();
         if data.hIcon != old {
             Shell_NotifyIconW(NIM_MODIFY, &data);
-            if !old.is_null() {
-                DestroyIcon(old);
-            }
+            drop_old(old, data.hIcon);
         }
     }
 }
