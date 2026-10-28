@@ -259,5 +259,12 @@ pub fn vk(key: Key) -> u16 {
         Key::Right => VK_RIGHT,
         Key::Up => VK_UP,
         Key::Down => VK_DOWN,
+        // 半角/全角 as the IME takes it from any keyboard (Alt+` makes it
+        // too); カタカナひらがな and ろ as a JIS keyboard sends them.
+        Key::Hankaku => VK_KANJI,
+        Key::Henkan => VK_CONVERT,
+        Key::Muhenkan => VK_NONCONVERT,
+        Key::Kana => VK_OEM_COPY,
+        Key::Ro => VK_OEM_102,
     }
 }

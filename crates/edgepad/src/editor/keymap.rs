@@ -18,9 +18,10 @@
 //! sentence; the modifiers and the motion (押した時に送る, 押している間,
 //! 連打) a key pressed below goes with; and five groups: 基本, the keys laid
 //! out as a US keyboard is, the number pad on its right and the modifier
-//! keys over it; the layers; a macro's steps; a text or a program; and a
-//! page or a pie. 基本 had the number pad and the modifier keys apart at
-//! first, too empty to read.
+//! keys over it; JIS, the same with a JIS keyboard (Issue #115); the
+//! layers; a macro's steps; a text or a program; and a page or a pie. 基本
+//! had the number pad and the modifier keys apart at first, too empty to
+//! read. A symbol's button shows what Shift makes of it above the key.
 //!
 //! The keys a key sends are chosen, not written: modifiers turned on and
 //! off, and a key from the list of a group; or captured, the next keys
@@ -137,6 +138,7 @@ const LAYER_TABS: usize = 1200;
 const KEYBOARD: usize = 1300;
 const NUMPAD: usize = 1400;
 const MOD_BUTTONS: usize = 1450;
+const JIS_KEYBOARD: usize = 1500;
 /// A Static's text cut with "…" at its end.
 const SS_ENDELLIPSIS: u32 = 0x4000;
 /// How many layers' tabs there are at most.
@@ -197,12 +199,13 @@ const PAGE_TURNS: [(&str, &str); 2] = [("next", "次のページ"), ("prev", "�
 const EDGE_NAMES: [(&str, &str); 4] = [("left", "左辺"), ("right", "右辺"), ("top", "上辺"), ("bottom", "下辺")];
 /// The motions a key pressed below goes with, and the groups.
 const MOTION_NAMES: [&str; 3] = ["押した時に送る", "押している間", "連打"];
-const GROUP_TAB_NAMES: [&str; 5] = ["基本", "レイヤー", "マクロ", "文字・起動", "ページ・パイ"];
+const GROUP_TAB_NAMES: [&str; 6] = ["基本", "JIS", "レイヤー", "マクロ", "文字・起動", "ページ・パイ"];
 const BASIC: usize = 0;
-const LAYER_TAB: usize = 1;
-const MACRO_TAB: usize = 2;
-const TEXT_TAB: usize = 3;
-const PAGE_TAB: usize = 4;
+const JIS_TAB: usize = 1;
+const LAYER_TAB: usize = 2;
+const MACRO_TAB: usize = 3;
+const TEXT_TAB: usize = 4;
+const PAGE_TAB: usize = 5;
 /// 基本's height, and its width, in quarters of a key: the keyboard, and
 /// right of it the number pad, the modifier keys over it.
 const KEYBOARD_TALL: i32 = 29;
@@ -247,6 +250,66 @@ fn keyboard() -> Vec<(Key, i32, i32, i32)> {
     keys
 }
 
+/// The keys of JIS: each key, what its button says, and its left, top,
+/// width and height in quarters of a key. The rows above and the keys right
+/// of the main block are 基本's; a JIS key is the key that has its
+/// virtual key, as Windows sends it from a JIS keyboard: its @ is the US
+/// ` and its ¥ the US \ (Issue #115).
+fn jis_keyboard() -> Vec<(Key, String, i32, i32, i32, i32)> {
+    use Key::*;
+    let mut keys: Vec<(Key, String, i32, i32, i32, i32)> =
+        keyboard().into_iter().filter(|&(_, x, y, _)| y < 9 || x >= 62).map(|(k, x, y, w)| (k, button_name(k), x, y, w, 4)).collect();
+    let mut put = |key: Key, legend: &str, x: i32, y: i32, w: i32, h: i32| keys.push((key, legend.to_string(), x, y, w, h));
+    put(Hankaku, "半角\n全角", 0, 9, 4, 4);
+    for (i, (c, legend)) in [(b'1', "!\n1"), (b'2', "\"\n2"), (b'3', "#\n3"), (b'4', "$\n4"), (b'5', "%\n5"), (b'6', "&\n6"), (b'7', "'\n7"), (b'8', "(\n8"), (b'9', ")\n9"), (b'0', "0")]
+        .into_iter()
+        .enumerate()
+    {
+        put(Char(c), legend, 4 + 4 * i as i32, 9, 4, 4);
+    }
+    put(Char(b'-'), "=\n-", 44, 9, 4, 4);
+    put(Char(b'\''), "~\n^", 48, 9, 4, 4);
+    put(Char(b'\\'), "|\n¥", 52, 9, 4, 4);
+    put(Backspace, "BS", 56, 9, 4, 4);
+    put(Tab, "Tab", 0, 13, 6, 4);
+    for (i, c) in b"QWERTYUIOP".iter().enumerate() {
+        put(Char(*c), &(*c as char).to_string(), 6 + 4 * i as i32, 13, 4, 4);
+    }
+    put(Char(b'`'), "`\n@", 46, 13, 4, 4);
+    put(Char(b'['), "{\n[", 50, 13, 4, 4);
+    put(Enter, "Enter", 55, 13, 5, 8);
+    for (i, c) in b"ASDFGHJKL".iter().enumerate() {
+        put(Char(*c), &(*c as char).to_string(), 7 + 4 * i as i32, 17, 4, 4);
+    }
+    put(Char(b'='), "+\n;", 43, 17, 4, 4);
+    put(Char(b';'), "*\n:", 47, 17, 4, 4);
+    put(Char(b']'), "}\n]", 51, 17, 4, 4);
+    for (i, c) in b"ZXCVBNM".iter().enumerate() {
+        put(Char(*c), &(*c as char).to_string(), 9 + 4 * i as i32, 21, 4, 4);
+    }
+    put(Char(b','), "<\n,", 37, 21, 4, 4);
+    put(Char(b'.'), ">\n.", 41, 21, 4, 4);
+    put(Char(b'/'), "?\n/", 45, 21, 4, 4);
+    put(Ro, "_\nろ", 49, 21, 4, 4);
+    put(Muhenkan, "無変換", 9, 25, 6, 4);
+    put(Space, "Space", 15, 25, 17, 4);
+    put(Henkan, "変換", 32, 25, 6, 4);
+    put(Kana, "かな", 38, 25, 6, 4);
+    keys
+}
+
+/// Whether `key` is one only a JIS keyboard has: assigned on JIS.
+fn is_jis_only(key: Key) -> bool {
+    matches!(key, Key::Hankaku | Key::Henkan | Key::Muhenkan | Key::Kana | Key::Ro)
+}
+
+/// What Shift makes of a US keyboard's key, if it is another symbol.
+fn shifted(key: Key) -> Option<char> {
+    let Key::Char(c) = key else { return None };
+    let at = b"`1234567890-=[]\\;',./".iter().position(|&s| s == c)?;
+    "~!@#$%^&*()_+{}|:\"<>?".chars().nth(at)
+}
+
 /// The keys of テンキー: each key, its left, top, width and height, in
 /// quarters of a key.
 fn numpad() -> Vec<(Key, i32, i32, i32, i32)> {
@@ -262,8 +325,11 @@ fn numpad() -> Vec<(Key, i32, i32, i32, i32)> {
     keys
 }
 
-/// A key as its button names it.
+/// A key as its button names it: a symbol under what Shift makes of it.
 fn button_name(key: Key) -> String {
+    if let Some(s) = shifted(key) {
+        return format!("{s}\n{key}");
+    }
     match key {
         Key::Up => "↑".into(),
         Key::Down => "↓".into(),
@@ -287,6 +353,7 @@ fn every_part() -> Vec<(usize, Class, String)> {
             parts.extend(keyboard().into_iter().enumerate().map(|(i, (k, ..))| (KEYBOARD + i, Toggle, button_name(k))));
             parts.extend(numpad().into_iter().enumerate().map(|(i, (k, ..))| (NUMPAD + i, Toggle, button_name(k))));
             parts.extend(MOD_KEYS.iter().enumerate().map(|(i, (_, n))| (MOD_BUTTONS + i, Toggle, n.to_string())));
+            parts.extend(jis_keyboard().into_iter().enumerate().map(|(i, (_, legend, ..))| (JIS_KEYBOARD + i, Toggle, legend)));
         }
     }
     parts
@@ -390,6 +457,7 @@ const PARTS: &[(usize, Class, &str)] = &[
     (GROUP_TABS + 2, Toggle, GROUP_TAB_NAMES[2]),
     (GROUP_TABS + 3, Toggle, GROUP_TAB_NAMES[3]),
     (GROUP_TABS + 4, Toggle, GROUP_TAB_NAMES[4]),
+    (GROUP_TABS + 5, Toggle, GROUP_TAB_NAMES[5]),
     (KINDS, Toggle, KIND_LABELS[0]),
     (KINDS + 1, Toggle, KIND_LABELS[1]),
     (KINDS + 2, Toggle, KIND_LABELS[2]),
@@ -818,7 +886,7 @@ fn group_keys(group: usize) -> Vec<Key> {
     match group {
         0 => (b'A'..=b'Z').chain(b'0'..=b'9').map(Char).collect(),
         1 => (1..=24).map(F).collect(),
-        2 => vec![Esc, Tab, Space, Enter, Backspace, Delete, Insert, Home, End, PgUp, PgDn, Left, Right, Up, Down],
+        2 => vec![Esc, Tab, Space, Enter, Backspace, Delete, Insert, Home, End, PgUp, PgDn, Left, Right, Up, Down, Hankaku, Henkan, Muhenkan, Kana, Ro],
         3 => b"[]-=;',./\\`".iter().map(|&c| Char(c)).collect(),
         _ => (b'0'..=b'9').chain(*b"*+-./").map(Pad).collect(),
     }
@@ -828,8 +896,12 @@ fn group_of(key: Key) -> Option<usize> {
     (0..GROUP_NAMES.len()).find(|&g| group_keys(g).contains(&key))
 }
 
-/// The key a virtual key is, of those a key can send, not a modifier.
+/// The key a virtual key is, of those a key can send, not a modifier: a
+/// JIS keyboard's 半角/全角, whichever way it is, as Hankaku.
 fn key_of_vk(vk: u16) -> Option<Key> {
+    if matches!(vk, 0xF3 | 0xF4) {
+        return Some(Key::Hankaku);
+    }
     (0..GROUP_NAMES.len()).flat_map(group_keys).find(|&k| send::vk(k) == vk)
 }
 
@@ -1092,9 +1164,11 @@ pub(super) unsafe fn make(parent: HWND) -> bool {
             ),
             Sample => (0, SAMPLE_CLASS, WS_TABSTOP),
         };
-        // What is said ends in "…" if it is too long.
+        // What is said ends in "…" if it is too long; a symbol's button
+        // has two lines.
         let style = match id {
             PIE_NOTE | SUMMARY => style | SS_ENDELLIPSIS,
+            _ if class == Toggle && text.contains('\n') => style | BS_MULTILINE as u32,
             _ => style,
         };
         let text = wide(&text);
@@ -1133,6 +1207,7 @@ pub(super) fn is_part(id: usize) -> bool {
         || (KEYBOARD..KEYBOARD + keyboard().len()).contains(&id)
         || (NUMPAD..NUMPAD + numpad().len()).contains(&id)
         || (MOD_BUTTONS..MOD_BUTTONS + MOD_KEYS.len()).contains(&id)
+        || (JIS_KEYBOARD..JIS_KEYBOARD + jis_keyboard().len()).contains(&id)
 }
 
 /// Whether part `id` is typed in.
@@ -1193,8 +1268,9 @@ fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab
         _ if (GROUP_TABS..GROUP_TABS + GROUP_TAB_NAMES.len()).contains(&id) => key,
         TITLE_INTERVAL | INTERVAL | INTERVAL_NOTE => kind == Some(REPEAT),
         _ if (KEYBOARD..KEYBOARD + keyboard().len()).contains(&id) => open(BASIC),
-        _ if (NUMPAD..NUMPAD + numpad().len()).contains(&id) => open(BASIC),
-        _ if (MOD_BUTTONS..MOD_BUTTONS + MOD_KEYS.len()).contains(&id) => open(BASIC),
+        _ if (JIS_KEYBOARD..JIS_KEYBOARD + jis_keyboard().len()).contains(&id) => open(JIS_TAB),
+        _ if (NUMPAD..NUMPAD + numpad().len()).contains(&id) => open(BASIC) || open(JIS_TAB),
+        _ if (MOD_BUTTONS..MOD_BUTTONS + MOD_KEYS.len()).contains(&id) => open(BASIC) || open(JIS_TAB),
         TITLE_LAYER | LAYER_SET | LAYER_HOLD | LAYER_TOGGLE => open(LAYER_TAB),
         TITLE_STEPS | STEPS | STEP_KEY | STEP_WAIT | STEP_REMOVE | STEP_UP | STEP_DOWN => open(MACRO_TAB),
         TITLE_WAIT | WAIT | WAIT_NOTE => open(MACRO_TAB) && kind == Some(MACRO) && wait,
@@ -1248,12 +1324,14 @@ fn summary(line: &Line) -> String {
     }
 }
 
-/// The group a key's kind is assigned in, and the motion, if it has one.
+/// The group a key's kind is assigned in, and the motion, if it has one: a
+/// key only a JIS keyboard has, on JIS.
 fn group_and_motion(line: &Line) -> (usize, Option<usize>) {
+    let keys = if sent(line, 0).and_then(|c| c.key).is_some_and(is_jis_only) { JIS_TAB } else { BASIC };
     match line.kind() {
-        Some(SHORTCUT) => (BASIC, Some(0)),
-        Some(HOLD) => (BASIC, Some(1)),
-        Some(REPEAT) => (BASIC, Some(2)),
+        Some(SHORTCUT) => (keys, Some(0)),
+        Some(HOLD) => (keys, Some(1)),
+        Some(REPEAT) => (keys, Some(2)),
         Some(MODIFIER) => (BASIC, None),
         Some(LAYER_KIND) => (LAYER_TAB, None),
         Some(MACRO) => (MACRO_TAB, None),
@@ -1408,6 +1486,9 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     };
     for (i, (_, x, y, w)) in keyboard().into_iter().enumerate() {
         key_at(KEYBOARD + i, x, y, w, 4);
+    }
+    for (i, (_, _, x, y, w, height)) in jis_keyboard().into_iter().enumerate() {
+        key_at(JIS_KEYBOARD + i, x, y, w, height);
     }
     for (i, (_, x, y, w, height)) in numpad().into_iter().enumerate() {
         key_at(NUMPAD + i, PAD_X + x, PAD_Y + y, w, height);
@@ -1646,6 +1727,9 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
         }
         for (i, (key, ..)) in numpad().into_iter().enumerate() {
             SendMessageW(part_of(e, NUMPAD + i), BM_SETCHECK, (pressed == Some(key)) as WPARAM, 0);
+        }
+        for (i, (key, ..)) in jis_keyboard().into_iter().enumerate() {
+            SendMessageW(part_of(e, JIS_KEYBOARD + i), BM_SETCHECK, (pressed == Some(key)) as WPARAM, 0);
         }
         let modifier = Key::parse(&line.content).filter(|_| kind == Some(MODIFIER));
         for (i, (key, _)) in MOD_KEYS.iter().enumerate() {
@@ -2110,6 +2194,10 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             _ if clicked && (NUMPAD..NUMPAD + numpad().len()).contains(&id) => {
                 press_button(e, id, numpad()[id - NUMPAD].0);
+                None
+            }
+            _ if clicked && (JIS_KEYBOARD..JIS_KEYBOARD + jis_keyboard().len()).contains(&id) => {
+                press_button(e, id, jis_keyboard()[id - JIS_KEYBOARD].0);
                 None
             }
             _ if clicked && (MOD_BUTTONS..MOD_BUTTONS + MOD_KEYS.len()).contains(&id) => {
