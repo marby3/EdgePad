@@ -171,8 +171,9 @@ fn profiles(doc: &Document) -> Vec<String> {
     std::iter::once(DEFAULT.to_string()).chain(others).collect()
 }
 
+/// The key sets an edge can show: a pie's items not (Issue #113).
 fn sets(doc: &Document) -> Vec<String> {
-    doc.sections().into_iter().filter_map(|s| s.strip_prefix("set.").map(String::from)).collect()
+    super::keymap::listed_sets(doc)
 }
 
 fn process_of(doc: &Document, profile: &str) -> Option<String> {

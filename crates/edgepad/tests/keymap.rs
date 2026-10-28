@@ -25,8 +25,9 @@
 //! - the kinds' own: the interval 1053, the macro's steps 1054 (a ListBox)
 //!   with キー操作を追加 1055, 待ち時間を追加 1056, 削除 1057, ↑ 1058 and ↓
 //!   1059, a wait's time 1060, the text or what is run 1061 (an Edit), the
-//!   page's target 1062 and the pie's key set 1063 (drop-down lists), the
-//!   pie's figure 1064 and what it says of its items 1065 (a Static);
+//!   page's target 1062 (a drop-down list); the pie's key set 1063, its
+//!   figure 1064 and what it says of its items 1065, until Issue #113
+//!   edited a pie's items on a fan;
 //! - KLE から読み込む 1066 (Issue #101);
 //! - the kind レイヤー 1029, its key set 1067 (a drop-down list), and
 //!   押している間 1068 and 押すたびに切り替える 1069 (Issue #104);
@@ -80,8 +81,6 @@ const STEP_UP: i32 = 1058;
 const WAIT: i32 = 1060;
 const CONTENT: i32 = 1061;
 const TARGET: i32 = 1062;
-const PIE: i32 = 1063;
-const PIE_FIGURE: i32 = 1064;
 const PIE_NOTE: i32 = 1065;
 const HOTKEY_CAPTURE: i32 = 21;
 
@@ -415,7 +414,8 @@ fn key_sets_are_chosen_named_added_and_removed_only_where_unused() {
     let app = launch_with(Some(SETTINGS), None);
     let editor = open_set(&app, "mods");
     assert_eq!(class_of(part(editor, SET)), "ComboBox", "the sets in a drop-down list");
-    assert_eq!(items(part(editor, SET)), ["mods", "tools", "transform", "spare"]);
+    // transform, a pie's items, is not listed (Issue #113).
+    assert_eq!(items(part(editor, SET)), ["mods", "tools", "spare"]);
     for (id, name) in [(ADD_SET, "追加"), (RENAME, "名前の変更"), (REMOVE_SET, "削除")] {
         assert!(shown(editor, id) && text(editor, id) == name, "{name} beside the list");
     }
@@ -423,14 +423,14 @@ fn key_sets_are_chosen_named_added_and_removed_only_where_unused() {
     assert!(used.contains("default の左辺") && used.contains("csp の左辺"), "where mods is used: {used:?}");
     choose(editor, SET, "tools");
     assert!(within_3s(|| text(editor, USED).contains("csp の右辺")), "{:?}", text(editor, USED));
-    choose(editor, SET, "transform");
-    assert!(within_3s(|| text(editor, USED).contains("変形キーのパイ")), "{:?}", text(editor, USED));
 
-    // Renamed, the edge, page and pie keys that name it follow.
+    // Renamed, the edge, page and pie keys that name it follow. A page key
+    // names it too: it is listed.
     let source = SETTINGS.replace("key = 次へ     | page     | next", "key = 次へ     | page     | transform");
     drop(app);
     let app = launch_with(Some(&source), None);
     let editor = open_set(&app, "transform");
+    assert!(within_3s(|| text(editor, USED).contains("変形キーのパイ")), "{:?}", text(editor, USED));
     click_id(editor, RENAME);
     assert!(within_3s(|| shown(editor, NAME) && focus_of(editor) == part(editor, NAME)), "a name to type");
     press_with(&[VK_CONTROL], b'A' as u16);
@@ -647,14 +647,13 @@ fn each_kind_has_its_own_fields() {
     next("ブラシ");
     assert_eq!(text(editor, INTERVAL), "60");
     enter(editor, INTERVAL, "120");
-    // pie: its key set, how many items, a figure, and why it cannot be.
+    // pie: Enter opens its fan on its first item (Issue #113); back to
+    // the panel.
     next("変形");
-    assert_eq!(chosen(part(editor, PIE)).as_deref(), Some("transform"));
-    assert!(shown(editor, PIE_FIGURE));
-    assert!(within_3s(|| text(editor, PIE_NOTE).contains("2")), "two items: {:?}", text(editor, PIE_NOTE));
-    choose(editor, PIE, "spare");
-    assert!(within_3s(|| text(editor, PIE_NOTE).contains("2〜8")), "one item is too few: {:?}", text(editor, PIE_NOTE));
-    choose(editor, PIE, "transform");
+    press(VK_RETURN);
+    assert!(within_3s(|| text(editor, LABEL) == "拡大" && shown(editor, PIE_BACK)), "the fan: {:?}", text(editor, LABEL));
+    click_id(editor, PIE_BACK);
+    assert!(within_3s(|| text(editor, LABEL) == "変形"), "{:?}", text(editor, LABEL));
     // page: next, previous, or a key set.
     next("次へ");
     let targets = items(part(editor, TARGET));
@@ -1062,10 +1061,10 @@ fn the_shape_is_laid_out_on_one_page_and_what_keys_send_on_the_next() {
     assert_eq!(chosen(part(editor, SET)).as_deref(), Some("mods"));
     assert_eq!(text(editor, LABEL), "Space", "the same key chosen");
     // And back: the set chosen here is chosen there.
-    choose(editor, SET, "transform");
+    choose(editor, SET, "spare");
     to_page(editor, 0);
-    assert_eq!(chosen(part(editor, SET)).as_deref(), Some("transform"));
-    assert_eq!(text(editor, LABEL), "拡大");
+    assert_eq!(chosen(part(editor, SET)).as_deref(), Some("spare"));
+    assert_eq!(text(editor, LABEL), "A");
 
     // A save failing on a key's width leads to キー配置; on what it sends,
     // to キーマッピング.
@@ -1479,14 +1478,13 @@ fn the_five_groups_assign_every_kind() {
     saved_as(&app, editor, "mods", "Esc", &["Esc", "text", "こんにちは"]);
     enter(editor, RUN_CONTENT, "calc.exe");
     saved_as(&app, editor, "mods", "Esc", &["Esc", "run", "calc.exe"]);
-    // ページ・パイ: a page, then a pie and what it says of its items.
+    // ページ・パイ: a page, then a pie, its items on a fan (Issue #113).
     click_id(editor, GROUP_TABS + 4);
     choose(editor, TARGET, "次のページ");
     saved_as(&app, editor, "mods", "Esc", &["Esc", "page", "next"]);
-    choose(editor, PIE, "transform");
-    saved_as(&app, editor, "mods", "Esc", &["Esc", "pie", "transform"]);
-    assert!(within_3s(|| text(editor, PIE_NOTE).contains("2")), "{:?}", text(editor, PIE_NOTE));
-    assert!(shown(editor, PIE_FIGURE));
+    click_id(editor, PIE_MAKE);
+    assert!(within_3s(|| shown(editor, PIE_BACK)), "the fan");
+    save_until(&app, editor, "| pie-esc");
 }
 
 // Issue #111, AC5
@@ -1560,4 +1558,207 @@ fn an_assignment_rewrites_its_line_alone_keeping_the_rest() {
     save(editor);
     assert!(within_3s(|| key_of(&file(&app), "spare", "戻る")[1] == "repeat"), "{}", file(&app));
     assert!(!options_of(&file(&app), "spare", "戻る").contains(&"interval=5".to_string()), "not written: {}", file(&app));
+}
+
+// Issue #113: a pie's items edited on a fan. Its parts: パネルに戻る 1083,
+// ＋ 1084 and 削除 1085, over the fan, shown while it is; パイにする 1063 on
+// ページ・パイ (a button now, in place of the drop-down list of sets);
+// and, while the fan shows, why some buttons cannot be pressed 1065 (a
+// Static). The fan is drawn in the sample, as the pie menu is from the
+// edge the panel is on: its middle the sample's inset in from that side,
+// half way along it; for up to four items, its outside as far out as the
+// room goes, the inset short of the sample's far side or its ends.
+const PIE_MAKE: i32 = 1063;
+const PIE_BACK: i32 = 1083;
+const PIE_ADD: i32 = 1084;
+const PIE_REMOVE: i32 = 1085;
+
+fn enabled(editor: HWND, id: i32) -> bool {
+    unsafe { IsWindowEnabled(part(editor, id)) != 0 }
+}
+
+/// A point of item `i` of a fan of `items` from the right edge, or the
+/// left, near its outside: clear of its label.
+fn fan_point(editor: HWND, right: bool, i: usize, items: usize) -> POINT {
+    let r = window_rect(part(editor, SAMPLE));
+    let inset = s(editor, INSET);
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    let room = f64::from((w - 2 * inset).min(h / 2 - inset));
+    let a = -std::f64::consts::FRAC_PI_2 + (i as f64 + 0.5) * std::f64::consts::PI / items as f64;
+    let (inward, along) = (0.93 * room * a.cos(), 0.93 * room * a.sin());
+    let x = if right { f64::from(r.right - inset) - inward } else { f64::from(r.left + inset) + inward };
+    POINT { x: x.round() as i32, y: (f64::from(r.top + h / 2) + along).round() as i32 }
+}
+
+/// Choose key `i` of the set shown by the keyboard, a pie key, and press
+/// Enter: its fan opens on its first item, `first`. Gone over with the
+/// arrows, it does not.
+fn open_fan(editor: HWND, i: i32, first: &str) {
+    for _ in 0..3 {
+        focus_sample(editor);
+        arrow(&[], VK_HOME);
+        for _ in 0..i {
+            arrow(&[], VK_DOWN);
+        }
+        assert!(!shown(editor, PIE_BACK), "no fan by the arrows");
+        press(VK_RETURN);
+        if within_3s(|| text(editor, LABEL) == first && shown(editor, PIE_BACK)) {
+            return;
+        }
+    }
+    panic!("the fan of key {i}, on {first}: {:?}", text(editor, LABEL));
+}
+
+// Issue #113, AC1
+#[test]
+fn a_pie_key_chosen_shows_its_fan_whose_items_are_chosen_on_it() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_map(&app, "tools");
+    assert!(!shown(editor, PIE_BACK), "no fan for the panel");
+    let (face, held) = ([0xFA, 0xFA, 0xFA], [0xC0, 0x00, 0x00]);
+    // 変形, on the right edge: its fan opens to the left, 拡大 chosen.
+    open_fan(editor, 2, "拡大");
+    assert!(!shown(editor, LAYER_TABS), "no layers' tabs over the fan");
+    let (first, second) = (fan_point(editor, true, 0, 2), fan_point(editor, true, 1, 2));
+    let _ = within_3s(|| near(colour_at(first), held));
+    assert!(near(colour_at(first), held), "拡大 chosen, as held: {:?}", colour_at(first));
+    assert!(near(colour_at(second), face), "反転 under it: {:?}", colour_at(second));
+    // Clicked, 反転.
+    wait_in_front(editor);
+    click(second);
+    assert!(within_3s(|| text(editor, LABEL) == "反転"), "反転 chosen: {:?}", text(editor, LABEL));
+    assert!(within_3s(|| near(colour_at(second), held)), "drawn as held: {:?}", colour_at(second));
+    assert!(near(colour_at(first), face), "拡大 not");
+    // By the keyboard, back up.
+    focus_sample(editor);
+    arrow(&[], VK_UP);
+    assert!(within_3s(|| text(editor, LABEL) == "拡大"), "拡大 by ↑: {:?}", text(editor, LABEL));
+    // Back to the panel, 変形 still chosen.
+    click_id(editor, PIE_BACK);
+    assert!(within_3s(|| text(editor, LABEL) == "変形"), "変形 chosen: {:?}", text(editor, LABEL));
+    assert!(within_3s(|| !shown(editor, PIE_BACK)), "the panel again");
+    assert!(shown(editor, LAYER_TABS), "the layers' tabs again");
+    assert_eq!(text(editor, SUMMARY), "transform のパイメニューを開く");
+}
+
+// Issue #113, AC2
+#[test]
+fn an_item_is_assigned_as_a_key_is_but_not_as_items_cannot_be() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let before = file(&app);
+    let editor = open_map(&app, "tools");
+    open_fan(editor, 2, "拡大");
+    assert!(within_3s(|| checked(part(editor, MODS + CTRL_ON))), "Ctrl on, of Ctrl+T");
+    press_key(editor, "Y");
+    let saved = save_until(&app, editor, "Ctrl+Y");
+    assert_eq!(keys_of(&saved, "transform"), [vec!["拡大", "shortcut", "Ctrl+Y"], vec!["反転", "shortcut", "F14"]]);
+    let changed: Vec<(&str, &str)> = before.lines().zip(saved.lines()).filter(|(a, b)| a != b).collect();
+    assert_eq!(changed.len(), 1, "the item's line alone: {changed:?}");
+    // What an item cannot be cannot be pressed, and why is said.
+    let shift = button_named(editor, MOD_KEYS, 4, "Shift");
+    for (id, what) in [(MOTIONS + 1, "押している間"), (MOTIONS + 2, "連打"), (shift, "a modifier key"), (GROUP_TABS + 1, "レイヤー")] {
+        assert!(!enabled(editor, id), "{what} not pressed for an item");
+    }
+    assert!(enabled(editor, MOTIONS), "押した時に送る");
+    assert!(shown(editor, PIE_NOTE) && text(editor, PIE_NOTE).contains("使えません"), "why: {:?}", text(editor, PIE_NOTE));
+    click_id(editor, GROUP_TABS + 4);
+    assert!(within_3s(|| shown(editor, PIE_MAKE)), "パイにする on ページ・パイ");
+    assert!(!enabled(editor, PIE_MAKE), "no pie in a pie");
+    // A text item, as a key's.
+    click_id(editor, GROUP_TABS + 3);
+    enter(editor, CONTENT, "やあ");
+    let saved = save_until(&app, editor, "やあ");
+    assert_eq!(key_of(&saved, "transform", "拡大"), ["拡大", "text", "やあ"]);
+    // The panel's keys again: all of it.
+    click_id(editor, PIE_BACK);
+    assert!(within_3s(|| enabled(editor, MOTIONS + 1)), "押している間 again");
+    assert!(!shown(editor, PIE_NOTE), "nothing to say");
+}
+
+// Issue #113, AC3
+#[test]
+fn items_are_added_and_removed_on_the_fan_from_two_to_eight() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_map(&app, "tools");
+    open_fan(editor, 2, "拡大");
+    assert_eq!((text(editor, PIE_ADD), text(editor, PIE_REMOVE)), ("＋".to_string(), "削除".to_string()));
+    assert!(!enabled(editor, PIE_REMOVE), "two items: none removed");
+    // After the chosen, sending nothing.
+    click_id(editor, PIE_ADD);
+    assert!(within_3s(|| text(editor, SUMMARY) == "何も送らない"), "the new item chosen: {:?}", text(editor, SUMMARY));
+    let saved = save_until(&app, editor, "| none");
+    let labels: Vec<String> = keys_of(&saved, "transform").into_iter().map(|k| k[0].clone()).collect();
+    assert_eq!(labels.len(), 3, "{saved}");
+    assert_eq!((labels[0].as_str(), labels[2].as_str()), ("拡大", "反転"), "{saved}");
+    assert_eq!(keys_of(&saved, "transform")[1][1..], ["none", "-"]);
+    assert!(!status(editor).contains("エラー"), "it reads: {:?}", status(editor));
+    for _ in 0..5 {
+        click_id(editor, PIE_ADD);
+    }
+    assert!(within_3s(|| !enabled(editor, PIE_ADD)), "eight: no more");
+    let saved = save_until(&app, editor, "反転");
+    assert_eq!(keys_of(&saved, "transform").len(), 8, "{saved}");
+    for _ in 0..6 {
+        click_id(editor, PIE_REMOVE);
+    }
+    assert!(within_3s(|| !enabled(editor, PIE_REMOVE)), "two: no fewer");
+    save(editor);
+    assert!(within_3s(|| keys_of(&file(&app), "transform").len() == 2), "{}", file(&app));
+    assert!(enabled(editor, PIE_ADD));
+}
+
+// Issue #113, AC4
+#[test]
+fn a_key_made_a_pie_gets_its_own_items_and_loses_them_as_another_kind() {
+    let _desktop = desktop();
+    let source = SETTINGS.replace("[set.spare]\n", "[set.pie-esc]\nkey = B | shortcut | B\n\n[set.spare]\n");
+    let app = launch_with(Some(&source), None);
+    let editor = open_map(&app, "mods");
+    click_id(editor, GROUP_TABS + 4);
+    assert!(within_3s(|| shown(editor, PIE_MAKE)), "パイにする");
+    assert_eq!(text(editor, PIE_MAKE), "パイにする");
+    assert!(unsafe { GetDlgItem(editor, 1064) }.is_null(), "no figure on the tab");
+    click_id(editor, PIE_MAKE);
+    assert!(within_3s(|| shown(editor, PIE_BACK)), "the fan opened");
+    let saved = save_until(&app, editor, "[set.pie-esc-2]");
+    assert_eq!(key_of(&saved, "mods", "Esc"), ["Esc", "pie", "pie-esc-2"]);
+    let kinds: Vec<Vec<String>> = keys_of(&saved, "pie-esc-2").iter().map(|k| k[1..].to_vec()).collect();
+    assert_eq!(kinds, [["none", "-"], ["none", "-"]]);
+    // Another kind: the items go.
+    click_id(editor, PIE_BACK);
+    assert!(within_3s(|| text(editor, LABEL) == "Esc"), "{:?}", text(editor, LABEL));
+    click_id(editor, GROUP_TABS);
+    press_key(editor, "A");
+    save(editor);
+    assert!(within_3s(|| !file(&app).contains("pie-esc-2")), "{}", file(&app));
+    assert_eq!(key_of(&file(&app), "mods", "Esc"), ["Esc", "shortcut", "A"]);
+    assert!(file(&app).contains("[set.pie-esc]"), "the other set kept");
+}
+
+// Issue #113, AC5
+#[test]
+fn a_pies_item_set_is_listed_nowhere_and_reads_as_it_was() {
+    let _desktop = desktop();
+    let app = launch_with(Some(SETTINGS), None);
+    let editor = open_set(&app, "mods");
+    assert_eq!(items(part(editor, SET)), ["mods", "tools", "spare"], "キー配置");
+    to_page(editor, MAP_PAGE);
+    assert_eq!(items(part(editor, SET)), ["mods", "tools", "spare"], "キーマッピング");
+    click_id(editor, GROUP_TABS + 1);
+    assert!(within_3s(|| shown(editor, LAYER_SET)));
+    assert!(!items(part(editor, LAYER_SET)).contains(&"transform".to_string()), "{:?}", items(part(editor, LAYER_SET)));
+    click_id(editor, GROUP_TABS + 4);
+    assert!(within_3s(|| shown(editor, TARGET)));
+    assert!(!items(part(editor, TARGET)).contains(&"transform".to_string()), "{:?}", items(part(editor, TARGET)));
+    to_page(editor, 2);
+    for edge in 2020..2024 {
+        assert!(!items(part(editor, edge)).contains(&"transform".to_string()), "{edge}: {:?}", items(part(editor, edge)));
+    }
+    // Its items, edited on the fan.
+    to_page(editor, MAP_PAGE);
+    choose(editor, SET, "tools");
+    open_fan(editor, 2, "拡大");
 }

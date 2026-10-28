@@ -487,13 +487,6 @@ unsafe fn register() -> bool {
             debug_log!("設定画面のアプリ別の図の窓クラスを登録できない");
             return false;
         }
-        wc.lpfnWndProc = Some(keymap::pie_proc);
-        wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
-        wc.lpszClassName = keymap::PIE_CLASS;
-        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
-            debug_log!("設定画面のパイの図の窓クラスを登録できない");
-            return false;
-        }
     }
     REGISTERED.set(true);
     true
@@ -1404,7 +1397,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_CHOOSE_KEY => {
-                keymap::choose_key(wp);
+                keymap::choose_key(wp, lp != 0);
                 0
             }
             WM_PLACE_KEY => {
