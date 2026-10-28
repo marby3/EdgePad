@@ -1782,6 +1782,7 @@ fn handle_panel(hwnd: HWND) -> Option<(Edge, u32)> {
 unsafe fn hover_on(hwnd: HWND) {
     let Some((edge, ms)) = handle_panel(hwnd) else { return };
     if ms > 0 && HIDDEN.get()[edge as usize] && HOVERING.get() != hwnd {
+        debug_log!("ハンドル {}: マウスが乗った", edge_name(edge));
         HOVERING.set(hwnd);
         if unsafe { SetTimer(hwnd, HOVER_TIMER, ms, None) } == 0 {
             HOVERING.set(null_mut());
