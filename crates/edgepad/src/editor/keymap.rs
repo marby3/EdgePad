@@ -1,12 +1,17 @@
-//! The キー配置 page (spec 7.1): the key sets, [set.*], and their keys.
+//! The キー配置 and キーマッピング pages (spec 7.1): the key sets, [set.*],
+//! and their keys. キー配置 lays the panel's shape out; キーマッピング says
+//! what each key sends (Issue #109). The key set and the key chosen are the
+//! two pages' both.
 //!
-//! Along the top, the key set edited, chosen from a drop-down list, with
-//! 追加, 名前の変更 and 削除 beside it, and under it where it is used. On
-//! the left, a sample of its panel, in the panel's colours and shape, laid
-//! out as on the first edge that shows it; a key pressed there is chosen,
-//! and the buttons under it add, remove and move keys. On the right, the
-//! chosen key's fields: its label, its width, its kind of the ten, and the
-//! fields of that kind alone.
+//! Along the top, the key set edited, chosen from a drop-down list; on
+//! キー配置, with 追加, 名前の変更 and 削除 beside it, and under it where it
+//! is used. On the left, a sample of its panel, in the panel's colours and
+//! shape, laid out and turned as on the first edge that shows it, against
+//! that side; a key pressed there is chosen. On キー配置, the buttons under
+//! it add, remove and move keys, a free layout's keys are dragged about on
+//! it, and on the right are how the set is laid out (並べ方) and the chosen
+//! key's width, or its place. On キーマッピング, on the right, the chosen
+//! key's label, its kind of the ten, and the fields of that kind alone.
 //!
 //! The keys a key sends are chosen, not written: modifiers turned on and
 //! off, and a key from the list of a group; or captured, the next keys
@@ -28,12 +33,12 @@ use std::ptr::{null, null_mut};
 use edgepad_core::config::{self, Accent, Edge, KeySet, Theme};
 use edgepad_core::document::Document;
 use edgepad_core::keys::{Combo, Key, Mods};
-use edgepad_core::layout;
+use edgepad_core::layout::{self, Place};
 use edgepad_core::theme::Palette;
 use windows_sys::Win32::Foundation::{FreeLibrary, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, SetFocus, VK_CONTROL, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
+    GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
     VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_UP,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -42,13 +47,19 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
-use super::fields::{EM_GETMODIFY, EM_SETMODIFY, EM_SETSEL};
+use super::fields::{EM_GETMODIFY, EM_SETMODIFY, EM_SETREADONLY, EM_SETSEL};
 use super::{Editor, MARGIN, PAINT, mark_unsaved, scale, system_proc, tell, wide, window_dpi, with_editor};
 use crate::colors::{self, colorref};
 use crate::{panel, send};
 
-/// The page, of `super::PAGES`.
+/// The pages, of `super::PAGES`: the keys' shape, and what they send.
 pub(super) const PAGE: usize = 0;
+pub(super) const MAP_PAGE: usize = 1;
+
+/// Whether page `page` is one of these.
+pub(super) fn is_page(page: usize) -> bool {
+    page == PAGE || page == MAP_PAGE
+}
 
 /// Control ids: the key sets' row; the sample and its buttons; the chosen
 /// key's label, width and kind; the keys it sends; the kinds' own fields;
@@ -91,6 +102,10 @@ const KLE: usize = 1066;
 const LAYER_SET: usize = 1067;
 const LAYER_HOLD: usize = 1068;
 const LAYER_TOGGLE: usize = 1069;
+/// 並べ方; a free key's x, y, w and h; and what is said beside them.
+const ARRANGE: usize = 1070;
+const PLACE: usize = 1071;
+const KLE_NOTE: usize = 1075;
 const TITLE_SET: usize = 1100;
 const TITLE_LABEL: usize = 1101;
 const TITLE_WIDTH: usize = 1102;
@@ -105,6 +120,9 @@ const TITLE_CONTENT: usize = 1110;
 const TITLE_TARGET: usize = 1111;
 const TITLE_PIE: usize = 1112;
 const TITLE_LAYER: usize = 1113;
+const TITLE_ARRANGE: usize = 1114;
+const TITLE_PLACE: usize = 1115;
+const PLACE_NOTE: usize = 1119;
 
 /// The sample's and the pie figure's window classes.
 pub(super) const SAMPLE_CLASS: *const u16 = w!("EdgePadSettingsSample");
@@ -136,12 +154,18 @@ const RUN: usize = 6;
 const PAGE_KIND: usize = 7;
 const PIE_KIND: usize = 8;
 const LAYER_KIND: usize = 9;
+/// A key that sends nothing, `none`: of no kind of the ten.
+const NO_KIND: usize = usize::MAX;
 
 const MOD_KEYS: [(Key, &str); 4] = [(Key::Ctrl, "Ctrl"), (Key::Shift, "Shift"), (Key::Alt, "Alt"), (Key::Win, "Win")];
 const GROUP_NAMES: [&str; 5] = ["英数字", "F1〜F24", "移動・編集", "記号", "テンキー"];
 /// The page key's targets before the key sets.
 const PAGE_TURNS: [(&str, &str); 2] = [("next", "次のページ"), ("prev", "前のページ")];
 const EDGE_NAMES: [(&str, &str); 4] = [("left", "左辺"), ("right", "右辺"), ("top", "上辺"), ("bottom", "下辺")];
+/// The ways a set is laid out, as 並べ方 names them, before a KLE file's.
+const ARRANGEMENTS: [&str; 2] = ["辺に沿って並べる", "自由配列"];
+/// A key's place, as the file writes it.
+const PLACE_NAMES: [&str; 4] = ["x", "y", "w", "h"];
 
 /// What a key gets when it is added, and a step of each kind.
 const NEW_KEY: &str = "新しいキー | shortcut | A";
@@ -152,6 +176,10 @@ const NEW_WAIT: &str = "wait 100";
 const ROW_H: i32 = 26;
 const PITCH: i32 = 32;
 const SAMPLE_W: i32 = 200;
+/// キー配置's fields, right of its sample.
+const SHAPE_W: i32 = 280;
+/// How near a chosen key's right or bottom end the mouse takes that end.
+const END_ZONE: i32 = 6;
 /// The sample's panel, inset from its corner, and its largest keys.
 const INSET: i32 = 8;
 const SAMPLE_KEY: i32 = 44;
@@ -194,11 +222,23 @@ const PARTS: &[(usize, Class, &str)] = &[
     (REMOVE_KEY, Button, "削除"),
     (KEY_UP, Button, "↑"),
     (KEY_DOWN, Button, "↓"),
-    (TITLE_LABEL, Text, "ラベル"),
-    (LABEL, Edit, ""),
-    (TITLE_WIDTH, Text, "幅"),
+    (TITLE_ARRANGE, Text, "並べ方"),
+    (ARRANGE, Combo, ""),
+    (TITLE_WIDTH, Text, "キーの幅"),
     (WIDTH, Edit, ""),
     (WIDTH_NOTE, Text, "1〜3"),
+    (TITLE_PLACE, Text, "x"),
+    (PLACE, Edit, ""),
+    (TITLE_PLACE + 1, Text, "y"),
+    (PLACE + 1, Edit, ""),
+    (TITLE_PLACE + 2, Text, "w"),
+    (PLACE + 2, Edit, ""),
+    (TITLE_PLACE + 3, Text, "h"),
+    (PLACE + 3, Edit, ""),
+    (PLACE_NOTE, Text, "x・y は 0〜40、w・h は 0.25〜8（1/4 キー刻み）"),
+    (KLE_NOTE, Text, "並べ方を自由配列にすると動かせます"),
+    (TITLE_LABEL, Text, "ラベル"),
+    (LABEL, Edit, ""),
     (CUT, Text, "パネルでは切れます"),
     (KINDS, Toggle, KIND_LABELS[0]),
     (KINDS + 1, Toggle, KIND_LABELS[1]),
@@ -291,38 +331,164 @@ pub(super) struct Keymap {
 /// figure's is (`fields::SHOWN`).
 #[derive(Default)]
 struct Sample {
+    /// Every key drawn: a KLE layout's past the key lines too.
     labels: Vec<Vec<u16>>,
     widths: Vec<usize>,
+    /// A free or KLE layout's places, in quarters, as the file has them.
+    places: Option<Vec<Place>>,
+    /// How many keys are written, and so can be chosen.
+    count: usize,
     edge: Option<Edge>,
     lines: usize,
     palette: Option<Palette>,
     chosen: usize,
+    /// Whether the keys are dragged about: a free layout's, on キー配置.
+    movable: bool,
+    drag: Option<Drag>,
+}
+
+/// What a drag takes along: the key's place, or the right or the bottom
+/// end of it, as the sample shows it.
+#[derive(Clone, Copy, PartialEq)]
+enum Pull {
+    Move,
+    Wide,
+    Tall,
+}
+
+/// A key being dragged: where from, its place then and now, the layout's
+/// left, top, width and height then, in quarters, and the sample's keys'
+/// size in pixels.
+#[derive(Clone, Copy)]
+struct Drag {
+    key: usize,
+    pull: Pull,
+    start: POINT,
+    from: Place,
+    now: Place,
+    frame: (i32, i32, i32, i32),
+    unit: i32,
 }
 
 impl Sample {
     /// Where the panel goes in the sample's client area `client`, at
     /// `dpi`: its keys' size, its own rectangle, and its keys' cells. Laid
-    /// out as the panel is, in cells, then fitted to the room.
+    /// out and turned as the panel is, then fitted to the room, against
+    /// the side of its edge (Issue #109).
     fn lay_out(&self, client: RECT, dpi: u32) -> (i32, RECT, Vec<RECT>) {
         const UNIT: i32 = 64;
+        let edge = self.edge.unwrap_or(Edge::Left);
         let screen = layout::Rect { x: 0, y: 0, w: UNIT * 4096, h: UNIT * 4096 };
-        let (panel, keys) = layout::edge_panel(screen, self.edge.unwrap_or(Edge::Left), UNIT, self.lines.max(1), &self.widths);
-        let (across, down) = ((panel.w / UNIT).max(1), (panel.h / UNIT).max(1));
+        let (panel, keys) = match &self.places {
+            // Mid-drag, in the frame the drag started in, as large as
+            // takes the key dragged: the other keys stay where they are.
+            Some(places) if self.drag.is_some() => {
+                let (left, top, wide, tall) = self.drag.map_or((0, 0, 0, 0), |d| d.frame);
+                let now = layout::frame(places);
+                let (x, y) = (left.min(now.x), top.min(now.y));
+                let w = (left + wide).max(now.x + now.w) - x;
+                let h = (top + tall).max(now.y + now.h) - y;
+                layout::free_panel_in(screen, edge, UNIT, places, Place { x, y, w, h })
+            }
+            Some(places) => layout::free_panel(screen, edge, UNIT, places),
+            None => layout::edge_panel(screen, edge, UNIT, self.lines.max(1), &self.widths),
+        };
         let inset = scale(INSET, dpi);
         let room = (client.right - 2 * inset, client.bottom - 2 * inset);
-        let key = scale(SAMPLE_KEY, dpi).min(room.0 / across).min(room.1 / down).max(1);
-        let back = RECT { left: inset, top: inset, right: inset + across * key, bottom: inset + down * key };
+        let key = scale(SAMPLE_KEY, dpi).min(room.0 * UNIT / panel.w.max(1)).min(room.1 * UNIT / panel.h.max(1)).max(1);
+        let (w, h) = (panel.w * key / UNIT, panel.h * key / UNIT);
+        let left = if edge == Edge::Right { client.right - inset - w } else { inset };
+        let top = if edge == Edge::Bottom { client.bottom - inset - h } else { inset };
+        let back = RECT { left, top, right: left + w, bottom: top + h };
         let cells = keys
             .iter()
             .map(|k| RECT {
-                left: inset + k.x / UNIT * key,
-                top: inset + k.y / UNIT * key,
-                right: inset + (k.x + k.w) / UNIT * key,
-                bottom: inset + (k.y + k.h) / UNIT * key,
+                left: left + k.x * key / UNIT,
+                top: top + k.y * key / UNIT,
+                right: left + (k.x + k.w) * key / UNIT,
+                bottom: top + (k.y + k.h) * key / UNIT,
             })
             .collect();
         (key, back, cells)
     }
+
+    /// The key a point of the sample is on: of keys over one another, the
+    /// one on top, as drawn (`order`).
+    fn hit(&self, client: RECT, dpi: u32, p: POINT) -> Option<(usize, RECT, i32)> {
+        let (key, _, cells) = self.lay_out(client, dpi);
+        let on = |r: &RECT| p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
+        let i = self.order(cells.len()).into_iter().rev().find(|&i| on(&cells[i]))?;
+        Some((i, cells[i], key))
+    }
+
+    /// The order the keys of `count` are drawn in: as written, the chosen
+    /// one last, on top of any it is over.
+    fn order(&self, count: usize) -> Vec<usize> {
+        (0..count).filter(|&i| i != self.chosen).chain(Some(self.chosen).filter(|&c| c < count)).collect()
+    }
+
+    /// What a drag of key `i` from `p` in its cell `cell` takes: an end of
+    /// the chosen key, near it, or the key.
+    fn pull(&self, i: usize, cell: RECT, p: POINT, dpi: u32) -> Pull {
+        let zone = scale(END_ZONE, dpi);
+        match () {
+            _ if i == self.chosen && cell.right - p.x <= zone => Pull::Wide,
+            _ if i == self.chosen && cell.bottom - p.y <= zone => Pull::Tall,
+            _ => Pull::Move,
+        }
+    }
+}
+
+/// The layout `places` spans: its left, top, width and height, in quarters.
+fn frame(places: &[Place]) -> (i32, i32, i32, i32) {
+    let f = layout::frame(places);
+    (f.x, f.y, f.w, f.h)
+}
+
+/// How a key set is laid out: along its edge, free, or by a KLE file.
+#[derive(Clone, PartialEq)]
+enum Arrangement {
+    Edge,
+    Free,
+    Kle(String),
+}
+
+/// How key set `section` of `doc` is laid out, as its `layout` says.
+fn arrangement(doc: &Document, section: &str) -> Arrangement {
+    let Some(value) = doc.get(section, "layout").map(str::trim) else { return Arrangement::Edge };
+    match value.get(..4) {
+        _ if value.eq_ignore_ascii_case("free") => Arrangement::Free,
+        Some(kle) if kle.eq_ignore_ascii_case("kle:") => Arrangement::Kle(value[4..].trim().to_string()),
+        _ => Arrangement::Edge,
+    }
+}
+
+/// The keys of KLE file `name`, in the settings file's folder, if it reads.
+fn kle_places(e: &Editor, name: &str) -> Option<Vec<(Place, String)>> {
+    let bytes = std::fs::read(e.path.parent()?.join(name)).ok()?;
+    config::kle_keys(&bytes).ok()
+}
+
+/// The place `line` writes, or the top left corner, a key in size.
+fn line_place(line: &Line) -> Place {
+    config::key_place(&format!("_ | _ | _ | {}", line.options_text())).unwrap_or(Place { x: 0, y: 0, w: 4, h: 4 })
+}
+
+/// Write place `p` in `line`, all four of it.
+fn set_place(line: &mut Line, p: Place) {
+    for (name, q) in PLACE_NAMES.iter().zip([p.x, p.y, p.w, p.h]) {
+        line.set_option(name, Some(config::show_quarters(q)));
+    }
+}
+
+/// The places keys `widths` long have along the edge that first shows key
+/// set `set`, as a free layout writes them: as the sample draws them.
+fn edge_places(doc: &Document, set: &str, widths: &[usize]) -> Vec<Place> {
+    let (edge, lines) = first_edge(doc, set).unwrap_or((Edge::Left, 1));
+    let screen = layout::Rect { x: 0, y: 0, w: 4 * 4096, h: 4 * 4096 };
+    let (panel, keys) = layout::edge_panel(screen, edge, 4, lines, widths);
+    let (wide, tall) = if edge.is_side() { (panel.h, panel.w) } else { (panel.w, panel.h) };
+    keys.iter().map(|k| layout::unturn(edge, wide, tall, Place { x: k.x, y: k.y, w: k.w, h: k.h })).collect()
 }
 
 thread_local! {
@@ -602,7 +768,7 @@ fn used_by(doc: &Document, set: &str) -> Vec<String> {
     places
 }
 
-/// The first edge that shows key set `set`, of the first profile, as
+/// The first edge that shows key set `set`, of the profiles in the order
 /// written, and how many lines of keys it has; none if no edge does.
 fn first_edge(doc: &Document, set: &str) -> Option<(Edge, usize)> {
     let edge = doc
@@ -640,9 +806,21 @@ fn panel_key(doc: &Document) -> i32 {
         .map_or(layout::KEY_SIZE, |n| n as i32)
 }
 
-/// Whether `label` is cut on a panel key `width` keys long, keys `key`
-/// pixels across: wider than the key's face in the panel's font.
-fn is_cut(label: &str, width: usize, key: i32) -> bool {
+/// How long the chosen key `line` is on the panel, in quarters of a key:
+/// its width along the edge, its place's in a free or KLE layout.
+fn length_of(e: &Editor, line: &Line) -> i32 {
+    let set = format!("set.{}", e.keymap.set.as_deref().unwrap_or(""));
+    match arrangement(&e.doc, &set) {
+        Arrangement::Edge => 4 * line.option("width").and_then(|w| w.parse().ok()).filter(|w| (1..=3).contains(w)).unwrap_or(1),
+        Arrangement::Free => line_place(line).w,
+        Arrangement::Kle(name) => kle_places(e, &name).and_then(|keys| keys.get(e.keymap.key).map(|(p, _)| p.w)).unwrap_or(4),
+    }
+}
+
+/// Whether `label` is cut on a panel key `quarters` quarters of a key
+/// long, keys `key` pixels across: wider than the key's face in the
+/// panel's font.
+fn is_cut(label: &str, quarters: i32, key: i32) -> bool {
     let text: Vec<u16> = label.encode_utf16().collect();
     let mut size = SIZE { cx: 0, cy: 0 };
     unsafe {
@@ -654,7 +832,7 @@ fn is_cut(label: &str, width: usize, key: i32) -> bool {
         DeleteObject(font);
         DeleteDC(dc);
     }
-    size.cx > width as i32 * key - 2 * panel::key_gap(key)
+    size.cx > quarters * key / 4 - 2 * panel::key_gap(key)
 }
 
 /// The keys of the set, as written; and the chosen key, if there is one.
@@ -749,18 +927,32 @@ pub(super) fn standing_reason(e: &Editor) -> Option<String> {
     e.keymap.wrong.as_ref().map(|(_, why)| why.clone())
 }
 
-/// Whether part `id` shows now, on the page, for the chosen key of kind
-/// `kind`, its chosen step a wait or not.
-fn shows(e: &Editor, id: usize, kind: Option<usize>, wait: bool, cut: bool) -> bool {
+/// Whether part `id` shows now, on キー配置, for the chosen key, if there
+/// is one, of a set laid out as `way`.
+fn shows_shape(e: &Editor, id: usize, key: bool, way: &Arrangement) -> bool {
     let k = &e.keymap;
-    let key = kind.is_some();
-    let sends = matches!(kind, Some(SHORTCUT | MODIFIER | HOLD | REPEAT)) || (kind == Some(MACRO) && !wait);
     match id {
         SET => !k.naming,
         NAME => k.naming,
         TITLE_SET | ADD_SET | RENAME | REMOVE_SET | KLE | USED | SAMPLE | ADD_KEY | REMOVE_KEY | KEY_UP | KEY_DOWN => true,
+        TITLE_ARRANGE | ARRANGE => k.set.is_some(),
+        TITLE_WIDTH | WIDTH | WIDTH_NOTE => key && *way == Arrangement::Edge,
+        _ if (PLACE..PLACE + 4).contains(&id) || (TITLE_PLACE..TITLE_PLACE + 4).contains(&id) => key && *way != Arrangement::Edge,
+        PLACE_NOTE => key && *way == Arrangement::Free,
+        KLE_NOTE => key && matches!(way, Arrangement::Kle(_)),
+        _ => false,
+    }
+}
+
+/// Whether part `id` shows now, on キーマッピング, for the chosen key of
+/// kind `kind`, its chosen step a wait or not.
+fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool) -> bool {
+    let key = kind.is_some();
+    let sends = matches!(kind, Some(SHORTCUT | MODIFIER | HOLD | REPEAT)) || (kind == Some(MACRO) && !wait);
+    match id {
+        TITLE_SET | SET | SAMPLE => true,
         CUT => key && cut,
-        TITLE_LABEL | LABEL | TITLE_WIDTH | WIDTH | WIDTH_NOTE | ABOUT => key,
+        TITLE_LABEL | LABEL | ABOUT => key,
         _ if (KINDS..KINDS + KIND_NAMES.len()).contains(&id) => key,
         TITLE_SENDS | SENDS | CAPTURE => sends,
         _ if (MODS..MODS + 4).contains(&id) => sends,
@@ -781,14 +973,17 @@ fn shows(e: &Editor, id: usize, kind: Option<usize>, wait: bool, cut: bool) -> b
 /// shown; else hide them all.
 pub(super) unsafe fn show(e: &Editor) {
     let line = chosen_line(e).map(|(_, l)| l);
-    let kind = line.as_ref().map(|l| l.kind().unwrap_or(SHORTCUT));
+    // A key sending nothing has none of the kinds' fields.
+    let kind = line.as_ref().map(|l| l.kind().unwrap_or(if l.kind.eq_ignore_ascii_case("none") { NO_KIND } else { SHORTCUT }));
     let wait = line.as_ref().is_some_and(|l| l.kind() == Some(MACRO) && l.steps().get(e.keymap.step).is_some_and(|s| is_wait(s)));
-    let cut = line.as_ref().is_some_and(|l| {
-        let width = l.option("width").and_then(|w| w.parse().ok()).unwrap_or(1);
-        is_cut(&text_of(part_of(e, LABEL)), width, panel_key(&e.doc))
-    });
+    let cut = line.as_ref().is_some_and(|l| is_cut(&text_of(part_of(e, LABEL)), length_of(e, l), panel_key(&e.doc)));
+    let way = e.keymap.set.as_ref().map_or(Arrangement::Edge, |s| arrangement(&e.doc, &format!("set.{s}")));
     for &(id, ..) in PARTS {
-        let on = e.page == PAGE && shows(e, id, kind, wait, cut);
+        let on = match e.page {
+            PAGE => shows_shape(e, id, kind.is_some(), &way),
+            MAP_PAGE => shows(id, kind, wait, cut),
+            _ => false,
+        };
         unsafe { ShowWindow(part_of(e, id), if on { SW_SHOWNA } else { SW_HIDE }) };
     }
 }
@@ -801,15 +996,15 @@ pub(super) unsafe fn label_typed() {
         let Ok(e) = e.try_borrow() else { return };
         let Some(e) = e.as_ref() else { return };
         let Some((_, line)) = chosen_line(e) else { return };
-        let width = line.option("width").and_then(|w| w.parse().ok()).unwrap_or(1);
-        let cut = is_cut(&text_of(part_of(e, LABEL)), width, panel_key(&e.doc));
-        unsafe { ShowWindow(part_of(e, CUT), if cut && e.page == PAGE { SW_SHOWNA } else { SW_HIDE }) };
+        let cut = is_cut(&text_of(part_of(e, LABEL)), length_of(e, &line), panel_key(&e.doc));
+        unsafe { ShowWindow(part_of(e, CUT), if cut && e.page == MAP_PAGE { SW_SHOWNA } else { SW_HIDE }) };
     });
 }
 
 /// Place the parts in `left`, `top`, `width` across, down to `bottom`: the
 /// key sets' row along the top, the sample down the left with its buttons
-/// under it, the key's fields on the right.
+/// under it, the key's fields on the right. On キー配置, the sample takes
+/// the room its few fields leave; on キーマッピング, the fields take it.
 pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: i32) {
     let s = |v| scale(v, e.dpi);
     let (h, pitch, gap) = (s(ROW_H), s(PITCH), s(MARGIN) / 2);
@@ -832,18 +1027,38 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     // The sample, and its buttons.
     let y0 = top + pitch + s(28);
     let buttons = bottom - h;
-    at(SAMPLE, left, y0, s(SAMPLE_W), buttons - gap - y0);
+    let shape_x = left + width - s(SHAPE_W);
+    match e.page {
+        MAP_PAGE => at(SAMPLE, left, y0, s(SAMPLE_W), bottom - y0),
+        _ => at(SAMPLE, left, y0, shape_x - s(MARGIN) - left, buttons - gap - y0),
+    }
     let mut x = left;
     for (id, w) in [(ADD_KEY, 56), (REMOVE_KEY, 56), (KEY_UP, 36), (KEY_DOWN, 36)] {
         at(id, x, buttons, s(w), h);
         x += s(w) + gap;
     }
 
+    // The shape: 並べ方, then the width or the place.
+    let (title, fw) = (s(TITLE_W) + s(8), s(SHAPE_W));
+    at(TITLE_ARRANGE, shape_x, y0, title, h);
+    at(ARRANGE, shape_x + title + gap, y0, fw - title - gap, s(LIST_H));
+    let y = y0 + pitch;
+    at(TITLE_WIDTH, shape_x, y, title, h);
+    at(WIDTH, shape_x + title + gap, y, s(60), h);
+    at(WIDTH_NOTE, shape_x + title + s(60) + 2 * gap, y, s(60), h);
+    for i in 0..4 {
+        let (x, y) = (shape_x + (i % 2) as i32 * fw / 2, y + (i / 2) as i32 * pitch);
+        at(TITLE_PLACE + i, x, y, s(20), h);
+        at(PLACE + i, x + s(20) + gap, y, s(72), h);
+    }
+    at(PLACE_NOTE, shape_x, y + 2 * pitch, fw, s(20));
+    at(KLE_NOTE, shape_x, y + 2 * pitch, fw, s(20));
+
     // The key's fields.
     let rx = left + s(SAMPLE_W) + s(MARGIN);
     let rw = (left + width - rx).max(0);
     let mut x = rx;
-    for (id, w) in [(TITLE_LABEL, 48), (LABEL, 150), (TITLE_WIDTH, 24), (WIDTH, 40), (WIDTH_NOTE, 40)] {
+    for (id, w) in [(TITLE_LABEL, 48), (LABEL, 150)] {
         at(id, x, y0, s(w), h);
         x += s(w) + gap;
     }
@@ -972,6 +1187,18 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
         fill(part_of(e, TARGET), &targets, false);
         fill(part_of(e, PIE), &sets, false);
         fill(part_of(e, LAYER_SET), &sets, false);
+        let way = arrangement(&e.doc, &format!("set.{set}"));
+        let mut ways: Vec<String> = ARRANGEMENTS.iter().map(|w| w.to_string()).collect();
+        if let Arrangement::Kle(name) = &way {
+            ways.push(format!("KLE（{name}）"));
+        }
+        let arrange = part_of(e, ARRANGE);
+        fill(arrange, &ways, false);
+        choose_item(arrange, Some(match way {
+            Arrangement::Edge => 0,
+            Arrangement::Free => 1,
+            Arrangement::Kle(_) => 2,
+        }), false);
         show_key(e, &sets);
     }
     update_sample(e);
@@ -997,10 +1224,27 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
         let width = part_of(e, WIDTH);
         set_text(width, line.option("width").unwrap_or("1"));
         SendMessageW(width, EM_SETMODIFY, 0, 0);
+        // A KLE layout's place is its file's, read only.
+        let way = arrangement(&e.doc, &format!("set.{}", k.set.as_deref().unwrap_or("")));
+        let place = match &way {
+            Arrangement::Kle(name) => kle_places(e, name).and_then(|keys| keys.get(k.key).map(|(p, _)| *p)),
+            _ => Some(line_place(&line)),
+        };
+        for (i, q) in place.map_or([None; 4], |p| [p.x, p.y, p.w, p.h].map(Some)).iter().enumerate() {
+            let field = part_of(e, PLACE + i);
+            set_text(field, &q.map_or_else(String::new, config::show_quarters));
+            SendMessageW(field, EM_SETMODIFY, 0, 0);
+            SendMessageW(field, EM_SETREADONLY, matches!(way, Arrangement::Kle(_)) as WPARAM, 0);
+        }
         for i in 0..KIND_NAMES.len() {
             SendMessageW(part_of(e, KINDS + i), BM_SETCHECK, (kind == Some(i)) as WPARAM, 0);
         }
-        set_text(part_of(e, ABOUT), kind.map_or("この種類は読めません", |i| ABOUTS[i]));
+        let about = match kind {
+            Some(i) => ABOUTS[i],
+            None if line.kind.eq_ignore_ascii_case("none") => "何も送りません。種類を選ぶと割り当てます",
+            None => "この種類は読めません",
+        };
+        set_text(part_of(e, ABOUT), about);
 
         let combo = sent(&line, k.step);
         set_text(part_of(e, SENDS), &combo.map_or_else(String::new, combo_text));
@@ -1070,13 +1314,28 @@ fn update_sample(e: &Editor) {
     let lines: Vec<Line> = keys_of(e).iter().map(|k| Line::of(k)).collect();
     let set = e.keymap.set.clone().unwrap_or_default();
     let (edge, rows) = first_edge(&e.doc, &set).map_or((None, 1), |(edge, n)| (Some(edge), n));
+    let mut labels: Vec<String> = lines.iter().map(|l| l.label.clone()).collect();
+    let way = arrangement(&e.doc, &format!("set.{set}"));
+    let places = match &way {
+        Arrangement::Edge => None,
+        Arrangement::Free => Some(lines.iter().map(line_place).collect()),
+        // As the parser lays it out: the file's keys to the key lines in
+        // order, the rest with the file's labels.
+        Arrangement::Kle(name) => kle_places(e, name).map(|keys| {
+            labels.extend(keys.iter().skip(lines.len()).map(|(_, l)| l.clone()));
+            keys.iter().map(|(p, _)| *p).collect()
+        }),
+    };
     SAMPLE_VIEW.with_borrow_mut(|v| {
-        v.labels = lines.iter().map(|l| l.label.encode_utf16().collect()).collect();
+        v.labels = labels.iter().map(|l| l.encode_utf16().collect()).collect();
         v.widths = lines.iter().map(|l| l.option("width").and_then(|w| w.parse().ok()).filter(|w| (1..=3).contains(w)).unwrap_or(1)).collect();
+        v.places = places;
+        v.count = lines.len();
         v.edge = edge;
         v.lines = rows;
         v.palette = Some(panel_palette(&e.doc));
         v.chosen = e.keymap.key;
+        v.movable = way == Arrangement::Free && e.page == PAGE;
     });
     unsafe { InvalidateRect(part_of(e, SAMPLE), null(), 0) };
 }
@@ -1225,7 +1484,17 @@ unsafe fn import_kle() {
     }
     with_editor(|e| unsafe {
         let section = format!("set.{set}");
-        if e.doc.set_value(&section, "layout", Some(&format!("kle:{name}"))) {
+        // The file has the places now: the key lines' go (Issue #109).
+        for (i, raw) in e.doc.keys(&section).iter().enumerate() {
+            let mut line = Line::of(raw);
+            if PLACE_NAMES.iter().any(|name| line.option(name).is_some()) {
+                for name in PLACE_NAMES {
+                    line.set_option(name, None);
+                }
+                e.doc.set_key(&section, i, &rewrite(raw, &line));
+            }
+        }
+        if e.doc.set_first(&section, "layout", &format!("kle:{name}")) {
             let key = e.keymap.key;
             choose(e, Some(set), key);
             mark_unsaved(e);
@@ -1239,7 +1508,7 @@ unsafe fn import_kle() {
 /// How far down a free layout's keys reach, in keys, as the file writes it.
 fn free_bottom(doc: &Document, section: &str) -> String {
     let bottom = doc.keys(section).iter().filter_map(|k| config::key_def(k).ok()?.place).map(|p| p.y + p.h).max().unwrap_or(0);
-    config::show_quarters(bottom)
+    config::show_quarters(bottom.min(4 * config::MAX_PLACE))
 }
 
 /// The file chosen in an open dialog over `owner`, if one is. comdlg32
@@ -1350,6 +1619,16 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             KEY_UP | KEY_DOWN if clicked => {
                 move_by(e, if id == KEY_UP { -1 } else { 1 });
+                None
+            }
+            // With the list open, once one is chosen: going over the items
+            // changes no layout on the way.
+            ARRANGE if code == CBN_SELENDOK || (code == CBN_SELCHANGE && SendMessageW(part_of(e, ARRANGE), CB_GETDROPPEDSTATE, 0, 0) == 0) => {
+                match SendMessageW(part_of(e, ARRANGE), CB_GETCURSEL, 0, 0) {
+                    0 => arrange(e, false),
+                    1 => arrange(e, true),
+                    _ => {}
+                }
                 None
             }
             _ if clicked && (KINDS..KINDS + KIND_NAMES.len()).contains(&id) => {
@@ -1490,12 +1769,162 @@ pub(super) unsafe fn choose_key(key: usize) {
     });
 }
 
-/// Choose key set `name`: the one a save failed in.
-pub(super) unsafe fn choose_set(name: &str) {
+/// Choose key set `name` and its key `key`: the ones a save failed in.
+pub(super) unsafe fn choose_set(name: &str, key: usize) {
     with_editor(|e| unsafe {
         if set_names(&e.doc).iter().any(|s| s == name) {
-            choose(e, Some(name.into()), 0);
+            choose(e, Some(name.into()), key);
         }
+    });
+}
+
+/// The page that line `line` of `doc` is edited on, and its key, if it is
+/// a key set's: キー配置 for its layout and a key's shape, キーマッピング
+/// for what a key sends (Issue #109). A key is at fault for its shape when
+/// it reads without it, or when it reads and its place is not as its
+/// set's layout wants.
+pub(super) fn fault(e: &Editor, line: usize) -> Option<(usize, usize)> {
+    let doc = &e.doc;
+    let (section, name) = doc.place(line);
+    let section = section.filter(|s| s.starts_with("set."))?;
+    let Some((_, key)) = doc.key_at(line).filter(|_| name.as_deref() == Some("key")) else {
+        let page = if name.as_deref() == Some("layout") { PAGE } else { MAP_PAGE };
+        return Some((page, 0));
+    };
+    let raw = doc.keys(&section).into_iter().nth(key)?;
+    let mut bare = Line::of(&raw);
+    for name in ["width"].iter().chain(&PLACE_NAMES) {
+        bare.set_option(name, None);
+    }
+    // A key line past a KLE file's keys reads, and is the layout's fault.
+    let kle = match arrangement(doc, &section) {
+        Arrangement::Kle(file) => kle_places(e, &file).is_some_and(|keys| key >= keys.len()),
+        _ => false,
+    };
+    let shape = match config::key_def(&raw) {
+        Err(_) => config::key_def(&rewrite(&raw, &bare)).is_ok(),
+        Ok(_) => kle || config::key_place(&raw).is_some() != (arrangement(doc, &section) == Arrangement::Free),
+    };
+    Some((if shape { PAGE } else { MAP_PAGE }, key))
+}
+
+/// The chosen key's shape field shown, the width or x: where a fault in
+/// its shape leads.
+pub(super) fn shape_field(e: &Editor) -> Option<HWND> {
+    [WIDTH, PLACE].into_iter().map(|id| part_of(e, id)).find(|&f| unsafe { IsWindowVisible(f) } != 0)
+}
+
+/// Lay the chosen set out along its edge, or free: 並べ方 (Issue #109).
+/// Free, each key goes where the sample draws it, a KLE file's places
+/// written into the key lines, and its keys past them written as keys
+/// that send nothing. Along the edge, the keys go in the order of their
+/// places, top to bottom, then left to right, each as long as its place
+/// is wide, in whole keys from 1 to 3. What the keys send is kept.
+unsafe fn arrange(e: &mut Editor, free: bool) {
+    let Some(set) = e.keymap.set.clone() else { return };
+    let section = format!("set.{set}");
+    let way = arrangement(&e.doc, &section);
+    let already = match way {
+        Arrangement::Edge => !free,
+        Arrangement::Free => free,
+        Arrangement::Kle(_) => false,
+    };
+    if already {
+        return;
+    }
+    let raws = e.doc.keys(&section);
+    let mut lines: Vec<Line> = raws.iter().map(|r| Line::of(r)).collect();
+    let kle = match &way {
+        Arrangement::Kle(name) => match kle_places(e, name) {
+            Some(keys) => keys,
+            None => {
+                tell(e, &format!("KLE のファイル「{name}」を読めません"));
+                return unsafe { refresh(e) };
+            }
+        },
+        _ => Vec::new(),
+    };
+    let places: Vec<Place> = match &way {
+        Arrangement::Edge => {
+            let widths: Vec<usize> = lines.iter().map(|l| l.option("width").and_then(|w| w.parse().ok()).filter(|w| (1..=3).contains(w)).unwrap_or(1)).collect();
+            edge_places(&e.doc, &set, &widths)
+        }
+        Arrangement::Free => lines.iter().map(line_place).collect(),
+        Arrangement::Kle(_) => (0..lines.len()).map(|i| kle.get(i).map_or(Place { x: 0, y: 0, w: 4, h: 4 }, |(p, _)| *p)).collect(),
+    };
+    let chosen = e.keymap.key;
+    let mut order: Vec<usize> = (0..lines.len()).collect();
+    for (line, place) in lines.iter_mut().zip(&places) {
+        if free {
+            line.set_option("width", None);
+            set_place(line, *place);
+        } else {
+            for name in PLACE_NAMES {
+                line.set_option(name, None);
+            }
+            line.set_option("width", Some(((place.w + 2) / 4).clamp(1, 3).to_string()).filter(|w| w != "1"));
+        }
+    }
+    // A KLE file's keys past the key lines: labels the file can hold.
+    let extras: Vec<String> = kle
+        .iter()
+        .skip(lines.len())
+        .filter(|_| free)
+        .map(|(place, label)| {
+            let label: String = label.chars().map(|c| if matches!(c, '|' | ';' | '#') || c.is_control() { '/' } else { c }).collect();
+            let label = if label.trim().is_empty() { "-".to_string() } else { label.trim().to_string() };
+            let mut extra = Line::of(&format!("{label} | none | -"));
+            set_place(&mut extra, *place);
+            format!("{label} | none | - | {}", extra.options_text())
+        })
+        .collect();
+    if let Some(why) = extras.iter().find_map(|k| config::key_def(k).err()) {
+        tell(e, &format!("並べ方を書き換えられません: {why}"));
+        return unsafe { refresh(e) };
+    }
+    let mut written = lines.iter().zip(&raws).enumerate().all(|(i, (line, raw))| e.doc.set_key(&section, i, &rewrite(raw, line)));
+    if free {
+        written &= e.doc.set_first(&section, "layout", "free");
+        for (i, extra) in extras.iter().enumerate() {
+            written &= e.doc.insert_key(&section, lines.len() + i, extra);
+        }
+    } else {
+        written &= e.doc.set_value(&section, "layout", None);
+        order.sort_by_key(|&i| (places[i].y, places[i].x));
+        let mut at: Vec<usize> = (0..lines.len()).collect();
+        for (to, key) in order.iter().enumerate() {
+            let Some(from) = at.iter().position(|k| k == key) else { continue };
+            written &= e.doc.move_key(&section, from, to);
+            let k = at.remove(from);
+            at.insert(to, k);
+        }
+    }
+    if !written {
+        tell(e, "並べ方を書き換えられません");
+    }
+    e.keymap.key = order.iter().position(|&k| k == chosen).unwrap_or(0);
+    e.keymap.wrong = None;
+    unsafe {
+        refresh(e);
+        mark_unsaved(e);
+    }
+}
+
+/// Key `key` of the sample dragged to `packed`: x, y, w and h, a byte each.
+pub(super) unsafe fn place_key(key: usize, packed: u32) {
+    let at = |i: u32| (packed >> (8 * i) & 0xFF) as i32;
+    let place = Place { x: at(0), y: at(1), w: at(2), h: at(3) };
+    with_editor(|e| unsafe {
+        if key >= keys_of(e).len() {
+            return;
+        }
+        e.keymap.key = key;
+        change(e, SAMPLE, |line| {
+            set_place(line, place);
+            Ok(())
+        });
+        // Turned away: the sample shows the file's place again.
+        update_sample(e);
     });
 }
 
@@ -1646,6 +2075,20 @@ pub(super) unsafe fn commit(id: usize) -> bool {
                     Ok(())
                 });
             }
+            // All four written, the one typed as it is: the parser says
+            // whether it reads.
+            _ if (PLACE..PLACE + 4).contains(&id) => {
+                change(e, id, |line| {
+                    let p = line_place(line);
+                    for (name, q) in PLACE_NAMES.iter().zip([p.x, p.y, p.w, p.h]) {
+                        if line.option(name).is_none() {
+                            line.set_option(name, Some(config::show_quarters(q)));
+                        }
+                    }
+                    line.set_option(PLACE_NAMES[id - PLACE], Some(typed));
+                    Ok(())
+                });
+            }
             INTERVAL => {
                 change(e, id, |line| {
                     line.set_option("interval", Some(typed));
@@ -1719,6 +2162,11 @@ fn show_capture(e: &Editor) {
 /// The hotkey's 押して取り込む was pressed.
 pub(super) unsafe fn capture_hotkey() {
     with_editor(|e| toggle_capture(e, Target::Hotkey));
+}
+
+/// Stop naming the set, the name typed left untaken: キー配置 left.
+pub(super) fn stop_naming(e: &mut Editor) {
+    e.keymap.naming = false;
 }
 
 /// Call off a capture under way: the page left, or the window.
@@ -1800,15 +2248,99 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
             }
             WM_LBUTTONDOWN => {
                 SetFocus(hwnd);
-                let p = POINT { x: (lp & 0xFFFF) as i16 as i32, y: (lp >> 16 & 0xFFFF) as i16 as i32 };
+                let p = point_of(lp);
                 let mut client: RECT = zeroed();
                 GetClientRect(hwnd, &mut client);
-                let (_, _, cells) = SAMPLE_VIEW.with_borrow(|v| v.lay_out(client, window_dpi(hwnd)));
-                let hit = cells.iter().position(|r| p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom);
-                if let Some(i) = hit {
-                    PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, i, 0);
+                let dpi = window_dpi(hwnd);
+                let dragged = SAMPLE_VIEW.with_borrow_mut(|v| {
+                    let (i, cell, unit) = v.hit(client, dpi, p)?;
+                    if i < v.count {
+                        PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, i, 0);
+                    }
+                    let places = v.places.as_ref().filter(|_| v.movable && i < v.count)?;
+                    let from = places[i];
+                    let pull = v.pull(i, cell, p, dpi);
+                    v.drag = Some(Drag { key: i, pull, start: p, from, now: from, frame: frame(places), unit });
+                    Some(())
+                });
+                if dragged.is_some() {
+                    SetCapture(hwnd);
                 }
                 0
+            }
+            // As the sample shows it: turned back into the layout's place.
+            WM_MOUSEMOVE => {
+                let p = point_of(lp);
+                let moved = SAMPLE_VIEW.with_borrow_mut(|v| {
+                    let Some(mut d) = v.drag else { return false };
+                    let q = |px: i32| (px as f64 * 4.0 / d.unit as f64).round() as i32;
+                    let (dx, dy) = (q(p.x - d.start.x), q(p.y - d.start.y));
+                    let (left, top, wide, tall) = d.frame;
+                    let edge = v.edge.unwrap_or(Edge::Left);
+                    let mut t = layout::turn(edge, wide, tall, Place { x: d.from.x - left, y: d.from.y - top, ..d.from });
+                    match d.pull {
+                        Pull::Move => (t.x, t.y) = (t.x + dx, t.y + dy),
+                        Pull::Wide => t.w = (t.w + dx).max(1),
+                        Pull::Tall => t.h = (t.h + dy).max(1),
+                    }
+                    let u = layout::unturn(edge, wide, tall, t);
+                    let (most, largest) = (4 * config::MAX_PLACE, 4 * config::MAX_SIZE);
+                    let now = Place { x: (u.x + left).clamp(0, most), y: (u.y + top).clamp(0, most), w: u.w.clamp(1, largest), h: u.h.clamp(1, largest) };
+                    if now == d.now {
+                        return false;
+                    }
+                    d.now = now;
+                    v.drag = Some(d);
+                    if let Some(place) = v.places.as_mut().and_then(|places| places.get_mut(d.key)) {
+                        *place = now;
+                    }
+                    true
+                });
+                if moved {
+                    InvalidateRect(hwnd, null(), 0);
+                }
+                0
+            }
+            WM_LBUTTONUP => {
+                let done = SAMPLE_VIEW.with_borrow_mut(|v| v.drag.take());
+                ReleaseCapture();
+                if let Some(d) = done.filter(|d| d.now != d.from) {
+                    let packed = d.now.x | d.now.y << 8 | d.now.w << 16 | d.now.h << 24;
+                    PostMessageW(GetParent(hwnd), super::WM_PLACE_KEY, d.key, packed as u32 as LPARAM);
+                }
+                0
+            }
+            // Taken away mid-drag: the key back where it was.
+            WM_CAPTURECHANGED => {
+                SAMPLE_VIEW.with_borrow_mut(|v| {
+                    if let Some(d) = v.drag.take() {
+                        if let Some(place) = v.places.as_mut().and_then(|places| places.get_mut(d.key)) {
+                            *place = d.from;
+                        }
+                    }
+                });
+                InvalidateRect(hwnd, null(), 0);
+                0
+            }
+            // Over an end of the chosen key that can be dragged out: say so.
+            WM_SETCURSOR if wp as HWND == hwnd && (lp & 0xFFFF) as u32 == HTCLIENT => {
+                let mut p: POINT = zeroed();
+                GetCursorPos(&mut p);
+                ScreenToClient(hwnd, &mut p);
+                let mut client: RECT = zeroed();
+                GetClientRect(hwnd, &mut client);
+                let dpi = window_dpi(hwnd);
+                let pull = SAMPLE_VIEW.with_borrow(|v| {
+                    let (i, cell, _) = v.hit(client, dpi, p).filter(|_| v.movable && v.drag.is_none())?;
+                    Some(v.pull(i, cell, p, dpi))
+                });
+                let shape = match pull {
+                    Some(Pull::Wide) => IDC_SIZEWE,
+                    Some(Pull::Tall) => IDC_SIZENS,
+                    _ => IDC_ARROW,
+                };
+                SetCursor(LoadCursorW(null_mut(), shape));
+                1
             }
             WM_KEYDOWN => {
                 let delta: isize = match wp as u16 {
@@ -1816,7 +2348,7 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
                     VK_DOWN | VK_RIGHT => 1,
                     _ => return DefWindowProcW(hwnd, msg, wp, lp),
                 };
-                let (chosen, count) = SAMPLE_VIEW.with_borrow(|v| (v.chosen, v.widths.len()));
+                let (chosen, count) = SAMPLE_VIEW.with_borrow(|v| (v.chosen, v.count));
                 if let Some(to) = chosen.checked_add_signed(delta).filter(|&to| to < count) {
                     PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, to, 0);
                 }
@@ -1831,6 +2363,11 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
     }
 }
 
+/// The point a mouse message's `lp` gives, in the client area.
+fn point_of(lp: LPARAM) -> POINT {
+    POINT { x: (lp & 0xFFFF) as i16 as i32, y: (lp >> 16 & 0xFFFF) as i16 as i32 }
+}
+
 unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
     unsafe {
         let dpi = window_dpi(hwnd);
@@ -1843,7 +2380,7 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
         GetClientRect(hwnd, &mut client);
         fill(&client, look.sidebar);
         SAMPLE_VIEW.with_borrow(|v| {
-            let Some(palette) = v.palette.filter(|_| !v.widths.is_empty()) else { return };
+            let Some(palette) = v.palette.filter(|_| !v.labels.is_empty()) else { return };
             let (key, back, cells) = v.lay_out(client, dpi);
             fill(&back, palette.background);
 
@@ -1852,7 +2389,8 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
             let old_font = SelectObject(dc, font);
             let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
             SetBkMode(dc, TRANSPARENT as i32);
-            for (i, cell) in cells.iter().enumerate() {
+            for i in v.order(cells.len()) {
+                let cell = &cells[i];
                 let mut face = RECT { left: cell.left + gap, top: cell.top + gap, right: cell.right - gap, bottom: cell.bottom - gap };
                 let chosen = i == v.chosen;
                 let (colour, ink) = if chosen { (palette.held, palette.held_text) } else { (palette.face, palette.text) };

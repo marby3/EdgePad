@@ -3,7 +3,7 @@
 //! parser reads it. The panels pick the file up as when it is saved by hand.
 //!
 //! Its parts are Windows's own controls, of the common controls version 6:
-//! a sidebar of the seven pages (a list box), the page shown on its right
+//! a sidebar of the eight pages (a list box), the page shown on its right
 //! under its heading, a status line, and a row along the bottom with the
 //! file's path, テキストで開く and 保存. A question (the file changed outside,
 //! or changes not saved on closing) shows in the status line, its answers
@@ -61,8 +61,8 @@ mod keymap;
 /// The window's class: also how the running EdgePad and the tests find it.
 pub const CLASS: *const u16 = w!("EdgePadSettings");
 
-/// The pages, by use (Issue #107).
-const PAGES: [&str; 7] = ["キー配置", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"];
+/// The pages, by use (Issue #107; キーマッピング since Issue #109).
+const PAGES: [&str; 8] = ["キー配置", "キーマッピング", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"];
 
 /// Control ids: the sidebar, the page's heading, the status line, the
 /// file's path, テキストで開く, 保存, and the answers to questions. Clear of
@@ -112,6 +112,9 @@ const WM_COMMIT: u32 = WM_APP + 2;
 const WM_CHOOSE_KEY: u32 = WM_APP + 3;
 const WM_LAY_OUT: u32 = WM_APP + 4;
 const WM_OPEN_EDGE: u32 = WM_APP + 5;
+/// A key of the sample dragged to a place: the key in wParam, its place in
+/// lParam, a byte each for x, y, w and h, in quarters.
+const WM_PLACE_KEY: u32 = WM_APP + 6;
 
 /// Styles, messages and notices of Win32_System_SystemServices and
 /// Win32_UI_Controls, features taken for these alone otherwise.
@@ -831,10 +834,13 @@ unsafe fn show_page(index: usize) {
     let Some((sidebar, heading)) = with_editor(|e| {
         e.page = index;
         keymap::cancel_capture(e);
+        if index != keymap::PAGE {
+            keymap::stop_naming(e);
+        }
         unsafe {
             fields::refresh(e);
             fields::show(e);
-            if index == keymap::PAGE {
+            if keymap::is_page(index) {
                 keymap::refresh(e);
             }
             keymap::show(e);
@@ -854,6 +860,10 @@ unsafe fn show_page(index: usize) {
         }
         let text = wide(PAGES[index]);
         SetWindowTextW(heading, text.as_ptr());
+        // The sample is laid out as each of the two pages has it.
+        if keymap::is_page(index) {
+            lay_out();
+        }
     }
     tray::test_event(&format!("settings: page {}", PAGES[index]));
 }
@@ -910,9 +920,16 @@ fn tell_fault(e: &Editor, reason: &str, line: usize) {
 /// The status line leading to the line a save failed on was pressed: show
 /// the page of that line, and the field of its setting, if it has one.
 unsafe fn go_to_fault() {
-    let Some(((page, row, edge), section)) = with_editor(|e| {
-        let (section, name) = e.doc.place(e.fault.get()?);
-        Some((fields::locate(section.as_deref(), name.as_deref()), section))
+    let Some(((page, row, edge), section, key)) = with_editor(|e| {
+        let line = e.fault.get()?;
+        let (section, name) = e.doc.place(line);
+        let mut at = fields::locate(section.as_deref(), name.as_deref());
+        // A key's line: its shape or what it sends (Issue #109).
+        let key = keymap::fault(e, line);
+        if let Some((page, _)) = key {
+            at.0 = page;
+        }
+        Some((at, section, key.map(|(_, k)| k)))
     })
     .flatten() else {
         return;
@@ -932,7 +949,12 @@ unsafe fn go_to_fault() {
             fields::choose_edge(edge);
         }
         if let Some(set) = section.as_deref().and_then(|s| s.strip_prefix("set.")) {
-            keymap::choose_set(set);
+            keymap::choose_set(set, key.unwrap_or(0));
+            if page == keymap::PAGE {
+                if let Some(field) = with_editor(|e| keymap::shape_field(e)).flatten() {
+                    SetFocus(field);
+                }
+            }
         }
         if let Some(field) = row.and_then(|i| with_editor(|e| fields::field(e, i))) {
             SetFocus(field);
@@ -1383,6 +1405,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_CHOOSE_KEY => {
                 keymap::choose_key(wp);
+                0
+            }
+            WM_PLACE_KEY => {
+                keymap::place_key(wp, lp as u32);
                 0
             }
             WM_LAY_OUT => {

@@ -247,6 +247,29 @@ impl Document {
         true
     }
 
+    /// Set `name` in `section` to `value`, as `set_value` does, but a new
+    /// setting goes first in the section, right after its header: where a
+    /// key set's `layout` reads best, above its keys.
+    pub fn set_first(&mut self, section: &str, name: &str, value: &str) -> bool {
+        if self.get(section, name).is_some() {
+            return self.set_value(section, name, Some(value));
+        }
+        if !writable(value) || !setting_name_ok(name) || !section_name_ok(section) {
+            return false;
+        }
+        let Some((start, _)) = self.section(section) else { return false };
+        self.insert_line(start + 1, &format!("{name} = {value}"));
+        true
+    }
+
+    /// The key on line `line` (from 1, as the parser counts): its section,
+    /// by its lower-case name, and which of the section's keys it is.
+    pub fn key_at(&self, line: usize) -> Option<(String, usize)> {
+        let (Some(section), Some(name)) = self.place(line) else { return None };
+        let index = self.settings(&section, "key").iter().position(|&i| i + 1 == line).filter(|_| name == "key")?;
+        Some((section, index))
+    }
+
     /// The keys of key set `set`, as written after `key =`: the fields
     /// with the spaces between them as written, for the caller to split on
     /// `|` and trim as the parser does.

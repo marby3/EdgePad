@@ -42,7 +42,7 @@ const LEFT: i32 = 2020;
 const RIGHT: i32 = 2021;
 const TOP: i32 = 2022;
 const BOTTOM: i32 = 2023;
-const APPS_PAGE: usize = 1;
+const APPS_PAGE: usize = 2;
 const DEFAULT: &str = "既定（ほかのアプリ）";
 
 const OTHER_CLASS: &str = "EdgePadTestOtherApp";

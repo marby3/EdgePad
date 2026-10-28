@@ -147,7 +147,7 @@ fn the_running_edgepad_does_without_the_ime_and_the_settings_window_has_it() {
     let _ = tray_menu(&app);
     let editor = open(&app, id);
     wait_in_front(editor);
-    click(centre(sidebar_item(editor, 1)));
+    click(centre(sidebar_item(editor, 2)));
     let pid = pid_of(editor);
     assert!(within_3s(|| modules(pid).iter().any(|m| m == TEXT_INPUT)), "the settings window has the IME: {:?}", modules(pid));
     assert!(!modules(app.0.id()).iter().any(|m| m == TEXT_INPUT), "the running EdgePad has not: {:?}", modules(app.0.id()));

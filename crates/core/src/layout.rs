@@ -100,14 +100,27 @@ pub struct Place {
 /// screen edge, as on the bottom. Labels are never turned, so neither is
 /// anything here.
 pub fn free_panel(monitor: Rect, edge: Edge, key: i32, places: &[Place]) -> (Rect, Vec<Rect>) {
+    free_panel_in(monitor, edge, key, places, frame(places))
+}
+
+/// The left, top, width and height of the layout `places` spans, in
+/// quarters.
+pub fn frame(places: &[Place]) -> Place {
     let left = places.iter().map(|p| p.x).min().unwrap_or(0);
     let top = places.iter().map(|p| p.y).min().unwrap_or(0);
     let wide = places.iter().map(|p| p.x + p.w).max().unwrap_or(0) - left;
     let tall = places.iter().map(|p| p.y + p.h).max().unwrap_or(0) - top;
+    Place { x: left, y: top, w: wide, h: tall }
+}
+
+/// `free_panel`, the layout taken to span `frame`: the settings window's
+/// sample keeps the frame a drag started in, so the keys not dragged stay
+/// where they are.
+pub fn free_panel_in(monitor: Rect, edge: Edge, key: i32, places: &[Place], frame: Place) -> (Rect, Vec<Rect>) {
+    let Place { x: left, y: top, w: wide, h: tall } = frame;
     // Quarters to pixels, each edge on its own: keys that touch still do.
     let px = |q: i32| (q * key + 2) / 4;
     let span = |from: i32, len: i32| (px(from), px(from + len) - px(from));
-    let side = edge.is_side();
     let (long, thick) = (px(wide), px(tall));
     let panel = match edge {
         Edge::Left => Rect { x: monitor.x, y: monitor.y + (monitor.h - long) / 2, w: thick, h: long },
@@ -118,22 +131,33 @@ pub fn free_panel(monitor: Rect, edge: Edge, key: i32, places: &[Place]) -> (Rec
     let keys = places
         .iter()
         .map(|p| {
-            let (x, y) = (p.x - left, p.y - top);
-            // Along the edge, and across it from the panel's left or top.
-            let (along, across) = match edge {
-                Edge::Top | Edge::Bottom => (x, y),
-                Edge::Left => (x, tall - y - p.h),
-                Edge::Right => (wide - x - p.w, y),
-            };
-            let (along, length) = span(along, p.w);
-            let (across, depth) = span(across, p.h);
-            match side {
-                true => Rect { x: across, y: along, w: depth, h: length },
-                false => Rect { x: along, y: across, w: length, h: depth },
-            }
+            let t = turn(edge, wide, tall, Place { x: p.x - left, y: p.y - top, ..*p });
+            let ((x, w), (y, h)) = (span(t.x, t.w), span(t.y, t.h));
+            Rect { x, y, w, h }
         })
         .collect();
     (panel, keys)
+}
+
+/// Place `p` of a free layout `wide` by `tall` quarters, its top left at
+/// 0, 0, as the panel on `edge` turns it: in quarters from the panel's top
+/// left, across and down as the screen goes.
+pub fn turn(edge: Edge, wide: i32, tall: i32, p: Place) -> Place {
+    match edge {
+        Edge::Top | Edge::Bottom => p,
+        Edge::Left => Place { x: tall - p.y - p.h, y: p.x, w: p.h, h: p.w },
+        Edge::Right => Place { x: p.y, y: wide - p.x - p.w, w: p.h, h: p.w },
+    }
+}
+
+/// The place of the layout that `turn` turns into `q` (the settings
+/// window's sample, dragged as the screen goes).
+pub fn unturn(edge: Edge, wide: i32, tall: i32, q: Place) -> Place {
+    match edge {
+        Edge::Top | Edge::Bottom => q,
+        Edge::Left => Place { x: q.y, y: tall - q.x - q.w, w: q.h, h: q.w },
+        Edge::Right => Place { x: wide - q.y - q.h, y: q.x, w: q.h, h: q.w },
+    }
 }
 
 /// The keys on each page of a panel, as `edge_panel` would lay them out:
