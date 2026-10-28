@@ -37,11 +37,18 @@ pub enum Key {
     Right,
     Up,
     Down,
+    /// The keys only a JIS keyboard has: 半角/全角, 変換, 無変換,
+    /// カタカナひらがな and ろ (Issue #115).
+    Hankaku,
+    Henkan,
+    Muhenkan,
+    Kana,
+    Ro,
 }
 
 const SYMBOLS: &[u8] = b"[]-=;',./\\`";
 
-const NAMED: [(&str, Key); 25] = [
+const NAMED: [(&str, Key); 30] = [
     ("ctrl", Key::Ctrl),
     ("shift", Key::Shift),
     ("alt", Key::Alt),
@@ -69,6 +76,11 @@ const NAMED: [(&str, Key); 25] = [
     ("subtract", Key::Pad(b'-')),
     ("decimal", Key::Pad(b'.')),
     ("divide", Key::Pad(b'/')),
+    ("hankaku", Key::Hankaku),
+    ("henkan", Key::Henkan),
+    ("muhenkan", Key::Muhenkan),
+    ("kana", Key::Kana),
+    ("ro", Key::Ro),
 ];
 
 impl Key {
@@ -186,6 +198,11 @@ impl std::fmt::Display for Key {
             Key::Right => "Right",
             Key::Up => "Up",
             Key::Down => "Down",
+            Key::Hankaku => "Hankaku",
+            Key::Henkan => "Henkan",
+            Key::Muhenkan => "Muhenkan",
+            Key::Kana => "Kana",
+            Key::Ro => "Ro",
         };
         f.write_str(name)
     }
