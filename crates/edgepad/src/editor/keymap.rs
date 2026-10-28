@@ -10,8 +10,17 @@
 //! that side; a key pressed there is chosen. On キー配置, the buttons under
 //! it add, remove and move keys, a free layout's keys are dragged about on
 //! it, and on the right are how the set is laid out (並べ方) and the chosen
-//! key's width, or its place. On キーマッピング, on the right, the chosen
-//! key's label, its kind of the ten, and the fields of that kind alone.
+//! key's width, or its place.
+//!
+//! キーマッピング is laid out as Vial is (Issue #111): the key sets'
+//! drop-down list and a tab for each set its layer keys reach; the sample
+//! across the page; the chosen key's label and what it does, in a
+//! sentence; the modifiers and the motion (押した時に送る, 押している間,
+//! 連打) a key pressed below goes with; and five groups: 基本, the keys laid
+//! out as a US keyboard is, the number pad on its right and the modifier
+//! keys over it; the layers; a macro's steps; a text or a program; and a
+//! page or a pie. 基本 had the number pad and the modifier keys apart at
+//! first, too empty to read.
 //!
 //! The keys a key sends are chosen, not written: modifiers turned on and
 //! off, and a key from the list of a group; or captured, the next keys
@@ -38,7 +47,7 @@ use edgepad_core::theme::Palette;
 use windows_sys::Win32::Foundation::{FreeLibrary, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
+    GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_DOWN, VK_END, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
     VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_UP,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -106,6 +115,22 @@ const LAYER_TOGGLE: usize = 1069;
 const ARRANGE: usize = 1070;
 const PLACE: usize = 1071;
 const KLE_NOTE: usize = 1075;
+/// キーマッピング: what the chosen key does; the program field; the
+/// motions; the groups; the layers' tabs; and the keys of 基本, of テンキー
+/// and of 修飾キー.
+const SUMMARY: usize = 1076;
+const RUN_CONTENT: usize = 1077;
+const TITLE_RUN: usize = 1078;
+const MOTIONS: usize = 1080;
+const GROUP_TABS: usize = 1090;
+const LAYER_TABS: usize = 1200;
+const KEYBOARD: usize = 1300;
+const NUMPAD: usize = 1400;
+const MOD_BUTTONS: usize = 1450;
+/// A Static's text cut with "…" at its end.
+const SS_ENDELLIPSIS: u32 = 0x4000;
+/// How many layers' tabs there are at most.
+const TAB_COUNT: usize = 16;
 const TITLE_SET: usize = 1100;
 const TITLE_LABEL: usize = 1101;
 const TITLE_WIDTH: usize = 1102;
@@ -162,6 +187,103 @@ const GROUP_NAMES: [&str; 5] = ["英数字", "F1〜F24", "移動・編集", "記
 /// The page key's targets before the key sets.
 const PAGE_TURNS: [(&str, &str); 2] = [("next", "次のページ"), ("prev", "前のページ")];
 const EDGE_NAMES: [(&str, &str); 4] = [("left", "左辺"), ("right", "右辺"), ("top", "上辺"), ("bottom", "下辺")];
+/// The motions a key pressed below goes with, and the groups.
+const MOTION_NAMES: [&str; 3] = ["押した時に送る", "押している間", "連打"];
+const GROUP_TAB_NAMES: [&str; 5] = ["基本", "レイヤー", "マクロ", "文字・起動", "ページ・パイ"];
+const BASIC: usize = 0;
+const LAYER_TAB: usize = 1;
+const MACRO_TAB: usize = 2;
+const TEXT_TAB: usize = 3;
+const PAGE_TAB: usize = 4;
+/// 基本's height, and its width, in quarters of a key: the keyboard, and
+/// right of it the number pad, the modifier keys over it.
+const KEYBOARD_TALL: i32 = 29;
+const KEYBOARD_WIDE: i32 = 92;
+/// Where the number pad starts, and its modifier keys' width.
+const PAD_X: i32 = 76;
+const PAD_Y: i32 = 9;
+const MODIFIER_W: i32 = 8;
+/// The sample on キーマッピング at least, in logical pixels.
+const MAP_SAMPLE_H: i32 = 104;
+
+/// The keys of 基本, as a US keyboard has them: each key, and its left,
+/// top and width in quarters of a key.
+fn keyboard() -> Vec<(Key, i32, i32, i32)> {
+    use Key::*;
+    let mut keys = vec![(Esc, 0, 0, 4)];
+    // F1 to F12 in fours, F13 to F24 under them.
+    for (n, x) in (1..=12).zip([8, 12, 16, 20, 26, 30, 34, 38, 44, 48, 52, 56]) {
+        keys.push((F(n), x, 0, 4));
+        keys.push((F(n + 12), x, 4, 4));
+    }
+    let row = |keys: &mut Vec<_>, chars: &[u8], x: i32, y: i32| {
+        for (i, &c) in chars.iter().enumerate() {
+            keys.push((Char(c), x + 4 * i as i32, y, 4));
+        }
+    };
+    row(&mut keys, b"`1234567890-=", 0, 9);
+    keys.push((Backspace, 52, 9, 8));
+    keys.push((Tab, 0, 13, 6));
+    row(&mut keys, b"QWERTYUIOP[]", 6, 13);
+    keys.push((Char(b'\\'), 54, 13, 6));
+    row(&mut keys, b"ASDFGHJKL;'", 7, 17);
+    keys.push((Enter, 51, 17, 9));
+    row(&mut keys, b"ZXCVBNM,./", 9, 21);
+    keys.push((Space, 15, 25, 25));
+    for (key, x, y) in [(Insert, 62, 9), (Home, 66, 9), (PgUp, 70, 9), (Delete, 62, 13), (End, 66, 13), (PgDn, 70, 13)] {
+        keys.push((key, x, y, 4));
+    }
+    for (key, x, y) in [(Up, 66, 21), (Left, 62, 25), (Down, 66, 25), (Right, 70, 25)] {
+        keys.push((key, x, y, 4));
+    }
+    keys
+}
+
+/// The keys of テンキー: each key, its left, top, width and height, in
+/// quarters of a key.
+fn numpad() -> Vec<(Key, i32, i32, i32, i32)> {
+    use Key::Pad;
+    let mut keys = vec![(Pad(b'/'), 0, 0, 4, 4), (Pad(b'*'), 4, 0, 4, 4), (Pad(b'-'), 8, 0, 4, 4), (Pad(b'+'), 12, 4, 4, 8)];
+    for (row, digits) in [(4, b"789"), (8, b"456"), (12, b"123")] {
+        for (i, &d) in digits.iter().enumerate() {
+            keys.push((Pad(d), 4 * i as i32, row, 4, 4));
+        }
+    }
+    keys.push((Pad(b'0'), 0, 16, 8, 4));
+    keys.push((Pad(b'.'), 8, 16, 4, 4));
+    keys
+}
+
+/// A key as its button names it.
+fn button_name(key: Key) -> String {
+    match key {
+        Key::Up => "↑".into(),
+        Key::Down => "↓".into(),
+        Key::Left => "←".into(),
+        Key::Right => "→".into(),
+        Key::Pad(c) => (c as char).to_string(),
+        _ => key.to_string(),
+    }
+}
+
+/// Every part, the keys' buttons and the layers' tabs among them, in the
+/// order the Tab key follows.
+fn every_part() -> Vec<(usize, Class, String)> {
+    let mut parts = Vec::new();
+    for &(id, class, text) in PARTS {
+        parts.push((id, class, text.to_string()));
+        if id == SET {
+            parts.extend((0..TAB_COUNT).map(|i| (LAYER_TABS + i, Toggle, String::new())));
+        }
+        if id == GROUP_TABS + GROUP_TAB_NAMES.len() - 1 {
+            parts.extend(keyboard().into_iter().enumerate().map(|(i, (k, ..))| (KEYBOARD + i, Toggle, button_name(k))));
+            parts.extend(numpad().into_iter().enumerate().map(|(i, (k, ..))| (NUMPAD + i, Toggle, button_name(k))));
+            parts.extend(MOD_KEYS.iter().enumerate().map(|(i, (_, n))| (MOD_BUTTONS + i, Toggle, n.to_string())));
+        }
+    }
+    parts
+}
+
 /// The ways a set is laid out, as 並べ方 names them, before a KLE file's.
 const ARRANGEMENTS: [&str; 2] = ["辺に沿って並べる", "自由配列"];
 /// A key's place, as the file writes it.
@@ -175,7 +297,6 @@ const NEW_WAIT: &str = "wait 100";
 /// Sizes in logical pixels (96 DPI).
 const ROW_H: i32 = 26;
 const PITCH: i32 = 32;
-const SAMPLE_W: i32 = 200;
 /// キー配置's fields, right of its sample.
 const SHAPE_W: i32 = 280;
 /// How near a chosen key's right or bottom end the mouse takes that end.
@@ -240,6 +361,23 @@ const PARTS: &[(usize, Class, &str)] = &[
     (TITLE_LABEL, Text, "ラベル"),
     (LABEL, Edit, ""),
     (CUT, Text, "パネルでは切れます"),
+    (SUMMARY, Text, ""),
+    (MODS, Toggle, MOD_KEYS[0].1),
+    (MODS + 1, Toggle, MOD_KEYS[1].1),
+    (MODS + 2, Toggle, MOD_KEYS[2].1),
+    (MODS + 3, Toggle, MOD_KEYS[3].1),
+    (MOTIONS, Toggle, MOTION_NAMES[0]),
+    (MOTIONS + 1, Toggle, MOTION_NAMES[1]),
+    (MOTIONS + 2, Toggle, MOTION_NAMES[2]),
+    (TITLE_INTERVAL, Text, "間隔"),
+    (INTERVAL, Edit, ""),
+    (INTERVAL_NOTE, Text, "ms"),
+    (CAPTURE, Button, "押して取り込む"),
+    (GROUP_TABS, Toggle, GROUP_TAB_NAMES[0]),
+    (GROUP_TABS + 1, Toggle, GROUP_TAB_NAMES[1]),
+    (GROUP_TABS + 2, Toggle, GROUP_TAB_NAMES[2]),
+    (GROUP_TABS + 3, Toggle, GROUP_TAB_NAMES[3]),
+    (GROUP_TABS + 4, Toggle, GROUP_TAB_NAMES[4]),
     (KINDS, Toggle, KIND_LABELS[0]),
     (KINDS + 1, Toggle, KIND_LABELS[1]),
     (KINDS + 2, Toggle, KIND_LABELS[2]),
@@ -263,22 +401,16 @@ const PARTS: &[(usize, Class, &str)] = &[
     (WAIT_NOTE, Text, "0〜10000 ms"),
     (TITLE_SENDS, Text, "送るキー"),
     (SENDS, Text, ""),
-    (CAPTURE, Button, "押して取り込む"),
-    (MODS, Toggle, MOD_KEYS[0].1),
-    (MODS + 1, Toggle, MOD_KEYS[1].1),
-    (MODS + 2, Toggle, MOD_KEYS[2].1),
-    (MODS + 3, Toggle, MOD_KEYS[3].1),
-    (TITLE_INTERVAL, Text, "間隔"),
-    (INTERVAL, Edit, ""),
-    (INTERVAL_NOTE, Text, "20〜1000 ms"),
     (GROUPS, Toggle, GROUP_NAMES[0]),
     (GROUPS + 1, Toggle, GROUP_NAMES[1]),
     (GROUPS + 2, Toggle, GROUP_NAMES[2]),
     (GROUPS + 3, Toggle, GROUP_NAMES[3]),
     (GROUPS + 4, Toggle, GROUP_NAMES[4]),
     (KEYS, Keys, ""),
-    (TITLE_CONTENT, Text, ""),
+    (TITLE_CONTENT, Text, "送る文字列"),
     (CONTENT, Edit, ""),
+    (TITLE_RUN, Text, "パスか URL"),
+    (RUN_CONTENT, Edit, ""),
     (TITLE_TARGET, Text, "切り替え先"),
     (TARGET, Combo, ""),
     (TITLE_PIE, Text, "項目のキーセット"),
@@ -317,6 +449,13 @@ pub(super) struct Keymap {
     step: usize,
     /// The group of keys listed.
     group: usize,
+    /// On キーマッピング: the set its drop-down list chose, whose layers
+    /// are its tabs; the group open; and the motion and the modifiers a
+    /// key pressed goes with (Issue #111).
+    root: Option<String>,
+    tab: usize,
+    motion: usize,
+    mods: Mods,
     /// Whether the name field is out, naming the set.
     naming: bool,
     capture: Option<Capture>,
@@ -850,7 +989,7 @@ fn chosen_line(e: &Editor) -> Option<(String, Line)> {
 /// made.
 pub(super) unsafe fn make(parent: HWND) -> bool {
     let instance = unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null()) };
-    for &(id, class, text) in PARTS {
+    for (id, class, text) in every_part() {
         let (ex, name, style) = match class {
             Text => (0, w!("Static"), super::SS_NOPREFIX | super::SS_CENTERIMAGE),
             Edit => (WS_EX_CLIENTEDGE, w!("Edit"), WS_TABSTOP | ES_AUTOHSCROLL as u32),
@@ -866,9 +1005,13 @@ pub(super) unsafe fn make(parent: HWND) -> bool {
             Sample => (0, SAMPLE_CLASS, WS_TABSTOP),
             Figure => (0, PIE_CLASS, 0),
         };
-        // The pie's note runs on over lines.
-        let style = if id == PIE_NOTE { super::SS_NOPREFIX } else { style };
-        let text = wide(text);
+        // The pie's note runs on over lines; what a key does ends in "…".
+        let style = match id {
+            PIE_NOTE => super::SS_NOPREFIX,
+            SUMMARY => style | SS_ENDELLIPSIS,
+            _ => style,
+        };
+        let text = wide(&text);
         let hwnd =
             unsafe { CreateWindowExW(ex, name, text.as_ptr(), WS_CHILD | style, 0, 0, 1, 1, parent, id as HMENU, instance, null()) };
         if hwnd.is_null() {
@@ -880,14 +1023,14 @@ pub(super) unsafe fn make(parent: HWND) -> bool {
 
 /// Every part of the page, for fonts.
 pub(super) fn parts(e: &Editor) -> Vec<HWND> {
-    PARTS.iter().map(|&(id, ..)| part_of(e, id)).collect()
+    every_part().iter().map(|&(id, ..)| part_of(e, id)).collect()
 }
 
 /// The parts to theme as edit controls and drop-downs, and as buttons
 /// (lists among them, for their scroll bars).
 pub(super) fn themed(e: &Editor) -> (Vec<HWND>, Vec<HWND>) {
     let (mut typed, mut buttons) = (Vec::new(), Vec::new());
-    for &(id, class, _) in PARTS {
+    for (id, class, _) in every_part() {
         match class {
             Edit | Combo => typed.push(part_of(e, id)),
             Button | Toggle | List | Keys => buttons.push(part_of(e, id)),
@@ -900,6 +1043,10 @@ pub(super) fn themed(e: &Editor) -> (Vec<HWND>, Vec<HWND>) {
 /// Whether part `id` is the page's.
 pub(super) fn is_part(id: usize) -> bool {
     PARTS.iter().any(|&(p, ..)| p == id)
+        || (LAYER_TABS..LAYER_TABS + TAB_COUNT).contains(&id)
+        || (KEYBOARD..KEYBOARD + keyboard().len()).contains(&id)
+        || (NUMPAD..NUMPAD + numpad().len()).contains(&id)
+        || (MOD_BUTTONS..MOD_BUTTONS + MOD_KEYS.len()).contains(&id)
 }
 
 /// Whether part `id` is typed in.
@@ -945,27 +1092,104 @@ fn shows_shape(e: &Editor, id: usize, key: bool, way: &Arrangement) -> bool {
 }
 
 /// Whether part `id` shows now, on キーマッピング, for the chosen key of
-/// kind `kind`, its chosen step a wait or not.
-fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool) -> bool {
+/// kind `kind`, its chosen step a wait or not, with `tabs` layers' tabs
+/// and group `tab` open.
+fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab: usize) -> bool {
     let key = kind.is_some();
-    let sends = matches!(kind, Some(SHORTCUT | MODIFIER | HOLD | REPEAT)) || (kind == Some(MACRO) && !wait);
+    let open = |t: usize| key && tab == t;
     match id {
         TITLE_SET | SET | SAMPLE => true,
+        _ if (LAYER_TABS..LAYER_TABS + TAB_COUNT).contains(&id) => id - LAYER_TABS < tabs,
         CUT => key && cut,
-        TITLE_LABEL | LABEL | ABOUT => key,
-        _ if (KINDS..KINDS + KIND_NAMES.len()).contains(&id) => key,
-        TITLE_SENDS | SENDS | CAPTURE => sends,
-        _ if (MODS..MODS + 4).contains(&id) => sends,
-        _ if (GROUPS..GROUPS + 5).contains(&id) => sends && kind != Some(MODIFIER),
-        KEYS => sends && kind != Some(MODIFIER),
+        TITLE_LABEL | LABEL | SUMMARY | CAPTURE => key,
+        _ if (MODS..MODS + 4).contains(&id) || (MOTIONS..MOTIONS + 3).contains(&id) => key,
+        _ if (GROUP_TABS..GROUP_TABS + GROUP_TAB_NAMES.len()).contains(&id) => key,
         TITLE_INTERVAL | INTERVAL | INTERVAL_NOTE => kind == Some(REPEAT),
-        TITLE_STEPS | STEPS | STEP_KEY | STEP_WAIT | STEP_REMOVE | STEP_UP | STEP_DOWN => kind == Some(MACRO),
-        TITLE_WAIT | WAIT | WAIT_NOTE => kind == Some(MACRO) && wait,
-        TITLE_CONTENT | CONTENT => matches!(kind, Some(TEXT | RUN)),
-        TITLE_TARGET | TARGET => kind == Some(PAGE_KIND),
-        TITLE_PIE | PIE | PIE_FIGURE | PIE_NOTE => kind == Some(PIE_KIND),
-        TITLE_LAYER | LAYER_SET | LAYER_HOLD | LAYER_TOGGLE => kind == Some(LAYER_KIND),
+        _ if (KEYBOARD..KEYBOARD + keyboard().len()).contains(&id) => open(BASIC),
+        _ if (NUMPAD..NUMPAD + numpad().len()).contains(&id) => open(BASIC),
+        _ if (MOD_BUTTONS..MOD_BUTTONS + MOD_KEYS.len()).contains(&id) => open(BASIC),
+        TITLE_LAYER | LAYER_SET | LAYER_HOLD | LAYER_TOGGLE => open(LAYER_TAB),
+        TITLE_STEPS | STEPS | STEP_KEY | STEP_WAIT | STEP_REMOVE | STEP_UP | STEP_DOWN => open(MACRO_TAB),
+        TITLE_WAIT | WAIT | WAIT_NOTE => open(MACRO_TAB) && kind == Some(MACRO) && wait,
+        TITLE_CONTENT | CONTENT | TITLE_RUN | RUN_CONTENT => open(TEXT_TAB),
+        TITLE_TARGET | TARGET | TITLE_PIE | PIE => open(PAGE_TAB),
+        PIE_FIGURE | PIE_NOTE => open(PAGE_TAB) && kind == Some(PIE_KIND),
         _ => false,
+    }
+}
+
+/// The key sets a layer tab shows, from key set `root`: it, then the sets
+/// its layer keys name, and theirs, as far as they go, each once.
+fn layers(doc: &Document, root: &str) -> Vec<String> {
+    let sets = set_names(doc);
+    let mut found = vec![root.to_string()];
+    let mut at = 0;
+    while at < found.len() && found.len() < TAB_COUNT {
+        for raw in doc.keys(&format!("set.{}", found[at])) {
+            let line = Line::of(&raw);
+            let to = line.content.to_ascii_lowercase();
+            if line.kind() == Some(LAYER_KIND) && sets.contains(&to) && !found.contains(&to) && found.len() < TAB_COUNT {
+                found.push(to);
+            }
+        }
+        at += 1;
+    }
+    found
+}
+
+/// What key `line` does, in a sentence.
+fn summary(line: &Line) -> String {
+    let content = &line.content;
+    match line.kind() {
+        Some(SHORTCUT) => format!("{content} を送る"),
+        Some(HOLD) => format!("押している間 {content}"),
+        Some(REPEAT) => format!("押している間 {content} を {} ms ごとに送る", line.option("interval").unwrap_or("50")),
+        Some(MODIFIER) => format!("修飾キー {content}（短く押すとラッチ）"),
+        Some(MACRO) => format!("マクロ（手順 {} 個）", line.steps().len()),
+        Some(TEXT) => format!("「{content}」を入力する"),
+        Some(RUN) => format!("{content} を開く"),
+        Some(PAGE_KIND) => match PAGE_TURNS.iter().find(|(t, _)| t.eq_ignore_ascii_case(content)) {
+            Some((_, name)) => name.to_string(),
+            None => format!("ページを {content} にする"),
+        },
+        Some(PIE_KIND) => format!("{content} のパイメニューを開く"),
+        Some(LAYER_KIND) => {
+            let how = if line.option("mode").is_some_and(|m| m.eq_ignore_ascii_case("toggle")) { "押すたびに" } else { "押している間" };
+            format!("{content} に切り替える（{how}）")
+        }
+        _ if line.kind.eq_ignore_ascii_case("none") => "何も送らない".into(),
+        _ => "この種類は読めません".into(),
+    }
+}
+
+/// The group a key's kind is assigned in, and the motion, if it has one.
+fn group_and_motion(line: &Line) -> (usize, Option<usize>) {
+    match line.kind() {
+        Some(SHORTCUT) => (BASIC, Some(0)),
+        Some(HOLD) => (BASIC, Some(1)),
+        Some(REPEAT) => (BASIC, Some(2)),
+        Some(MODIFIER) => (BASIC, None),
+        Some(LAYER_KIND) => (LAYER_TAB, None),
+        Some(MACRO) => (MACRO_TAB, None),
+        Some(TEXT | RUN) => (TEXT_TAB, None),
+        Some(PAGE_KIND | PIE_KIND) => (PAGE_TAB, None),
+        _ => (BASIC, None),
+    }
+}
+
+/// Make `line` send key `key` as motion `motion` has it, with `mods`: a
+/// shortcut or a repeat with the modifiers, a held key alone.
+fn assign(line: &mut Line, motion: usize, mods: Mods, key: Key) {
+    let was_repeat = line.kind() == Some(REPEAT);
+    let combo = combo_text(Combo { mods, key: Some(key) });
+    (line.kind, line.content) = match motion {
+        1 => (KIND_NAMES[HOLD].into(), key_text(key)),
+        2 => (KIND_NAMES[REPEAT].into(), combo),
+        _ => (KIND_NAMES[SHORTCUT].into(), combo),
+    };
+    line.set_option("mode", None);
+    if motion != 2 || !was_repeat {
+        line.set_option("interval", None);
     }
 }
 
@@ -978,10 +1202,11 @@ pub(super) unsafe fn show(e: &Editor) {
     let wait = line.as_ref().is_some_and(|l| l.kind() == Some(MACRO) && l.steps().get(e.keymap.step).is_some_and(|s| is_wait(s)));
     let cut = line.as_ref().is_some_and(|l| is_cut(&text_of(part_of(e, LABEL)), length_of(e, l), panel_key(&e.doc)));
     let way = e.keymap.set.as_ref().map_or(Arrangement::Edge, |s| arrangement(&e.doc, &format!("set.{s}")));
-    for &(id, ..) in PARTS {
+    let tabs = e.keymap.root.as_deref().map_or(0, |r| layers(&e.doc, r).len());
+    for (id, ..) in every_part() {
         let on = match e.page {
             PAGE => shows_shape(e, id, kind.is_some(), &way),
-            MAP_PAGE => shows(id, kind, wait, cut),
+            MAP_PAGE => shows(id, kind, wait, cut, tabs, e.keymap.tab),
             _ => false,
         };
         unsafe { ShowWindow(part_of(e, id), if on { SW_SHOWNA } else { SW_HIDE }) };
@@ -1028,9 +1253,61 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     let y0 = top + pitch + s(28);
     let buttons = bottom - h;
     let shape_x = left + width - s(SHAPE_W);
+    // キーマッピング, top to bottom: the sets and the layers' tabs, the
+    // sample across the page, the label and what the key does, the
+    // modifiers and the motion, the groups, and the group open. The
+    // keyboard gets the room the sample can spare.
+    let rows = 5 * pitch;
+    let room = bottom - top - rows;
+    let quarter = (s(32) / 4).min(width / KEYBOARD_WIDE).min((room - s(MAP_SAMPLE_H)) / KEYBOARD_TALL).max(1);
+    let sample_h = (room - quarter * KEYBOARD_TALL - gap).max(s(40));
+    let ys = top + 2 * pitch;
+    let (yl, ym) = (ys + sample_h + gap, ys + sample_h + gap + pitch);
+    let (yg, yc) = (ym + pitch, ym + 2 * pitch);
     match e.page {
-        MAP_PAGE => at(SAMPLE, left, y0, s(SAMPLE_W), bottom - y0),
+        MAP_PAGE => at(SAMPLE, left, ys, width, sample_h),
         _ => at(SAMPLE, left, y0, shape_x - s(MARGIN) - left, buttons - gap - y0),
+    }
+    let set = e.keymap.root.clone().or_else(|| e.keymap.set.clone()).unwrap_or_default();
+    let tabs = layers(&e.doc, &set);
+    let names: Vec<&str> = tabs.iter().map(String::as_str).collect();
+    if !names.is_empty() {
+        unsafe { lay_row(e, LAYER_TABS, &names, left, top + pitch, width.min(s(120) * names.len() as i32), h) };
+    }
+    let mut x = left;
+    for (id, w) in [(TITLE_LABEL, 48), (LABEL, 150)] {
+        at(id, x, yl, s(w), h);
+        x += s(w) + gap;
+    }
+    at(CUT, x, yl, s(130), h);
+    at(SUMMARY, x + s(130) + gap, yl, (left + width - x - s(130) - gap).max(0), h);
+    let mut x = left;
+    for i in 0..4 {
+        at(MODS + i, x, ym, s(44), h);
+        x += s(44) + gap;
+    }
+    x += gap;
+    for (i, w) in [104, 92, 52].into_iter().enumerate() {
+        at(MOTIONS + i, x, ym, s(w), h);
+        x += s(w) + gap;
+    }
+    for (id, w) in [(TITLE_INTERVAL, 28), (INTERVAL, 44), (INTERVAL_NOTE, 24)] {
+        at(id, x, ym, s(w), h);
+        x += s(w) + gap;
+    }
+    at(CAPTURE, x, ym, (left + width - x).max(0), h);
+    unsafe { lay_row(e, GROUP_TABS, &GROUP_TAB_NAMES, left, yg, width, h) };
+    let key_at = |id: usize, x: i32, y: i32, w: i32, height: i32| {
+        at(id, left + x * quarter, yc + y * quarter, w * quarter - 1, height * quarter - 1);
+    };
+    for (i, (_, x, y, w)) in keyboard().into_iter().enumerate() {
+        key_at(KEYBOARD + i, x, y, w, 4);
+    }
+    for (i, (_, x, y, w, height)) in numpad().into_iter().enumerate() {
+        key_at(NUMPAD + i, PAD_X + x, PAD_Y + y, w, height);
+    }
+    for i in 0..MOD_KEYS.len() as i32 {
+        key_at(MOD_BUTTONS + i as usize, PAD_X + i % 2 * MODIFIER_W, i / 2 * 4, MODIFIER_W, 4);
     }
     let mut x = left;
     for (id, w) in [(ADD_KEY, 56), (REMOVE_KEY, 56), (KEY_UP, 36), (KEY_DOWN, 36)] {
@@ -1054,20 +1331,9 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     at(PLACE_NOTE, shape_x, y + 2 * pitch, fw, s(20));
     at(KLE_NOTE, shape_x, y + 2 * pitch, fw, s(20));
 
-    // The key's fields.
-    let rx = left + s(SAMPLE_W) + s(MARGIN);
-    let rw = (left + width - rx).max(0);
-    let mut x = rx;
-    for (id, w) in [(TITLE_LABEL, 48), (LABEL, 150)] {
-        at(id, x, y0, s(w), h);
-        x += s(w) + gap;
-    }
-    at(CUT, x, y0, rx + rw - x, h);
-    let names: Vec<&str> = KIND_LABELS.to_vec();
-    unsafe { lay_row(e, KINDS, &names, rx, y0 + pitch, rw, h) };
-    at(ABOUT, rx, y0 + 2 * pitch, rw, s(20));
-
-    let y1 = y0 + 2 * pitch + s(28);
+    // The groups' own fields, in the room under the groups.
+    let (rx, rw) = (left, width);
+    let y1 = yc;
     // A macro's steps above the keys a step sends, or a wait's time.
     let list_w = s(220);
     at(TITLE_STEPS, rx, y1, s(48), h);
@@ -1085,38 +1351,19 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
         x += s(w) + gap;
     }
 
-    // The keys sent: below the steps for a macro, else at the top.
-    let macro_ = is_macro(e);
-    e.keymap.laid_macro.set(macro_);
-    let ys = if macro_ { y2 } else { y1 };
-    at(TITLE_SENDS, rx, ys, s(TITLE_W), h);
-    at(SENDS, rx + s(TITLE_W) + gap, ys, s(160), h);
-    let cx = rx + s(TITLE_W) + s(160) + 2 * gap;
-    at(CAPTURE, cx, ys, rx + rw - cx, h);
-    let mut x = rx;
-    for i in 0..4 {
-        at(MODS + i, x, ys + pitch, s(56), h);
-        x += s(56) + gap;
-    }
-    x += gap;
-    for (id, w) in [(TITLE_INTERVAL, 36), (INTERVAL, 60), (INTERVAL_NOTE, 100)] {
-        at(id, x, ys + pitch, s(w), h);
-        x += s(w) + gap;
-    }
-    unsafe { lay_row(e, GROUPS, &GROUP_NAMES, rx, ys + 2 * pitch, rw, h) };
-    let ky = ys + 3 * pitch;
-    at(KEYS, rx, ky, rw, (bottom - ky).max(s(48)));
-    unsafe { SendMessageW(part_of(e, KEYS), LB_SETCOLUMNWIDTH, s(72) as WPARAM, 0) };
+    e.keymap.laid_macro.set(is_macro(e));
 
-    // A text, a program, a page's target, a pie's set.
+    // A text and a program; a page's target and a pie's set.
     at(TITLE_CONTENT, rx, y1, s(120), h);
     at(CONTENT, rx + s(124), y1, rw - s(124), h);
+    at(TITLE_RUN, rx, y1 + pitch, s(120), h);
+    at(RUN_CONTENT, rx + s(124), y1 + pitch, rw - s(124), h);
     at(TITLE_TARGET, rx, y1, s(96), h);
     at(TARGET, rx + s(100), y1, s(200), s(LIST_H));
-    at(TITLE_PIE, rx, y1, s(120), h);
-    at(PIE, rx + s(124), y1, s(200), s(LIST_H));
-    at(PIE_FIGURE, rx, y1 + pitch, s(120), s(100));
-    at(PIE_NOTE, rx + s(128), y1 + pitch, rw - s(128), s(100));
+    at(TITLE_PIE, rx, y1 + pitch, s(96), h);
+    at(PIE, rx + s(100), y1 + pitch, s(200), s(LIST_H));
+    at(PIE_FIGURE, rx, y1 + 2 * pitch, s(120), s(100));
+    at(PIE_NOTE, rx + s(128), y1 + 2 * pitch, rw - s(128), s(100));
     at(TITLE_LAYER, rx, y1, s(96), h);
     at(LAYER_SET, rx + s(100), y1, s(200), s(LIST_H));
     at(LAYER_HOLD, rx, y1 + pitch, s(120), h);
@@ -1176,17 +1423,28 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
     let k = &mut e.keymap;
     k.key = k.key.min(count.saturating_sub(1));
     let set = k.set.clone().unwrap_or_default();
+    // The tabs are the root's layers, the set shown among them.
+    let root = k.root.clone().filter(|r| sets.contains(r) && layers(&e.doc, r).contains(&set)).unwrap_or_else(|| set.clone());
+    e.keymap.root = Some(root.clone());
+    let tabs = layers(&e.doc, &root);
     unsafe {
         let combo = part_of(e, SET);
         fill(combo, &sets, false);
-        choose_item(combo, sets.iter().position(|s| *s == set), false);
+        let listed = if e.page == MAP_PAGE { &root } else { &set };
+        choose_item(combo, sets.iter().position(|s| s == listed), false);
+        for i in 0..TAB_COUNT {
+            let tab = part_of(e, LAYER_TABS + i);
+            set_text(tab, tabs.get(i).map_or("", String::as_str));
+            SendMessageW(tab, BM_SETCHECK, (tabs.get(i) == Some(&set)) as WPARAM, 0);
+        }
         let used = used_by(&e.doc, &set);
         let used = if used.is_empty() { "どこでも使っていません".into() } else { used.join("、") };
         set_text(part_of(e, USED), &format!("使っている場所: {used}"));
         let targets: Vec<String> = PAGE_TURNS.iter().map(|(_, n)| n.to_string()).chain(sets.iter().cloned()).collect();
         fill(part_of(e, TARGET), &targets, false);
         fill(part_of(e, PIE), &sets, false);
-        fill(part_of(e, LAYER_SET), &sets, false);
+        let others: Vec<String> = sets.iter().filter(|s| **s != set).cloned().collect();
+        fill(part_of(e, LAYER_SET), &others, false);
         let way = arrangement(&e.doc, &format!("set.{set}"));
         let mut ways: Vec<String> = ARRANGEMENTS.iter().map(|w| w.to_string()).collect();
         if let Arrangement::Kle(name) = &way {
@@ -1248,9 +1506,30 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
 
         let combo = sent(&line, k.step);
         set_text(part_of(e, SENDS), &combo.map_or_else(String::new, combo_text));
+        set_text(part_of(e, SUMMARY), &summary(&line));
         for (i, (key, _)) in MOD_KEYS.iter().enumerate() {
-            let on = combo.is_some_and(|c| key.modifier().is_some_and(|m| c.mods.contains(m)));
+            let on = key.modifier().is_some_and(|m| k.mods.contains(m));
             SendMessageW(part_of(e, MODS + i), BM_SETCHECK, on as WPARAM, 0);
+        }
+        // The motion a key pressed goes with, as it is.
+        for i in 0..MOTION_NAMES.len() {
+            SendMessageW(part_of(e, MOTIONS + i), BM_SETCHECK, (k.motion == i) as WPARAM, 0);
+        }
+        for i in 0..GROUP_TAB_NAMES.len() {
+            SendMessageW(part_of(e, GROUP_TABS + i), BM_SETCHECK, (i == k.tab) as WPARAM, 0);
+        }
+        // The key sent, on: a modifier key's on 修飾キー.
+        let sending = matches!(kind, Some(SHORTCUT | HOLD | REPEAT | MACRO));
+        let pressed = combo.and_then(|c| c.key).filter(|_| sending);
+        for (i, (key, ..)) in keyboard().into_iter().enumerate() {
+            SendMessageW(part_of(e, KEYBOARD + i), BM_SETCHECK, (pressed == Some(key)) as WPARAM, 0);
+        }
+        for (i, (key, ..)) in numpad().into_iter().enumerate() {
+            SendMessageW(part_of(e, NUMPAD + i), BM_SETCHECK, (pressed == Some(key)) as WPARAM, 0);
+        }
+        let modifier = Key::parse(&line.content).filter(|_| kind == Some(MODIFIER));
+        for (i, (key, _)) in MOD_KEYS.iter().enumerate() {
+            SendMessageW(part_of(e, MOD_BUTTONS + i), BM_SETCHECK, (modifier == Some(*key)) as WPARAM, 0);
         }
         for g in 0..GROUP_NAMES.len() {
             SendMessageW(part_of(e, GROUPS + g), BM_SETCHECK, (g == k.group) as WPARAM, 0);
@@ -1273,18 +1552,23 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
         set_text(wait, ms);
         SendMessageW(wait, EM_SETMODIFY, 0, 0);
 
-        let content = part_of(e, CONTENT);
-        set_text(content, &line.content);
-        SendMessageW(content, EM_SETMODIFY, 0, 0);
-        set_text(part_of(e, TITLE_CONTENT), if kind == Some(RUN) { "パスか URL" } else { "送る文字列" });
-        let turn = PAGE_TURNS.iter().position(|(t, _)| t.eq_ignore_ascii_case(&line.content));
-        let target = turn.or_else(|| sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)).map(|i| i + PAGE_TURNS.len()));
-        choose_item(part_of(e, TARGET), target, false);
-        choose_item(part_of(e, PIE), sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)), false);
-        choose_item(part_of(e, LAYER_SET), sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)), false);
+        // Each field the key's own, of its kind; empty for the others.
+        for (id, of) in [(CONTENT, TEXT), (RUN_CONTENT, RUN)] {
+            let field = part_of(e, id);
+            set_text(field, if kind == Some(of) { &line.content } else { "" });
+            SendMessageW(field, EM_SETMODIFY, 0, 0);
+        }
+        let set_named = |of: usize| sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(of));
+        let turn = PAGE_TURNS.iter().position(|(t, _)| t.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(PAGE_KIND));
+        choose_item(part_of(e, TARGET), turn.or_else(|| set_named(PAGE_KIND).map(|i| i + PAGE_TURNS.len())), false);
+        choose_item(part_of(e, PIE), set_named(PIE_KIND), false);
+        let others: Vec<&String> = sets.iter().filter(|s| Some(s.as_str()) != k.set.as_deref()).collect();
+        let layer_at = others.iter().position(|s| s.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(LAYER_KIND));
+        choose_item(part_of(e, LAYER_SET), layer_at, false);
+        let layer = kind == Some(LAYER_KIND);
         let toggle = line.option("mode").is_some_and(|m| m.eq_ignore_ascii_case("toggle"));
-        SendMessageW(part_of(e, LAYER_HOLD), BM_SETCHECK, (!toggle) as WPARAM, 0);
-        SendMessageW(part_of(e, LAYER_TOGGLE), BM_SETCHECK, toggle as WPARAM, 0);
+        SendMessageW(part_of(e, LAYER_HOLD), BM_SETCHECK, (layer && !toggle) as WPARAM, 0);
+        SendMessageW(part_of(e, LAYER_TOGGLE), BM_SETCHECK, (layer && toggle) as WPARAM, 0);
         let (items, note) = pie_note(&e.doc, &line.content);
         set_text(part_of(e, PIE_NOTE), &note);
         PIE_ITEMS.set(items);
@@ -1420,7 +1704,7 @@ fn convert(line: &mut Line, kind: usize, step: usize, sets: &[String], own: &str
 /// Make the chosen key (or its macro's chosen step) send `combo`, as its
 /// kind can: a modifier key its first modifier, a held key one key.
 unsafe fn send_combo(e: &mut Editor, field: usize, combo: Combo, first: Option<Key>) -> bool {
-    let step = e.keymap.step;
+    let (step, motion) = (e.keymap.step, e.keymap.motion);
     let done = unsafe {
         change(e, field, |line| {
             let first_mod = || first.or_else(|| MOD_KEYS.iter().map(|(k, _)| *k).find(|k| k.modifier().is_some_and(|m| combo.mods.contains(m))));
@@ -1434,7 +1718,10 @@ unsafe fn send_combo(e: &mut Editor, field: usize, combo: Combo, first: Option<K
                     *s = combo_text(combo);
                     line.content = steps.join(", ");
                 }
-                _ => return Err("この種類は送るキーを持たない".into()),
+                _ => match combo.key {
+                    Some(key) => assign(line, motion, combo.mods, key),
+                    None => return Err("修飾キーのほかのキーも押してください".into()),
+                },
             }
             Ok(())
         })
@@ -1565,6 +1852,8 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             SET if code == CBN_SELCHANGE => {
                 let at = SendMessageW(part_of(e, SET), CB_GETCURSEL, 0, 0);
                 if let Some(name) = usize::try_from(at).ok().and_then(|i| set_names(&e.doc).get(i).cloned()) {
+                    // The layers' tabs start from the set chosen here.
+                    e.keymap.root = Some(name.clone());
                     choose(e, Some(name), 0);
                 }
                 None
@@ -1641,16 +1930,77 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 });
                 None
             }
+            // The modifiers a key pressed goes with: the key's own at once,
+            // if it sends a combination.
             _ if clicked && (MODS..MODS + 4).contains(&id) => {
-                let Some((_, line)) = chosen_line(e) else { return None };
                 let (key, _) = MOD_KEYS[id - MODS];
-                let m = key.modifier().unwrap_or(Mods::NONE);
-                let now = sent(&line, e.keymap.step).unwrap_or(Combo { mods: Mods::NONE, key: None });
-                let combo = match line.kind() {
-                    Some(MODIFIER | HOLD) => combo_of(key),
-                    _ => Combo { mods: toggled(now.mods, m), key: now.key },
-                };
-                send_combo(e, id, combo, Some(key));
+                e.keymap.mods = toggled(e.keymap.mods, key.modifier().unwrap_or(Mods::NONE));
+                let (mods, step) = (e.keymap.mods, e.keymap.step);
+                if let Some((_, line)) = chosen_line(e) {
+                    match (line.kind(), sent(&line, step)) {
+                        (Some(SHORTCUT | REPEAT), Some(c)) => {
+                            change(e, id, |l| {
+                                l.content = combo_text(Combo { mods, key: c.key });
+                                Ok(())
+                            });
+                        }
+                        (Some(MACRO), Some(c)) => {
+                            send_combo(e, id, Combo { mods, key: c.key }, None);
+                        }
+                        _ => {}
+                    }
+                }
+                refresh(e);
+                None
+            }
+            // The motion: the key's own at once, its key kept. A macro of
+            // more steps than one would lose them: not.
+            _ if clicked && (MOTIONS..MOTIONS + 3).contains(&id) => {
+                let motion = id - MOTIONS;
+                e.keymap.motion = motion;
+                let (mods, step) = (e.keymap.mods, e.keymap.step);
+                change(e, id, |line| {
+                    if line.kind() == Some(MACRO) && line.steps().len() > 1 {
+                        return Err("手順が 2 つ以上あるマクロです。手順を 1 つにしてから選んでください".into());
+                    }
+                    let fallback = if motion == 1 { Key::Space } else { Key::Char(b'A') };
+                    let key = sent(line, step).and_then(|c| c.key).unwrap_or(fallback);
+                    assign(line, motion, mods, key);
+                    Ok(())
+                });
+                refresh(e);
+                None
+            }
+            _ if clicked && (GROUP_TABS..GROUP_TABS + GROUP_TAB_NAMES.len()).contains(&id) => {
+                e.keymap.tab = id - GROUP_TABS;
+                refresh(e);
+                None
+            }
+            // A layer: its key of the same place, or its first.
+            _ if clicked && (LAYER_TABS..LAYER_TABS + TAB_COUNT).contains(&id) => {
+                let root = e.keymap.root.clone().unwrap_or(set.clone());
+                if let Some(to) = layers(&e.doc, &root).get(id - LAYER_TABS).cloned() {
+                    let count = e.doc.keys(&format!("set.{to}")).len();
+                    let key = if k < count { k } else { 0 };
+                    choose(e, Some(to), key);
+                }
+                None
+            }
+            _ if clicked && (KEYBOARD..KEYBOARD + keyboard().len()).contains(&id) => {
+                press_button(e, id, keyboard()[id - KEYBOARD].0);
+                None
+            }
+            _ if clicked && (NUMPAD..NUMPAD + numpad().len()).contains(&id) => {
+                press_button(e, id, numpad()[id - NUMPAD].0);
+                None
+            }
+            _ if clicked && (MOD_BUTTONS..MOD_BUTTONS + MOD_KEYS.len()).contains(&id) => {
+                let (key, _) = MOD_KEYS[id - MOD_BUTTONS];
+                change(e, id, |line| {
+                    set_kind(line, MODIFIER);
+                    line.content = key_text(key);
+                    Ok(())
+                });
                 None
             }
             _ if clicked && (GROUPS..GROUPS + 5).contains(&id) => {
@@ -1676,11 +2026,20 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 if let Ok(at) = usize::try_from(at) {
                     e.keymap.step = at;
                     cancel_capture(e);
+                    follow_group(e);
                     refresh(e);
                 }
                 None
             }
+            // A step added makes the key a macro first.
             STEP_KEY | STEP_WAIT | STEP_REMOVE | STEP_UP | STEP_DOWN if clicked => {
+                if !is_macro(e) && matches!(id, STEP_KEY | STEP_WAIT) {
+                    let (sets, step) = (set_names(&e.doc), e.keymap.step);
+                    change(e, id, |line| {
+                        convert(line, MACRO, step, &sets, &set);
+                        Ok(())
+                    });
+                }
                 edit_steps(e, id);
                 None
             }
@@ -1691,6 +2050,7 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 let target = PAGE_TURNS.get(at).map(|(t, _)| t.to_string()).or_else(|| sets.get(at - PAGE_TURNS.len()).cloned());
                 if let Some(target) = target {
                     change(e, TARGET, |line| {
+                        set_kind(line, PAGE_KIND);
                         line.content = target;
                         Ok(())
                     });
@@ -1699,8 +2059,10 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             LAYER_SET if code == CBN_SELCHANGE => {
                 let at = SendMessageW(part_of(e, LAYER_SET), CB_GETCURSEL, 0, 0);
-                if let Some(target) = usize::try_from(at).ok().and_then(|i| set_names(&e.doc).get(i).cloned()) {
+                let others: Vec<String> = set_names(&e.doc).into_iter().filter(|s| *s != set).collect();
+                if let Some(target) = usize::try_from(at).ok().and_then(|i| others.get(i).cloned()) {
                     change(e, LAYER_SET, |line| {
+                        set_kind(line, LAYER_KIND);
                         line.content = target;
                         Ok(())
                     });
@@ -1709,7 +2071,11 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             // Held is the default: written only when toggled.
             LAYER_HOLD | LAYER_TOGGLE if clicked => {
+                let (sets, step) = (set_names(&e.doc), e.keymap.step);
                 change(e, id, |line| {
+                    if line.kind() != Some(LAYER_KIND) {
+                        convert(line, LAYER_KIND, step, &sets, &set);
+                    }
                     line.set_option("mode", (id == LAYER_TOGGLE).then(|| "toggle".to_string()));
                     Ok(())
                 });
@@ -1719,6 +2085,7 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 let at = SendMessageW(part_of(e, PIE), CB_GETCURSEL, 0, 0);
                 if let Some(target) = usize::try_from(at).ok().and_then(|i| set_names(&e.doc).get(i).cloned()) {
                     change(e, PIE, |line| {
+                        set_kind(line, PIE_KIND);
                         line.content = target;
                         Ok(())
                     });
@@ -1752,10 +2119,51 @@ unsafe fn choose(e: &mut Editor, set: Option<String>, key: usize) {
 }
 
 /// List the group of the key the chosen key sends, if it has one.
+/// On キーマッピング, open the group it is assigned in, and take its motion
+/// and modifiers for the keys pressed next.
 fn follow_group(e: &mut Editor) {
-    let group = chosen_line(e).and_then(|(_, l)| sent(&l, e.keymap.step)).and_then(|c| c.key).and_then(group_of);
-    if let Some(g) = group {
+    let Some((_, line)) = chosen_line(e) else { return };
+    let step = e.keymap.step;
+    let combo = sent(&line, step);
+    if let Some(g) = combo.and_then(|c| c.key).and_then(group_of) {
         e.keymap.group = g;
+    }
+    // A key of another kind: a key pressed for it is sent when pressed,
+    // with no modifier, until they are chosen.
+    let (tab, motion) = group_and_motion(&line);
+    e.keymap.tab = tab;
+    e.keymap.motion = motion.unwrap_or(0);
+    e.keymap.mods = combo.filter(|_| matches!(line.kind(), Some(SHORTCUT | REPEAT | MACRO))).map_or(Mods::NONE, |c| c.mods);
+}
+
+/// Turn `line` into kind `kind`, the options of others taken away.
+fn set_kind(line: &mut Line, kind: usize) {
+    line.kind = KIND_NAMES[kind].into();
+    if kind != REPEAT {
+        line.set_option("interval", None);
+    }
+    if kind != LAYER_KIND {
+        line.set_option("mode", None);
+    }
+}
+
+/// A key of 基本 or テンキー pressed, `key`: the chosen key sends it, as
+/// the motion and the modifiers have it; or the chosen step of its macro.
+unsafe fn press_button(e: &mut Editor, id: usize, key: Key) {
+    let (motion, mods, step) = (e.keymap.motion, e.keymap.mods, e.keymap.step);
+    let Some((_, line)) = chosen_line(e) else { return };
+    unsafe {
+        if line.kind() == Some(MACRO) {
+            match line.steps().get(step).is_some_and(|s| !is_wait(s)) {
+                true => send_combo(e, id, Combo { mods, key: Some(key) }, None),
+                false => taken(e, id, Err("キー操作の手順を選んでください（待ち時間の手順にはキーを入れられない）".into())),
+            };
+        } else {
+            change(e, id, |l| {
+                assign(l, motion, mods, key);
+                Ok(())
+            });
+        }
     }
 }
 
@@ -1975,6 +2383,8 @@ unsafe fn edit_steps(e: &mut Editor, id: usize) {
             Ok(())
         });
         e.keymap.step = chosen;
+        // The step's own modifiers, for the keys pressed for it.
+        follow_group(e);
         refresh(e);
     }
 }
@@ -2063,8 +2473,9 @@ pub(super) unsafe fn commit(id: usize) -> bool {
                     Ok(())
                 });
             }
-            CONTENT => {
+            CONTENT | RUN_CONTENT => {
                 change(e, id, |line| {
+                    set_kind(line, if id == RUN_CONTENT { RUN } else { TEXT });
                     line.content = typed;
                     Ok(())
                 });
@@ -2343,13 +2754,15 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
                 1
             }
             WM_KEYDOWN => {
-                let delta: isize = match wp as u16 {
-                    VK_UP | VK_LEFT => -1,
-                    VK_DOWN | VK_RIGHT => 1,
+                let (chosen, count) = SAMPLE_VIEW.with_borrow(|v| (v.chosen, v.count));
+                let to = match wp as u16 {
+                    VK_UP | VK_LEFT => chosen.checked_sub(1),
+                    VK_DOWN | VK_RIGHT => Some(chosen + 1),
+                    VK_HOME => Some(0),
+                    VK_END => count.checked_sub(1),
                     _ => return DefWindowProcW(hwnd, msg, wp, lp),
                 };
-                let (chosen, count) = SAMPLE_VIEW.with_borrow(|v| (v.chosen, v.count));
-                if let Some(to) = chosen.checked_add_signed(delta).filter(|&to| to < count) {
+                if let Some(to) = to.filter(|&to| to < count) {
                     PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, to, 0);
                 }
                 0
