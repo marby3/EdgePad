@@ -806,9 +806,21 @@ fn panel_key(doc: &Document) -> i32 {
         .map_or(layout::KEY_SIZE, |n| n as i32)
 }
 
-/// Whether `label` is cut on a panel key `width` keys long, keys `key`
-/// pixels across: wider than the key's face in the panel's font.
-fn is_cut(label: &str, width: usize, key: i32) -> bool {
+/// How long the chosen key `line` is on the panel, in quarters of a key:
+/// its width along the edge, its place's in a free or KLE layout.
+fn length_of(e: &Editor, line: &Line) -> i32 {
+    let set = format!("set.{}", e.keymap.set.as_deref().unwrap_or(""));
+    match arrangement(&e.doc, &set) {
+        Arrangement::Edge => 4 * line.option("width").and_then(|w| w.parse().ok()).filter(|w| (1..=3).contains(w)).unwrap_or(1),
+        Arrangement::Free => line_place(line).w,
+        Arrangement::Kle(name) => kle_places(e, &name).and_then(|keys| keys.get(e.keymap.key).map(|(p, _)| p.w)).unwrap_or(4),
+    }
+}
+
+/// Whether `label` is cut on a panel key `quarters` quarters of a key
+/// long, keys `key` pixels across: wider than the key's face in the
+/// panel's font.
+fn is_cut(label: &str, quarters: i32, key: i32) -> bool {
     let text: Vec<u16> = label.encode_utf16().collect();
     let mut size = SIZE { cx: 0, cy: 0 };
     unsafe {
@@ -820,7 +832,7 @@ fn is_cut(label: &str, width: usize, key: i32) -> bool {
         DeleteObject(font);
         DeleteDC(dc);
     }
-    size.cx > width as i32 * key - 2 * panel::key_gap(key)
+    size.cx > quarters * key / 4 - 2 * panel::key_gap(key)
 }
 
 /// The keys of the set, as written; and the chosen key, if there is one.
@@ -964,10 +976,7 @@ pub(super) unsafe fn show(e: &Editor) {
     // A key sending nothing has none of the kinds' fields.
     let kind = line.as_ref().map(|l| l.kind().unwrap_or(if l.kind.eq_ignore_ascii_case("none") { NO_KIND } else { SHORTCUT }));
     let wait = line.as_ref().is_some_and(|l| l.kind() == Some(MACRO) && l.steps().get(e.keymap.step).is_some_and(|s| is_wait(s)));
-    let cut = line.as_ref().is_some_and(|l| {
-        let width = l.option("width").and_then(|w| w.parse().ok()).unwrap_or(1);
-        is_cut(&text_of(part_of(e, LABEL)), width, panel_key(&e.doc))
-    });
+    let cut = line.as_ref().is_some_and(|l| is_cut(&text_of(part_of(e, LABEL)), length_of(e, l), panel_key(&e.doc)));
     let way = e.keymap.set.as_ref().map_or(Arrangement::Edge, |s| arrangement(&e.doc, &format!("set.{s}")));
     for &(id, ..) in PARTS {
         let on = match e.page {
@@ -987,8 +996,7 @@ pub(super) unsafe fn label_typed() {
         let Ok(e) = e.try_borrow() else { return };
         let Some(e) = e.as_ref() else { return };
         let Some((_, line)) = chosen_line(e) else { return };
-        let width = line.option("width").and_then(|w| w.parse().ok()).unwrap_or(1);
-        let cut = is_cut(&text_of(part_of(e, LABEL)), width, panel_key(&e.doc));
+        let cut = is_cut(&text_of(part_of(e, LABEL)), length_of(e, &line), panel_key(&e.doc));
         unsafe { ShowWindow(part_of(e, CUT), if cut && e.page == MAP_PAGE { SW_SHOWNA } else { SW_HIDE }) };
     });
 }
@@ -1479,7 +1487,7 @@ unsafe fn import_kle() {
         // The file has the places now: the key lines' go (Issue #109).
         for (i, raw) in e.doc.keys(&section).iter().enumerate() {
             let mut line = Line::of(raw);
-            if config::key_place(raw).is_some() {
+            if PLACE_NAMES.iter().any(|name| line.option(name).is_some()) {
                 for name in PLACE_NAMES {
                     line.set_option(name, None);
                 }
@@ -1500,7 +1508,7 @@ unsafe fn import_kle() {
 /// How far down a free layout's keys reach, in keys, as the file writes it.
 fn free_bottom(doc: &Document, section: &str) -> String {
     let bottom = doc.keys(section).iter().filter_map(|k| config::key_def(k).ok()?.place).map(|p| p.y + p.h).max().unwrap_or(0);
-    config::show_quarters(bottom)
+    config::show_quarters(bottom.min(4 * config::MAX_PLACE))
 }
 
 /// The file chosen in an open dialog over `owner`, if one is. comdlg32
@@ -1775,18 +1783,27 @@ pub(super) unsafe fn choose_set(name: &str, key: usize) {
 /// for what a key sends (Issue #109). A key is at fault for its shape when
 /// it reads without it, or when it reads and its place is not as its
 /// set's layout wants.
-pub(super) fn fault(doc: &Document, line: usize) -> Option<(usize, usize)> {
+pub(super) fn fault(e: &Editor, line: usize) -> Option<(usize, usize)> {
+    let doc = &e.doc;
     let (section, name) = doc.place(line);
     let section = section.filter(|s| s.starts_with("set."))?;
-    let Some((_, key)) = doc.key_at(line).filter(|_| name.as_deref() == Some("key")) else { return Some((PAGE, 0)) };
+    let Some((_, key)) = doc.key_at(line).filter(|_| name.as_deref() == Some("key")) else {
+        let page = if name.as_deref() == Some("layout") { PAGE } else { MAP_PAGE };
+        return Some((page, 0));
+    };
     let raw = doc.keys(&section).into_iter().nth(key)?;
     let mut bare = Line::of(&raw);
     for name in ["width"].iter().chain(&PLACE_NAMES) {
         bare.set_option(name, None);
     }
+    // A key line past a KLE file's keys reads, and is the layout's fault.
+    let kle = match arrangement(doc, &section) {
+        Arrangement::Kle(file) => kle_places(e, &file).is_some_and(|keys| key >= keys.len()),
+        _ => false,
+    };
     let shape = match config::key_def(&raw) {
         Err(_) => config::key_def(&rewrite(&raw, &bare)).is_ok(),
-        Ok(_) => config::key_place(&raw).is_some() != (arrangement(doc, &section) == Arrangement::Free),
+        Ok(_) => kle || config::key_place(&raw).is_some() != (arrangement(doc, &section) == Arrangement::Free),
     };
     Some((if shape { PAGE } else { MAP_PAGE }, key))
 }
@@ -1886,6 +1903,7 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
         tell(e, "並べ方を書き換えられません");
     }
     e.keymap.key = order.iter().position(|&k| k == chosen).unwrap_or(0);
+    e.keymap.wrong = None;
     unsafe {
         refresh(e);
         mark_unsaved(e);
@@ -2061,7 +2079,12 @@ pub(super) unsafe fn commit(id: usize) -> bool {
             // whether it reads.
             _ if (PLACE..PLACE + 4).contains(&id) => {
                 change(e, id, |line| {
-                    set_place(line, line_place(line));
+                    let p = line_place(line);
+                    for (name, q) in PLACE_NAMES.iter().zip([p.x, p.y, p.w, p.h]) {
+                        if line.option(name).is_none() {
+                            line.set_option(name, Some(config::show_quarters(q)));
+                        }
+                    }
                     line.set_option(PLACE_NAMES[id - PLACE], Some(typed));
                     Ok(())
                 });
@@ -2139,6 +2162,11 @@ fn show_capture(e: &Editor) {
 /// The hotkey's 押して取り込む was pressed.
 pub(super) unsafe fn capture_hotkey() {
     with_editor(|e| toggle_capture(e, Target::Hotkey));
+}
+
+/// Stop naming the set, the name typed left untaken: キー配置 left.
+pub(super) fn stop_naming(e: &mut Editor) {
+    e.keymap.naming = false;
 }
 
 /// Call off a capture under way: the page left, or the window.

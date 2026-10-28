@@ -834,6 +834,9 @@ unsafe fn show_page(index: usize) {
     let Some((sidebar, heading)) = with_editor(|e| {
         e.page = index;
         keymap::cancel_capture(e);
+        if index != keymap::PAGE {
+            keymap::stop_naming(e);
+        }
         unsafe {
             fields::refresh(e);
             fields::show(e);
@@ -922,7 +925,7 @@ unsafe fn go_to_fault() {
         let (section, name) = e.doc.place(line);
         let mut at = fields::locate(section.as_deref(), name.as_deref());
         // A key's line: its shape or what it sends (Issue #109).
-        let key = keymap::fault(&e.doc, line);
+        let key = keymap::fault(e, line);
         if let Some((page, _)) = key {
             at.0 = page;
         }

@@ -1,6 +1,9 @@
 //! Acceptance tests for Issue #87: the キー配置 page of the settings window,
 //! which edits key sets and their keys without writing the settings file
-//! (spec 7.1).
+//! (spec 7.1). Since Issue #109, キー配置 lays the shape out and the page
+//! after it, キーマッピング, says what the keys send: the label, the kinds
+//! and the kinds' own fields are there, the rest on キー配置; 並べ方 and
+//! the place fields, 1070 to 1075, are described with their tests below.
 //!
 //! The tests find the page's parts by control id:
 //! - the key sets: the drop-down list 1000, the name field 1001 (an Edit,
