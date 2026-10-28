@@ -1,5 +1,5 @@
 //! Acceptance tests for Issue #86: the settings window rebuilt on Windows's
-//! own controls (spec 7.1): a sidebar of four pages, the bottom row with the
+//! own controls (spec 7.1): a sidebar of the pages (seven since Issue #107), the bottom row with the
 //! file's path, unsaved changes shown, the theme of Windows, the DPI, and
 //! the keyboard. Its memory is checked on the release build, by
 //! ci/test_measure.py (AC8).
@@ -77,14 +77,14 @@ fn sidebar_texts(editor: HWND) -> Vec<String> {
 
 // AC1
 #[test]
-fn a_sidebar_of_four_pages_switches_the_page_and_opens_on_key_layout() {
+fn a_sidebar_of_the_pages_switches_the_page_and_opens_on_key_layout() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings()), None);
     let editor = open(&app, open_id(&app));
     let list = part(editor, SIDEBAR);
     assert_eq!(class_of(list), "ListBox", "the sidebar is a list box");
     assert!(unsafe { IsWindowVisible(list) } != 0, "shown");
-    assert_eq!(sidebar_texts(editor), PAGES, "four pages, in this order");
+    assert_eq!(sidebar_texts(editor), PAGES, "the pages, in this order");
     assert_eq!(heading(editor), "キー配置", "opened on キー配置");
     assert_eq!(unsafe { SendMessageW(list, LB_GETCURSEL, 0, 0) }, 0, "キー配置 chosen in the sidebar");
 
@@ -442,9 +442,9 @@ fn the_keyboard_alone_moves_along_its_parts_and_the_focus_shows() {
     assert!(within_3s(|| heading(editor) == "アプリ別"), "down: アプリ別, not {:?}", heading(editor));
     press(VK_DOWN);
     press(VK_DOWN);
-    assert!(within_3s(|| heading(editor) == "操作"), "down twice more: 操作");
+    assert!(within_3s(|| heading(editor) == PAGES[3]), "down twice more: {}", PAGES[3]);
     press(VK_UP);
-    assert!(within_3s(|| heading(editor) == "辺と表示"), "up: 辺と表示");
+    assert!(within_3s(|| heading(editor) == PAGES[2]), "up: {}", PAGES[2]);
     // Back to キー配置. From the sidebar, Shift+Tab goes back round to the
     // bottom row, past the page's fields.
     press(VK_UP);

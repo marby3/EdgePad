@@ -262,6 +262,6 @@ fn in_front_the_window_switches_no_profile_and_lets_no_key_go() {
     mouse_up_at(away);
     let _ = within_3s(|| log.keys().len() >= before + 2);
     assert_eq!(log.keys()[before..], [(b'B' as u16, false), (b'B' as u16, true)], "B down, and up with the mouse");
-    assert_eq!(heading(editor), "辺と表示", "the page tapped");
+    assert_eq!(heading(editor), PAGES[2], "the page tapped");
 }
 

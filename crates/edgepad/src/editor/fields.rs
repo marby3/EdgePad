@@ -1,15 +1,18 @@
-//! The rows of the 辺と表示 and 操作 pages: a field for every setting of
-//! [general] and [edge.*] (spec 7.1); and the 辺と表示 page's figure of the
-//! screen, whose edges choose the edge its rows edit.
+//! The rows of the pages of [general] and the edges (spec 7.1): 辺（共通）
+//! ([edge]), 辺ごとの設定 ([edge.*], with a figure of the screen whose edges
+//! choose the edge its rows edit), 見た目, タッチと修飾キー and 表示と非表示.
+//! The edges' rows are the same on both edge pages, editing [edge] on one
+//! and the chosen edge on the other (Issue #107).
 //!
-//! A row is a label with the setting's name, its field (an edit control, a
-//! drop-down list, or a check box), a note of what it takes, and 既定に戻す
-//! when the setting is written in the file, or 既定値 when it is not (共通,
-//! for an edge's setting [edge] has: its value is shown). The
-//! parts have control ids by row (FIELD, RESET, LABEL, NOTE, MARK + the
-//! row's index), which the tests go by too. hotkey has 押して取り込む
+//! A row is a label in Japanese, the setting's name beside it, smaller, its
+//! field (an edit control, a drop-down list, or a check box), a note of
+//! what it takes, shown only while the field has the focus or the mouse,
+//! and 既定に戻す when the setting is written in the file, or 既定値 when it
+//! is not (共通 and 共通に戻す, for an edge's setting, on 辺ごとの設定). The
+//! parts have control ids by row (FIELD, RESET, LABEL, NOTE, MARK, NAME +
+//! the row's index), which the tests go by too. hotkey has 押して取り込む
 //! (CAPTURE) beside it too, to press the keys rather than write them
-//! (`keymap::Capture`).
+//! (`keymap::Capture`); accent, its #RRGGBB field (ACCENT_HEX).
 //!
 //! A value is checked as the parser reads it before it goes into the
 //! window's copy of the file: one it would turn away stays in its field,
@@ -35,33 +38,38 @@ use crate::tray;
 /// 既定に戻す, label, note and 既定値.
 pub(super) const FIGURE: usize = 20;
 pub(super) const CAPTURE: usize = 21;
+pub(super) const ACCENT_HEX: usize = 22;
 pub(super) const FIELD: usize = 400;
 pub(super) const RESET: usize = 500;
 const LABEL: usize = 600;
 const NOTE: usize = 700;
 const MARK: usize = 800;
+const NAME: usize = 900;
 
 /// The pages the rows are on, of `super::PAGES`.
-pub(super) const EDGES_PAGE: usize = 2;
-pub(super) const OPERATION_PAGE: usize = 3;
+pub(super) const COMMON_PAGE: usize = 2;
+pub(super) const EDGE_PAGE: usize = 3;
+pub(super) const LOOK_PAGE: usize = 4;
+pub(super) const TOUCH_PAGE: usize = 5;
+pub(super) const SHOW_PAGE: usize = 6;
 
 /// Sizes in logical pixels (96 DPI).
 const ROW_H: i32 = 26;
 const PITCH: i32 = 30;
-const LABEL_W: i32 = 110;
-const FIELD_W: i32 = 120;
-const NOTE_W: i32 = 140;
+const LABEL_W: i32 = 190;
+const NAME_W: i32 = 84;
+const FIELD_W: i32 = 160;
+const NOTE_W: i32 = 130;
 const RESET_W: i32 = 96;
-const CAPTURE_W: i32 = 236;
 /// A drop-down list's height with its list open.
 const LIST_H: i32 = 160;
 const FIGURE_W: i32 = 160;
 /// The figure's screen, inset from its edges; and each edge's band.
 const INSET: i32 = 8;
 const BAND: i32 = 12;
-/// The rows of the edges page: the display rows, beside the figure, and the
-/// edge's, under it. A row is PITCH apart, or as little as MIN_PITCH.
-const DISPLAY_ROWS: i32 = 6;
+/// The figure, as tall as this many rows; the most rows a page has under
+/// it. A row is PITCH apart, or as little as MIN_PITCH.
+const FIGURE_ROWS: i32 = 5;
 const EDGE_ROWS: i32 = 8;
 const MIN_PITCH: i32 = 22;
 
@@ -75,12 +83,14 @@ pub(super) const EM_SETMODIFY: u32 = 0x00B9;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Group {
-    /// [general]'s settings of the look, on 辺と表示.
-    Display,
-    /// The edge chosen in the figure, on 辺と表示.
+    /// [general]'s settings of the look, on 見た目.
+    Look,
+    /// [edge] on 辺（共通）, the edge chosen in the figure on 辺ごとの設定.
     Edge,
-    /// [general]'s settings of what touches do, on 操作.
-    Operation,
+    /// [general]'s settings of what touches do, on タッチと修飾キー.
+    Touch,
+    /// [general]'s settings of showing and hiding, on 表示と非表示.
+    Show,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -89,14 +99,17 @@ enum Kind {
     Number,
     /// Typed in.
     Text,
-    /// The monitor: primary, cursor, or a number, stepped.
+    /// The monitor: primary, cursor, or a number, chosen by name.
     Monitor,
-    /// One of these values.
-    Choice(&'static [&'static str]),
+    /// One of these values, chosen by its name: (value, name).
+    Choice(&'static [(&'static str, &'static str)]),
     /// true or false.
     Check,
-    /// columns on the left and right edges, rows on the top and bottom.
-    Lines,
+    /// columns, of the left and right edges; rows, of the top and bottom.
+    Columns,
+    Rows,
+    /// auto, or a colour given in ACCENT_HEX.
+    Accent,
     /// Whether the edge has a handle, `handle = none` or not.
     Handle,
     /// The handle's width, length or position: a part of `handle =`.
@@ -105,8 +118,10 @@ enum Kind {
 
 struct Spec {
     group: Group,
-    /// The label: the setting's name, but for the parts of the handle.
+    /// The setting's name, but for the parts of the handle.
     name: &'static str,
+    /// What it changes, in Japanese.
+    label: &'static str,
     /// What the field takes, for a setting with no range.
     note: &'static str,
     kind: Kind,
@@ -114,47 +129,52 @@ struct Spec {
     step: u32,
 }
 
-const fn spec(group: Group, name: &'static str, note: &'static str, kind: Kind, step: u32) -> Spec {
-    Spec { group, name, note, kind, step }
+const fn spec(group: Group, name: &'static str, label: &'static str, note: &'static str, kind: Kind, step: u32) -> Spec {
+    Spec { group, name, label, note, kind, step }
 }
 
-use Group::{Display as D, Edge as E, Operation as O};
+use Group::{Edge as E, Look as L, Show as S, Touch as T};
 use Kind::*;
 
-/// Every row, in the order the Tab key follows: the display rows, then
-/// (after the figure) the edge's, then the operation rows.
-const ROWS: [Spec; 20] = [
-    spec(D, "key_size", "", Number, 1),
-    spec(D, "opacity", "", Number, 1),
-    spec(D, "dim_opacity", "", Number, 1),
-    spec(D, "slide_ms", "", Number, 10),
-    spec(D, "theme", "light / dark / auto", Choice(&["light", "dark", "auto"]), 0),
-    spec(D, "accent", "auto か #RRGGBB", Text, 0),
-    spec(E, "enabled", "オンで表示", Check, 0),
-    spec(E, "dock", "オンで画面の端を空ける", Check, 0),
-    spec(E, "monitor", "", Monitor, 1),
-    spec(E, "columns", "", Lines, 1),
-    spec(E, "handle", "オンでハンドルあり", Handle, 0),
-    spec(E, "handle の幅", "", HandlePart(0), 1),
-    spec(E, "handle の長さ", "", HandlePart(1), 1),
-    spec(E, "handle の位置", "", HandlePart(2), 1),
-    spec(O, "latch_ms", "", Number, 10),
-    spec(O, "latch", "oneshot / lock", Choice(&["oneshot", "lock"]), 0),
-    spec(O, "pen_presses", "オンでペンも押せる", Check, 0),
-    spec(O, "hotkey", "キーの組み合わせか none", Text, 0),
-    spec(O, "hover_ms", "", Number, 10),
-    spec(O, "auto_hide_ms", "", Number, 1000),
+/// Every row, in the order the Tab key follows: the look's, then (after
+/// the figure) the edges', then touch's and showing's.
+const ROWS: [Spec; 21] = [
+    spec(L, "key_size", "キーの大きさ", "", Number, 1),
+    spec(L, "opacity", "ふだんの不透明度", "", Number, 1),
+    spec(L, "dim_opacity", "パイメニュー・ペンの時の不透明度", "", Number, 1),
+    spec(L, "theme", "テーマ", "", Choice(&[("light", "ライト"), ("dark", "ダーク"), ("auto", "Windows に合わせる")]), 0),
+    spec(L, "accent", "アクセント色", "", Accent, 0),
+    spec(L, "slide_ms", "出入りの時間", "", Number, 10),
+    spec(E, "enabled", "表示する", "", Check, 0),
+    spec(E, "dock", "画面の端を空ける", "", Check, 0),
+    spec(E, "monitor", "モニター", "", Monitor, 0),
+    spec(E, "columns", "列数（左右の辺）", "", Columns, 1),
+    spec(E, "rows", "行数（上下の辺）", "", Rows, 1),
+    spec(E, "handle", "ハンドル", "", Handle, 0),
+    spec(E, "handle の幅", "ハンドルの幅", "", HandlePart(0), 1),
+    spec(E, "handle の長さ", "ハンドルの長さ", "", HandlePart(1), 1),
+    spec(E, "handle の位置", "ハンドルの位置", "", HandlePart(2), 1),
+    spec(T, "latch_ms", "ラッチになる長さ", "", Number, 10),
+    spec(T, "latch", "ラッチの解け方", "", Choice(&[("oneshot", "1 回使うと解ける"), ("lock", "もう一度押すまで続く")]), 0),
+    spec(T, "pen_presses", "ペンでキーを押す", "", Check, 0),
+    spec(S, "hotkey", "ホットキー", "", Text, 0),
+    spec(S, "hover_ms", "ハンドルに乗せて出すまでの時間", "", Number, 10),
+    spec(S, "auto_hide_ms", "自動で隠すまでの時間", "", Number, 1000),
 ];
 
-/// hotkey's row.
-const HOTKEY: usize = 17;
+/// hotkey's row, and accent's.
+const HOTKEY: usize = 18;
+const ACCENT: usize = 4;
+
+/// The names of the monitor's first choices, then the monitors by number.
+const MONITOR_NAMES: [(&str, &str); 2] = [("primary", "主モニター"), ("cursor", "マウスのあるモニター")];
+const ACCENT_NAMES: [&str; 2] = ["Windows に合わせる", "色を指定"];
 
 /// The range of row `spec`'s number, if it has one.
 fn range(spec: &Spec) -> Option<config::Range> {
     let r = &config::RANGES;
     match spec.kind {
-        Lines => Some(r.lines),
-        Monitor => Some(r.monitor),
+        Columns | Rows => Some(r.lines),
         HandlePart(0) => Some(r.handle_width),
         HandlePart(1) => Some(r.handle_length),
         HandlePart(_) => Some(r.handle_position),
@@ -167,7 +187,6 @@ fn range(spec: &Spec) -> Option<config::Range> {
 fn note_of(spec: &Spec) -> String {
     let span = |r: config::Range| format!("{}〜{}", r.min, r.max);
     match (spec.kind, range(spec)) {
-        (Monitor, Some(r)) => format!("primary / cursor / {}", span(r)),
         (HandlePart(1 | 2), Some(r)) => format!("{}%", span(r)),
         (_, Some(r)) if r.off => format!("0 でオフ、{}", span(r)),
         (_, Some(r)) => span(r),
@@ -186,6 +205,8 @@ fn default_handle() -> Option<[u8; 3]> {
 /// The windows of a row.
 pub(super) struct Row {
     label: HWND,
+    /// The setting's name, beside the label.
+    name: HWND,
     field: HWND,
     note: HWND,
     /// 既定に戻す and 既定値 (or 共通); null on the handle's parts.
@@ -209,18 +230,35 @@ struct Figure {
 
 thread_local! {
     static SHOWN: Cell<Figure> = const { Cell::new(Figure { chosen: 0, enabled: [false; 4], handle: [None; 4] }) };
+    // The row the mouse is over, if any: its note shows.
+    static HOVER: Cell<Option<usize>> = const { Cell::new(None) };
+    // Where the rows go, as `place` was last given it: to place them
+    // again as the page shown changes.
+    static PLACE: Cell<(i32, i32, i32)> = const { Cell::new((0, 0, 0)) };
+    // The setting names' smaller font.
+    static NAME_FONT: Cell<HFONT> = const { Cell::new(null_mut()) };
+    // The page and edge the rows were last shown for.
+    static LAID: Cell<(usize, usize)> = const { Cell::new((usize::MAX, 0)) };
 }
 
+/// Whether `id` is a row's field: accent's #RRGGBB counts as accent's.
 pub(super) fn is_field(id: usize) -> bool {
-    (FIELD..FIELD + ROWS.len()).contains(&id)
+    (FIELD..FIELD + ROWS.len()).contains(&id) || id == ACCENT_HEX
+}
+
+/// The row of field `id`.
+fn row_of_id(id: usize) -> usize {
+    if id == ACCENT_HEX { ACCENT } else { id - FIELD }
 }
 
 pub(super) fn is_reset(id: usize) -> bool {
     (RESET..RESET + ROWS.len()).contains(&id)
 }
 
+/// The section row `spec` edits: [edge] on 辺（共通）.
 fn section_of(e: &Editor, spec: &Spec) -> String {
     match spec.group {
+        E if e.page == COMMON_PAGE => "edge".into(),
         E => format!("edge.{}", EDGES[e.edge].1),
         _ => "general".into(),
     }
@@ -230,8 +268,6 @@ fn section_of(e: &Editor, spec: &Spec) -> String {
 fn setting(e: &Editor, i: usize) -> (String, &'static str) {
     let spec = &ROWS[i];
     let name = match spec.kind {
-        Lines if EDGES[e.edge].0.is_side() => "columns",
-        Lines => "rows",
         Handle | HandlePart(_) => "handle",
         _ => spec.name,
     };
@@ -273,16 +309,21 @@ pub(super) unsafe fn make(parent: HWND) -> Option<(Vec<Row>, HWND)> {
                     return None;
                 }
             }
-            let label = control(parent, 0, w!("Static"), spec.name, LABEL + i, super::SS_NOPREFIX | super::SS_CENTERIMAGE);
-            let field = match spec.kind {
-                Choice(options) => {
-                    let combo = control(parent, 0, w!("ComboBox"), "", FIELD + i, WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32);
-                    for option in options {
-                        let text = wide(option);
-                        SendMessageW(combo, CB_ADDSTRING, 0, text.as_ptr() as LPARAM);
-                    }
-                    combo
+            let label = control(parent, 0, w!("Static"), spec.label, LABEL + i, super::SS_NOPREFIX | super::SS_CENTERIMAGE);
+            let name = control(parent, 0, w!("Static"), spec.name, NAME + i, super::SS_NOPREFIX | super::SS_CENTERIMAGE);
+            let list = |names: &[&str]| {
+                let combo = control(parent, 0, w!("ComboBox"), "", FIELD + i, WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32);
+                for option in names {
+                    let text = wide(option);
+                    SendMessageW(combo, CB_ADDSTRING, 0, text.as_ptr() as LPARAM);
                 }
+                combo
+            };
+            let field = match spec.kind {
+                Choice(options) => list(&options.iter().map(|(_, n)| *n).collect::<Vec<_>>()),
+                // Filled as the monitors are, when shown.
+                Monitor => list(&[]),
+                Accent => list(&ACCENT_NAMES),
                 Check | Handle => control(parent, 0, w!("Button"), "", FIELD + i, WS_TABSTOP | BS_AUTOCHECKBOX as u32),
                 _ => control(parent, WS_EX_CLIENTEDGE, w!("Edit"), "", FIELD + i, WS_TABSTOP | ES_AUTOHSCROLL as u32),
             };
@@ -296,9 +337,12 @@ pub(super) unsafe fn make(parent: HWND) -> Option<(Vec<Row>, HWND)> {
             } else {
                 (null_mut(), null_mut())
             };
-            let made = [label, field, note].iter().all(|w| !w.is_null()) && (!own || !reset.is_null() && !mark.is_null());
-            rows.push(Row { label, field, note, reset, mark, written: false, reason: None });
+            let made = [label, name, field, note].iter().all(|w| !w.is_null()) && (!own || !reset.is_null() && !mark.is_null());
+            rows.push(Row { label, name, field, note, reset, mark, written: false, reason: None });
             if !made {
+                return None;
+            }
+            if i == ACCENT && control(parent, WS_EX_CLIENTEDGE, w!("Edit"), "", ACCENT_HEX, WS_TABSTOP | ES_AUTOHSCROLL as u32).is_null() {
                 return None;
             }
             if i == HOTKEY && control(parent, 0, w!("Button"), "押して取り込む", CAPTURE, WS_TABSTOP | BS_PUSHBUTTON as u32).is_null() {
@@ -309,15 +353,57 @@ pub(super) unsafe fn make(parent: HWND) -> Option<(Vec<Row>, HWND)> {
     Some((rows, figure))
 }
 
-/// Every part of the rows, for fonts and themes.
+/// Every part of the rows, for fonts and themes; not the names, which have
+/// a font of their own (`set_name_font`).
 pub(super) fn parts(e: &Editor) -> Vec<HWND> {
     let rows = e.rows.iter().flat_map(|r| [r.label, r.field, r.note, r.reset, r.mark]);
-    rows.chain([capture(e)]).filter(|h| !h.is_null()).collect()
+    rows.chain([capture(e), accent_hex(e)]).filter(|h| !h.is_null()).collect()
+}
+
+/// Give the setting names a font smaller than `font`, the window's.
+pub(super) unsafe fn set_name_font(e: &Editor, font: HFONT) {
+    unsafe {
+        let mut lf: LOGFONTW = std::mem::zeroed();
+        if GetObjectW(font as _, size_of::<LOGFONTW>() as i32, &mut lf as *mut LOGFONTW as _) == 0 {
+            return;
+        }
+        lf.lfHeight = lf.lfHeight * 4 / 5;
+        let small = CreateFontIndirectW(&lf);
+        if small.is_null() {
+            return;
+        }
+        for row in &e.rows {
+            SendMessageW(row.name, WM_SETFONT, small as WPARAM, 1);
+        }
+        let old = NAME_FONT.replace(small);
+        if !old.is_null() {
+            DeleteObject(old);
+        }
+    }
+}
+
+/// Let go of the names' font, the window closing.
+pub(super) fn drop_name_font() {
+    let old = NAME_FONT.replace(null_mut());
+    if !old.is_null() {
+        unsafe { DeleteObject(old) };
+    }
+}
+
+/// Whether `hwnd` is a setting's name: drawn quieter.
+pub(super) fn is_name(hwnd: HWND) -> bool {
+    let id = unsafe { GetDlgCtrlID(hwnd) } as usize;
+    (NAME..NAME + ROWS.len()).contains(&id)
 }
 
 /// hotkey's 押して取り込む.
 fn capture(e: &Editor) -> HWND {
     unsafe { GetDlgItem(e.hwnd, CAPTURE as i32) }
+}
+
+/// accent's #RRGGBB.
+fn accent_hex(e: &Editor) -> HWND {
+    unsafe { GetDlgItem(e.hwnd, ACCENT_HEX as i32) }
 }
 
 /// The rows' fields to theme as edit controls and drop-downs, and their
@@ -334,40 +420,54 @@ pub(super) fn themed(e: &Editor) -> (Vec<HWND>, Vec<HWND>) {
         }
     }
     buttons.push(capture(e));
+    fields.push(accent_hex(e));
     (fields, buttons)
 }
 
-/// The page row `spec` is on.
-fn page_of(spec: &Spec) -> usize {
+/// Whether row `i` is on the page shown: the edges' rows on both edge
+/// pages, columns on 辺ごとの設定 for the left and right edges only, and
+/// rows for the top and bottom.
+fn on_page(e: &Editor, i: usize) -> bool {
+    let spec = &ROWS[i];
     match spec.group {
-        O => OPERATION_PAGE,
-        _ => EDGES_PAGE,
+        L => e.page == LOOK_PAGE,
+        T => e.page == TOUCH_PAGE,
+        S => e.page == SHOW_PAGE,
+        E if e.page == COMMON_PAGE => true,
+        E if e.page == EDGE_PAGE => match spec.kind {
+            Columns => EDGES[e.edge].0.is_side(),
+            Rows => !EDGES[e.edge].0.is_side(),
+            _ => true,
+        },
+        E => false,
     }
 }
 
-/// Place the rows and the figure in `left`, `top` to `bottom`: on the
-/// edges page, the figure at the top, the display rows beside it, and the
-/// edge's rows under it; the operation rows from the top. Rows come closer,
-/// and lower, where the window has less room than they ask for.
+/// Place the rows of the page shown in `left`, `top` to `bottom`, one
+/// under another: on 辺ごとの設定, under the figure. Rows come closer where
+/// the window has less room than they ask for. Kept, to place them again as
+/// the page shown changes.
 pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, bottom: i32) {
+    PLACE.set((left, top, bottom));
     let s = |v| scale(v, e.dpi);
     let m = s(MARGIN) / 2;
     let gap = s(MARGIN);
-    let pitch = ((bottom - top - gap) / (DISPLAY_ROWS + EDGE_ROWS)).clamp(s(MIN_PITCH), s(PITCH));
+    let pitch = ((bottom - top - gap) / (FIGURE_ROWS + EDGE_ROWS)).clamp(s(MIN_PITCH), s(PITCH));
     let h = (pitch - s(PITCH - ROW_H)).max(s(MIN_PITCH - 4));
-    let (mut display, mut edge, mut operation) = (0, 0, 0);
-    let display_left = left + s(FIGURE_W) + s(MARGIN);
-    let edge_top = top + pitch * DISPLAY_ROWS + gap;
-    for (spec, row) in ROWS.iter().zip(&e.rows) {
-        let (x, y) = match spec.group {
-            D => (display_left, top + pitch * post(&mut display)),
-            E => (left, edge_top + pitch * post(&mut edge)),
-            O => (left, top + pitch * post(&mut operation)),
-        };
+    let figure_h = pitch * FIGURE_ROWS - (pitch - h);
+    let first = if e.page == EDGE_PAGE { top + figure_h + gap } else { top };
+    let mut n = 0;
+    for (i, (spec, row)) in ROWS.iter().zip(&e.rows).enumerate() {
+        if !on_page(e, i) {
+            continue;
+        }
+        let (x, y) = (left, first + pitch * n);
+        n += 1;
         unsafe {
             MoveWindow(row.label, x, y, s(LABEL_W), h, 1);
-            let fx = x + s(LABEL_W) + m;
-            let list = if matches!(spec.kind, Choice(_)) { s(LIST_H) } else { h };
+            MoveWindow(row.name, x + s(LABEL_W) + m, y, s(NAME_W), h, 1);
+            let fx = x + s(LABEL_W) + s(NAME_W) + 2 * m;
+            let list = if matches!(spec.kind, Choice(_) | Monitor | Accent) { s(LIST_H) } else { h };
             let w = if matches!(spec.kind, Check | Handle) { h } else { s(FIELD_W) };
             MoveWindow(row.field, fx, y, w, list, 1);
             let nx = fx + s(FIELD_W) + m;
@@ -375,37 +475,69 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, bottom: i32) {
             for part in [row.reset, row.mark] {
                 MoveWindow(part, nx + s(NOTE_W) + m, y, s(RESET_W), h, 1);
             }
-            if spec.name == "hotkey" {
-                MoveWindow(capture(e), nx + s(NOTE_W) + s(RESET_W) + 2 * m, y, s(CAPTURE_W), h, 1);
+            // Where the note would be: hotkey's has no range, nor accent's.
+            if i == HOTKEY {
+                MoveWindow(capture(e), nx, y, s(NOTE_W), h, 1);
+            }
+            if i == ACCENT {
+                MoveWindow(accent_hex(e), nx, y, s(NOTE_W), h, 1);
             }
         }
     }
-    unsafe { MoveWindow(e.figure, left, top, s(FIGURE_W), pitch * DISPLAY_ROWS - (pitch - h), 1) };
+    unsafe { MoveWindow(e.figure, left, top, s(FIGURE_W), figure_h, 1) };
 }
 
-/// `n`, and one more for next time.
-fn post(n: &mut i32) -> i32 {
-    *n += 1;
-    *n - 1
+/// Whether accent's list says 色を指定.
+fn accent_given(e: &Editor) -> bool {
+    unsafe { SendMessageW(e.rows[ACCENT].field, CB_GETCURSEL, 0, 0) == 1 }
 }
 
-/// Show the rows of the page shown, as they are now, and hide the rest.
+/// Show the rows of the page shown, as they are now, in their places, and
+/// hide the rest. A note shows while its field has the focus or the mouse
+/// is over its row.
 pub(super) unsafe fn show(e: &Editor) {
+    let (left, top, bottom) = PLACE.get();
+    if bottom > top {
+        unsafe { place(e, left, top, bottom) };
+    }
     let shown = |hwnd: HWND, yes: bool| unsafe {
         if !hwnd.is_null() {
             ShowWindow(hwnd, if yes { SW_SHOWNA } else { SW_HIDE });
         }
     };
-    for (spec, row) in ROWS.iter().zip(&e.rows) {
-        let on = page_of(spec) == e.page;
+    let focus = unsafe { GetFocus() };
+    let hover = HOVER.get();
+    for (i, row) in e.rows.iter().enumerate() {
+        let on = on_page(e, i);
+        let looked_at = row.field == focus || hover == Some(i) || i == ACCENT && focus == accent_hex(e);
         shown(row.label, on);
+        shown(row.name, on);
         shown(row.field, on);
-        shown(row.note, on);
+        shown(row.note, on && looked_at && !text_of(row.note).is_empty());
         shown(row.reset, on && row.written);
         shown(row.mark, on && !row.written);
     }
-    shown(e.figure, e.page == EDGES_PAGE);
-    shown(capture(e), e.page == OPERATION_PAGE);
+    shown(e.figure, e.page == EDGE_PAGE);
+    shown(capture(e), e.page == SHOW_PAGE);
+    shown(accent_hex(e), e.page == LOOK_PAGE && accent_given(e));
+    // Moved for another page or edge: nothing left of where they were.
+    if LAID.replace((e.page, e.edge)) != (e.page, e.edge) {
+        unsafe { RedrawWindow(e.hwnd, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN) };
+    }
+}
+
+/// The mouse has left the window, or it is no longer in front: no row is
+/// under the mouse.
+pub(super) fn unhover() -> bool {
+    HOVER.replace(None).is_some()
+}
+
+/// The mouse is over `hwnd`: the note of its row shows, and only that.
+/// Whether the row it is over changed.
+pub(super) fn hover(e: &Editor, hwnd: HWND) -> bool {
+    let at = e.rows.iter().position(|r| [r.label, r.name, r.field, r.note, r.reset, r.mark].contains(&hwnd));
+    let at = at.or_else(|| (hwnd == accent_hex(e) && !hwnd.is_null()).then_some(ACCENT));
+    HOVER.replace(at) != at
 }
 
 /// hotkey captured as `text`: put in its field and taken, as if typed.
@@ -475,14 +607,38 @@ unsafe fn refresh_row(e: &mut Editor, i: usize) -> bool {
     let default = || shared.clone().or_else(|| config::default_value(&section, name)).unwrap_or_default();
     let value = written.clone().unwrap_or_else(default);
     let handle = handle_in(e, &section);
+    let edge_page = e.page == EDGE_PAGE && spec.group == E;
+    let hex = accent_hex(e);
     let row = &mut e.rows[i];
     row.written = written.is_some();
     let had = row.reason.take().is_some();
     unsafe {
         match spec.kind {
             Choice(options) => {
-                let at = options.iter().position(|o| o.eq_ignore_ascii_case(value.trim()));
+                let at = options.iter().position(|(o, _)| o.eq_ignore_ascii_case(value.trim()));
                 SendMessageW(row.field, CB_SETCURSEL, at.map_or(usize::MAX, |a| a), 0);
+            }
+            // primary, cursor, then the monitors by number: as many as
+            // there are, or as the file names.
+            Monitor => {
+                let value = value.trim().to_ascii_lowercase();
+                let named = value.parse::<usize>().unwrap_or(0);
+                let count = (GetSystemMetrics(SM_CMONITORS).max(1) as usize).max(named);
+                let names: Vec<String> =
+                    MONITOR_NAMES.iter().map(|(_, n)| n.to_string()).chain((1..=count).map(|k| format!("モニター {k}"))).collect();
+                SendMessageW(row.field, CB_RESETCONTENT, 0, 0);
+                for n in &names {
+                    let text = wide(n);
+                    SendMessageW(row.field, CB_ADDSTRING, 0, text.as_ptr() as LPARAM);
+                }
+                let at = MONITOR_NAMES.iter().position(|(v, _)| *v == value).or((named > 0).then(|| MONITOR_NAMES.len() + named - 1));
+                SendMessageW(row.field, CB_SETCURSEL, at.map_or(usize::MAX, |a| a), 0);
+            }
+            Accent => {
+                let auto = value.trim().eq_ignore_ascii_case("auto");
+                SendMessageW(row.field, CB_SETCURSEL, (!auto) as usize, 0);
+                set_text(hex, if auto { "" } else { value.trim() });
+                SendMessageW(hex, EM_SETMODIFY, 0, 0);
             }
             Check => {
                 let on = value.trim().eq_ignore_ascii_case("true");
@@ -503,11 +659,9 @@ unsafe fn refresh_row(e: &mut Editor, i: usize) -> bool {
                 SendMessageW(row.field, EM_SETMODIFY, 0, 0);
             }
         }
-        if spec.kind == Lines {
-            set_text(row.label, name);
-        }
         if !row.mark.is_null() {
             set_text(row.mark, if shared.is_some() { "共通" } else { "既定値" });
+            set_text(row.reset, if edge_page { "共通に戻す" } else { "既定に戻す" });
         }
         if wrong {
             row.reason = Some(format!("{name}: ファイルの値を読めない"));
@@ -568,12 +722,12 @@ fn is_edit(e: &Editor, hwnd: HWND) -> Option<usize> {
         return None;
     }
     let i = e.rows.iter().position(|r| r.field == hwnd)?;
-    (!matches!(ROWS[i].kind, Choice(_) | Check | Handle)).then_some(i)
+    (!matches!(ROWS[i].kind, Choice(_) | Monitor | Accent | Check | Handle)).then_some(i)
 }
 
 /// Whether `hwnd` is a row's edit control, to type in.
 pub(super) fn is_typed(e: &Editor, hwnd: HWND) -> bool {
-    is_edit(e, hwnd).is_some()
+    typed_row(e, hwnd).is_some()
 }
 
 /// Take the value of field `id` into the window's copy of the file, if the
@@ -582,20 +736,42 @@ pub(super) fn is_typed(e: &Editor, hwnd: HWND) -> bool {
 /// False if the window was in use, and nothing was done.
 pub(super) unsafe fn commit(id: usize, always: bool) -> bool {
     with_editor(|e| unsafe {
-        let i = id - FIELD;
+        let i = row_of_id(id);
         let spec = &ROWS[i];
         let row = &e.rows[i];
         let typed = is_edit(e, row.field).is_some();
         if typed && !always && SendMessageW(row.field, EM_GETMODIFY, 0, 0) == 0 {
             return;
         }
+        let hex = accent_hex(e);
+        if id == ACCENT_HEX && !always && SendMessageW(hex, EM_GETMODIFY, 0, 0) == 0 {
+            return;
+        }
         let (section, name) = setting(e, i);
         let value = match spec.kind {
             Choice(options) => {
                 let at = SendMessageW(row.field, CB_GETCURSEL, 0, 0);
-                let Some(option) = usize::try_from(at).ok().and_then(|a| options.get(a)) else { return };
+                let Some((option, _)) = usize::try_from(at).ok().and_then(|a| options.get(a)) else { return };
                 option.to_string()
             }
+            Monitor => {
+                let Ok(at) = usize::try_from(SendMessageW(row.field, CB_GETCURSEL, 0, 0)) else { return };
+                match MONITOR_NAMES.get(at) {
+                    Some((value, _)) => value.to_string(),
+                    None => (at - MONITOR_NAMES.len() + 1).to_string(),
+                }
+            }
+            // 色を指定 with no colour yet: its field to give one in.
+            Accent if !accent_given(e) => "auto".into(),
+            // 色を指定 with no colour yet: Windows's accent to start from, in
+            // the file at once, so the list and the file agree.
+            Accent if text_of(hex).trim().is_empty() => {
+                let [r, g, b] = crate::colors::palette(edgepad_core::config::Theme::Auto, edgepad_core::config::Accent::Auto).held;
+                let start = format!("#{r:02X}{g:02X}{b:02X}");
+                set_text(hex, &start);
+                start
+            }
+            Accent => text_of(hex).trim().to_string(),
             Check => (SendMessageW(row.field, BM_GETCHECK, 0, 0) == 1).to_string(),
             Handle if SendMessageW(row.field, BM_GETCHECK, 0, 0) != 1 => "none".into(),
             Handle | HandlePart(_) => handle_value(e),
@@ -613,6 +789,9 @@ pub(super) unsafe fn commit(id: usize, always: bool) -> bool {
                 tell(e, &reason);
                 e.rows[i].reason = Some(reason);
                 InvalidateRect(e.rows[i].field, null(), 1);
+                if i == ACCENT {
+                    InvalidateRect(hex, null(), 1);
+                }
             }
             Ok(()) => {
                 refresh_rows(e, rows_of(i));
@@ -621,6 +800,12 @@ pub(super) unsafe fn commit(id: usize, always: bool) -> bool {
         }
     })
     .is_some()
+}
+
+/// What `hwnd` is to the rows: the row whose typed field it is, accent's
+/// #RRGGBB as accent's.
+fn typed_row(e: &Editor, hwnd: HWND) -> Option<usize> {
+    is_edit(e, hwnd).or_else(|| (hwnd == accent_hex(e) && !hwnd.is_null()).then_some(ACCENT))
 }
 
 /// 既定に戻す of row `id - RESET`: take its setting out of the window's
@@ -642,7 +827,12 @@ pub(super) unsafe fn reset(id: usize) {
 /// Whether the field `hwnd` shows a value turned away.
 pub(super) fn is_wrong(hwnd: HWND) -> bool {
     super::EDITOR.with(|e| {
-        e.try_borrow().ok().is_some_and(|e| e.as_ref().is_some_and(|e| e.rows.iter().any(|r| r.field == hwnd && r.reason.is_some())))
+        e.try_borrow().ok().is_some_and(|e| {
+            e.as_ref().is_some_and(|e| {
+                let accent_wrong = hwnd == accent_hex(e) && e.rows[ACCENT].reason.is_some();
+                accent_wrong || e.rows.iter().any(|r| r.field == hwnd && r.reason.is_some())
+            })
+        })
     })
 }
 
@@ -685,6 +875,7 @@ pub(super) unsafe fn choose_edge(k: usize) {
     let done = with_editor(|e| unsafe {
         e.edge = k;
         let rows: Vec<usize> = (0..ROWS.len()).filter(|&j| ROWS[j].group == E).collect();
+        // columns or rows, as the edge has.
         refresh_rows(e, rows);
     });
     if done.is_some() {
@@ -697,26 +888,36 @@ pub(super) unsafe fn choose_edge(k: usize) {
 pub(super) fn locate(section: Option<&str>, name: Option<&str>) -> (usize, Option<usize>, Option<usize>) {
     let section = section.unwrap_or("general");
     let edge = section.strip_prefix("edge.").and_then(|n| EDGES.iter().position(|(_, e)| *e == n));
-    let group = |spec: &Spec| match (spec.group, edge) {
-        (E, Some(_)) => true,
-        (D | O, None) => section == "general",
-        _ => false,
+    let common = section == "edge";
+    let group = |spec: &Spec| match spec.group {
+        E => edge.is_some() || common,
+        _ => section == "general",
     };
     let row = name.and_then(|name| {
         ROWS.iter().position(|spec| {
             let named = match spec.kind {
-                Lines => matches!(name, "columns" | "rows"),
                 Handle => name == "handle",
                 _ => spec.name == name,
             };
             group(spec) && named
         })
     });
-    let page = match (row, section) {
-        (Some(i), _) => page_of(&ROWS[i]),
-        (None, s) if s.starts_with("set.") => 0,
-        (None, s) if s.starts_with("profile.") => 1,
-        _ => EDGES_PAGE,
+    // columns on the top or bottom, rows on the left or right: no field.
+    let shown = |i: &usize| match (ROWS[*i].kind, edge) {
+        (Columns, Some(k)) => EDGES[k].0.is_side(),
+        (Rows, Some(k)) => !EDGES[k].0.is_side(),
+        _ => true,
+    };
+    let row = row.filter(shown);
+    let page = match (row.map(|i| ROWS[i].group), section) {
+        (Some(L), _) => LOOK_PAGE,
+        (Some(T), _) => TOUCH_PAGE,
+        (Some(S), _) => SHOW_PAGE,
+        (_, s) if s.starts_with("set.") => 0,
+        (_, s) if s.starts_with("profile.") => 1,
+        (_, "edge") => COMMON_PAGE,
+        (_, s) if s.starts_with("edge.") => EDGE_PAGE,
+        _ => LOOK_PAGE,
     };
     (page, row, edge)
 }

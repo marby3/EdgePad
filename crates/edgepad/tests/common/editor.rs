@@ -20,7 +20,7 @@ pub const SIDEBAR: i32 = 10;
 pub const HEADING: i32 = 11;
 pub const STATUS: i32 = 12;
 pub const PATH: i32 = 13;
-pub const PAGES: [&str; 4] = ["キー配置", "アプリ別", "辺と表示", "操作"];
+pub const PAGES: [&str; 7] = ["キー配置", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"];
 
 /// Sets `[general] opacity` to wParam in the window's copy of the file
 /// (test build only).
@@ -145,6 +145,12 @@ pub fn text_of(hwnd: HWND) -> String {
 /// What the window's status line says.
 pub fn status(editor: HWND) -> String {
     text_of(part(editor, STATUS))
+}
+
+/// What the band at the top says (Issue #107): what was done, for a
+/// while; its text stays once it is hidden.
+pub fn notice(editor: HWND) -> String {
+    text_of(part(editor, 15))
 }
 
 /// The heading of the page shown.

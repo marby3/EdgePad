@@ -569,6 +569,6 @@ fn a_process_name_the_file_cannot_hold_is_not_added() {
     assert!(within_3s(|| status(editor).contains("Bad ;x.exe")), "why: {:?}", status(editor));
     assert_eq!(items(list).len(), before, "no app added: {:?}", items(list));
     save(editor);
-    assert!(within_3s(|| status(editor).contains("保存しました")), "the rest saves: {:?}", status(editor));
+    assert!(within_3s(|| notice(editor).contains("保存しました")), "the rest saves: {:?}", status(editor));
     assert!(!file(&app).contains("[profile.bad"), "{}", file(&app));
 }
