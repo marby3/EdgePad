@@ -4,6 +4,9 @@
 //! after it, キーマッピング, says what the keys send: the label, the kinds
 //! and the kinds' own fields are there, the rest on キー配置; 並べ方 and
 //! the place fields, 1070 to 1075, are described with their tests below.
+//! Since Issue #111, キーマッピング chooses what keys send from a keyboard:
+//! the ten kinds' buttons, the groups and the list of keys below are no
+//! longer shown, and its parts are described with its tests.
 //!
 //! The tests find the page's parts by control id:
 //! - the key sets: the drop-down list 1000, the name field 1001 (an Edit,
@@ -405,7 +408,7 @@ fn choose_key(editor: HWND, i: i32, label: &str) {
     panic!("key {i}, {label}, chosen: {:?}", text(editor, LABEL));
 }
 
-// AC1
+// Issue #87, AC1
 #[test]
 fn key_sets_are_chosen_named_added_and_removed_only_where_unused() {
     let _desktop = desktop();
@@ -459,7 +462,7 @@ fn key_sets_are_chosen_named_added_and_removed_only_where_unused() {
     assert_eq!(key_lines(&saved, "extra").len(), 1, "a new set has a key: {saved}");
 }
 
-// AC2
+// Issue #87, AC2
 #[test]
 fn the_sample_draws_the_set_as_its_panel_and_chooses_a_key() {
     let _desktop = desktop();
@@ -528,7 +531,7 @@ fn a_key_value_that_does_not_read_is_stopped_in_its_field() {
     assert!(!file(&app).contains("width"), "not written: {}", file(&app));
 }
 
-// AC3
+// Issue #87, AC3
 #[test]
 fn keys_are_added_removed_and_reordered() {
     let _desktop = desktop();
@@ -558,7 +561,7 @@ fn keys_are_added_removed_and_reordered() {
     assert!(saved.contains("key = Ctrl  | modifier | Ctrl   ; 左手"), "moved with its comment: {saved}");
 }
 
-// AC4
+// Issue #87, AC4
 #[test]
 fn the_label_field_says_when_the_panel_cuts_it() {
     let _desktop = desktop();
@@ -619,7 +622,7 @@ fn the_keys_sent_are_chosen_from_lists_or_captured() {
     assert_eq!(key_of(&saved, "mods", "Esc"), ["Esc", "shortcut", "Shift+K"]);
 }
 
-// AC7
+// Issue #87, AC7
 #[test]
 fn each_kind_has_its_own_fields() {
     let _desktop = desktop();
@@ -691,7 +694,7 @@ fn each_kind_has_its_own_fields() {
     assert_eq!(key_of(&saved, "tools", "電卓"), ["電卓", "run", "notepad.exe"]);
 }
 
-// AC8
+// Issue #87, AC8
 #[test]
 fn the_hotkey_is_captured_too() {
     let _desktop = desktop();
@@ -709,7 +712,7 @@ fn the_hotkey_is_captured_too() {
     save_until(&app, editor, "hotkey = Ctrl+Alt+K");
 }
 
-// AC9
+// Issue #87, AC9
 #[test]
 fn a_change_rewrites_only_its_key_line_and_the_panel_follows() {
     let _desktop = desktop();
@@ -785,7 +788,7 @@ fn brightness(c: [i32; 3]) -> i32 {
     (c[0] + c[1] + c[2]) / 3
 }
 
-// AC10
+// Issue #87, AC10
 #[test]
 fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     let _desktop = desktop();
