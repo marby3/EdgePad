@@ -29,11 +29,11 @@ const NAME: i32 = 900;
 const NOTICE: i32 = 15;
 const ACCENT_HEX: i32 = 22;
 
-const COMMON_PAGE: usize = 2;
-const EDGE_PAGE: usize = 3;
-const LOOK_PAGE: usize = 4;
-const TOUCH_PAGE: usize = 5;
-const SHOW_PAGE: usize = 6;
+const COMMON_PAGE: usize = 3;
+const EDGE_PAGE: usize = 4;
+const LOOK_PAGE: usize = 5;
+const TOUCH_PAGE: usize = 6;
+const SHOW_PAGE: usize = 7;
 
 const SETTINGS: &str = "[general]\nopacity = 70\n[set.two]\nkey = A | hold | A\nkey = B | hold | B\n[profile.default]\nleft = two\n";
 
@@ -168,16 +168,16 @@ const ON_PAGES: [(usize, &[&str]); 5] = [
 
 // AC1
 #[test]
-fn the_sidebar_has_seven_pages_by_use_and_every_setting_is_on_one() {
+fn the_sidebar_has_eight_pages_by_use_and_every_setting_is_on_one() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
     let editor = open(&app, open_id(&app));
     let sidebar = part(editor, SIDEBAR);
     let n = unsafe { SendMessageW(sidebar, LB_GETCOUNT, 0, 0) };
-    assert_eq!(n, 7, "seven pages");
+    assert_eq!(n, 8, "eight pages");
     assert_eq!(
         PAGES,
-        ["キー配置", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"]
+        ["キー配置", "キーマッピング", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"]
     );
     for (page, names) in ON_PAGES {
         show_page(editor, page);

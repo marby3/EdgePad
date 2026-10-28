@@ -34,7 +34,7 @@ use crate::colors::colorref;
 use crate::profile;
 
 /// The page, of `super::PAGES`.
-pub(super) const PAGE: usize = 1;
+pub(super) const PAGE: usize = 2;
 
 /// Control ids, which the tests find the parts by: the apps and their
 /// buttons; the process to add, typed or chosen, with 追加 and やめる; the

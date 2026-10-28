@@ -856,6 +856,8 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
             set => Page::Set(set.into()),
         }),
         "pie" => Action::Pie(content.to_ascii_lowercase()),
+        // A key of a KLE layout past the key lines, written out (Issue #109).
+        "none" => Action::None,
         "layer" => {
             let toggle = match take("mode").map(str::to_ascii_lowercase).as_deref() {
                 None | Some("hold") => false,
@@ -874,8 +876,8 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
 
 /// Furthest a free layout's key sits from its top left, and largest a key
 /// is, in keys.
-const MAX_PLACE: i32 = 40;
-const MAX_SIZE: i32 = 8;
+pub const MAX_PLACE: i32 = 40;
+pub const MAX_SIZE: i32 = 8;
 
 /// `value` in quarters of a key: a number of keys in steps of 0.25 (1,
 /// 1.5, 0.25, 2.75), from `min` to `max` quarters.
@@ -895,6 +897,20 @@ fn quarters(name: &str, value: &str, min: i32, max: i32) -> Result<i32, String> 
     };
     q.filter(|q| (min..=max).contains(q))
         .ok_or_else(|| format!("{name} は {}〜{} の 0.25 刻みの数（「{value}」）", show_quarters(min), show_quarters(max)))
+}
+
+/// The place key line `value` writes, as `key_def` reads it, whatever the
+/// rest of the line: none without x and y. The settings window draws and
+/// edits a free layout by it.
+pub fn key_place(value: &str) -> Option<Place> {
+    let options = value.split('|').nth(3)?;
+    let get = |want: &str, min: i32, max: i32| -> Option<Option<i32>> {
+        let (_, v) = options.split(',').filter_map(|o| o.split_once('=')).find(|(k, _)| k.trim().eq_ignore_ascii_case(want))?;
+        Some(quarters(want, v.trim(), min, max).ok())
+    };
+    let (x, y) = (get("x", 0, 4 * MAX_PLACE)??, get("y", 0, 4 * MAX_PLACE)??);
+    let size = |name: &str| get(name, 1, 4 * MAX_SIZE).unwrap_or(Some(4));
+    Some(Place { x, y, w: size("w")?, h: size("h")? })
 }
 
 /// `q` quarters as a number of keys, as the file writes it.

@@ -228,10 +228,10 @@ fn open_page(app: &Running, page: usize) -> HWND {
     editor
 }
 
-const EDGES_PAGE: usize = 3;
-const LOOK_PAGE: usize = 4;
-const TOUCH_PAGE: usize = 5;
-const SHOW_PAGE: usize = 6;
+const EDGES_PAGE: usize = 4;
+const LOOK_PAGE: usize = 5;
+const TOUCH_PAGE: usize = 6;
+const SHOW_PAGE: usize = 7;
 
 /// Give accent `colour`: 色を指定, then #RRGGBB typed and entered; or auto.
 fn enter_accent(editor: HWND, colour: &str) {
@@ -603,7 +603,8 @@ fn a_save_that_fails_leads_to_the_line_at_fault() {
     press(VK_RETURN);
     assert!(within_3s(|| heading(editor) == "見た目" && focus_of(editor) == field(editor, "opacity")), "Enter leads there too");
 
-    // A key set's line: キー配置.
+    // A key's line that does not say what it sends: キーマッピング (Issue
+    // #109).
     drop(app);
     let bad = settings("").replace("key = B | hold | B", "key = B | hold");
     let app = launch_with(Some(&bad), None);
@@ -612,7 +613,7 @@ fn a_save_that_fails_leads_to_the_line_at_fault() {
     save(editor);
     assert!(within_3s(|| status(editor).contains("行目")), "the line and reason: {:?}", status(editor));
     click_link(editor, part(editor, STATUS));
-    assert!(within_3s(|| heading(editor) == "キー配置"), "a key set's line: キー配置, not {:?}", heading(editor));
+    assert!(within_3s(|| heading(editor) == "キーマッピング"), "a key's line: キーマッピング, not {:?}", heading(editor));
     assert!(status(editor).contains("行目"), "the reason stays");
 
     // An edge's value: that edge chosen, its field focused, the line kept.

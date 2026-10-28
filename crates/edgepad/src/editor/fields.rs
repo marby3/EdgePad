@@ -47,11 +47,11 @@ const MARK: usize = 800;
 const NAME: usize = 900;
 
 /// The pages the rows are on, of `super::PAGES`.
-pub(super) const COMMON_PAGE: usize = 2;
-pub(super) const EDGE_PAGE: usize = 3;
-pub(super) const LOOK_PAGE: usize = 4;
-pub(super) const TOUCH_PAGE: usize = 5;
-pub(super) const SHOW_PAGE: usize = 6;
+pub(super) const COMMON_PAGE: usize = 3;
+pub(super) const EDGE_PAGE: usize = 4;
+pub(super) const LOOK_PAGE: usize = 5;
+pub(super) const TOUCH_PAGE: usize = 6;
+pub(super) const SHOW_PAGE: usize = 7;
 
 /// Sizes in logical pixels (96 DPI).
 const ROW_H: i32 = 26;
@@ -80,6 +80,7 @@ const EDGES: [(Edge, &str); 4] = [(Edge::Left, "left"), (Edge::Right, "right"), 
 pub(super) const EM_SETSEL: u32 = 0x00B1;
 pub(super) const EM_GETMODIFY: u32 = 0x00B8;
 pub(super) const EM_SETMODIFY: u32 = 0x00B9;
+pub(super) const EM_SETREADONLY: u32 = 0x00CF;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Group {
@@ -913,8 +914,8 @@ pub(super) fn locate(section: Option<&str>, name: Option<&str>) -> (usize, Optio
         (Some(L), _) => LOOK_PAGE,
         (Some(T), _) => TOUCH_PAGE,
         (Some(S), _) => SHOW_PAGE,
-        (_, s) if s.starts_with("set.") => 0,
-        (_, s) if s.starts_with("profile.") => 1,
+        (_, s) if s.starts_with("set.") => super::keymap::PAGE,
+        (_, s) if s.starts_with("profile.") => super::apps::PAGE,
         (_, "edge") => COMMON_PAGE,
         (_, s) if s.starts_with("edge.") => EDGE_PAGE,
         _ => LOOK_PAGE,

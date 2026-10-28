@@ -405,6 +405,13 @@ fn open_set(app: &Running, set: &str) -> HWND {
     editor
 }
 
+/// Open the window on キーマッピング (Issue #109), with set `set` chosen.
+fn open_map(app: &Running, set: &str) -> HWND {
+    let editor = open_set(app, set);
+    to_page(editor, MAP_PAGE);
+    editor
+}
+
 /// Choose key `i` of a set shown down one column, by clicking it in the
 /// sample, and wait for its label to show.
 fn choose_key(editor: HWND, i: i32, label: &str) {
@@ -512,7 +519,7 @@ fn the_sample_draws_the_set_as_its_panel_and_chooses_a_key() {
     // The panels' theme changed on 見た目 (its field 403): the sample
     // follows it, back on キー配置.
     wait_in_front(editor);
-    click(centre(sidebar_item(editor, 4)));
+    click(centre(sidebar_item(editor, 5)));
     assert!(within_3s(|| heading(editor) == "見た目"));
     choose(editor, 403, "ダーク");
     wait_in_front(editor);
@@ -580,7 +587,7 @@ fn keys_are_added_removed_and_reordered() {
 fn the_label_field_says_when_the_panel_cuts_it() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
-    let editor = open_set(&app, "mods");
+    let editor = open_map(&app, "mods");
     assert_eq!(class_of(part(editor, LABEL)), "Edit");
     assert!(!shown(editor, CUT), "Esc fits");
     click_id(editor, LABEL);
@@ -603,7 +610,7 @@ fn the_label_field_says_when_the_panel_cuts_it() {
 fn nine_kinds_show_their_description_and_only_their_fields() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
-    let editor = open_set(&app, "mods");
+    let editor = open_map(&app, "mods");
     let kinds: Vec<String> = (0..10).map(|k| text(editor, KINDS + k)).collect();
     assert_eq!(kinds, KIND_NAMES, "ten kinds");
     let top = |k: i32| window_rect(part(editor, KINDS + k)).top;
@@ -630,7 +637,8 @@ fn nine_kinds_show_their_description_and_only_their_fields() {
         for id in own {
             assert_eq!(shown(editor, id), shows.contains(&id), "{}: part {id}", KIND_NAMES[kind as usize]);
         }
-        assert!(shown(editor, WIDTH), "{}: the width", KIND_NAMES[kind as usize]);
+        // The width is the shape's, on キー配置 (Issue #109).
+        assert!(!shown(editor, WIDTH), "{}: no width", KIND_NAMES[kind as usize]);
         let about = text(editor, ABOUT);
         assert!(!about.is_empty() && !about.contains('\n') && !said.contains(&about), "{}: {about:?}", KIND_NAMES[kind as usize]);
         said.push(about);
@@ -642,7 +650,7 @@ fn nine_kinds_show_their_description_and_only_their_fields() {
 fn the_keys_sent_are_chosen_from_lists_or_captured() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
-    let editor = open_set(&app, "mods");
+    let editor = open_map(&app, "mods");
     let groups: Vec<String> = (0..5).map(|g| text(editor, GROUPS + g)).collect();
     assert_eq!(groups, ["英数字", "F1〜F24", "移動・編集", "記号", "テンキー"]);
     let list = part(editor, KEYS);
@@ -701,7 +709,7 @@ fn the_keys_sent_are_chosen_from_lists_or_captured() {
 fn each_kind_has_its_own_fields() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
-    let editor = open_set(&app, "tools");
+    let editor = open_map(&app, "tools");
     // The keys, in order, by keyboard: the set is on two columns.
     let next = |label: &str| {
         focus_sample(editor);
@@ -721,7 +729,6 @@ fn each_kind_has_its_own_fields() {
     next("ブラシ");
     assert_eq!(text(editor, INTERVAL), "60");
     enter(editor, INTERVAL, "120");
-    enter(editor, WIDTH, "2");
     // pie: its key set, how many items, a figure, and why it cannot be.
     next("変形");
     assert_eq!(chosen(part(editor, PIE)).as_deref(), Some("transform"));
@@ -761,7 +768,7 @@ fn each_kind_has_its_own_fields() {
     let saved = save_until(&app, editor, "こんにちは");
     assert_eq!(key_of(&saved, "spare", "A"), ["A", "text", "こんにちは"]);
     let brush = key_of(&saved, "tools", "ブラシ");
-    assert!(brush[3].contains("interval=120") && brush[3].contains("width=2"), "{brush:?}");
+    assert!(brush[3].contains("interval=120"), "{brush:?}");
     assert_eq!(key_of(&saved, "tools", "元に戻す"), ["元に戻す", "macro", "Ctrl+Z, Esc, wait 300"]);
     assert_eq!(key_of(&saved, "tools", "変形"), ["変形", "pie", "transform"]);
     assert_eq!(key_of(&saved, "tools", "次へ"), ["次へ", "page", "spare"]);
@@ -775,7 +782,7 @@ fn the_hotkey_is_captured_too() {
     let app = launch_with(Some(SETTINGS), None);
     let editor = open(&app, open_id(&app));
     wait_in_front(editor);
-    click(centre(sidebar_item(editor, 6)));
+    click(centre(sidebar_item(editor, 7)));
     assert!(within_3s(|| heading(editor) == "表示と非表示"), "{:?}", heading(editor));
     let capture = part(editor, HOTKEY_CAPTURE);
     assert!(visible(capture) && text_of(capture) == "押して取り込む", "beside hotkey");
@@ -799,6 +806,7 @@ fn a_change_rewrites_only_its_key_line_and_the_panel_follows() {
     let editor = open_set(&app, "mods");
     choose_key(editor, 1, "Ctrl");
     enter(editor, WIDTH, "2");
+    to_page(editor, MAP_PAGE);
     enter(editor, LABEL, "Control");
     let saved = save_until(&app, editor, "Control");
     let (old, new): (Vec<&str>, Vec<&str>) = (before.lines().collect(), saved.lines().collect());
@@ -867,7 +875,7 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     let _desktop = desktop();
     let dark = Dark::set();
     let app = launch_with(Some(SETTINGS), None);
-    let editor = open_set(&app, "mods");
+    let editor = open_map(&app, "mods");
     let inside = || {
         let r = window_rect(part(editor, LABEL));
         colour_at(POINT { x: r.right - 4, y: (r.top + r.bottom) / 2 })
@@ -982,13 +990,19 @@ fn a_kle_file_is_imported_into_the_settings_folder_for_the_chosen_set() {
 #[test]
 fn a_free_sets_key_edited_keeps_its_place_and_the_layout() {
     let _desktop = desktop();
-    let text = SETTINGS.replace(
+    let source = SETTINGS.replace(
         "[set.spare]\nkey = A | shortcut | A\n",
         "[set.spare]\nlayout = free\nkey = A | shortcut | A | x=0, y=0\nkey = B | shortcut | B | x=1.5, y=0, w=2, h=0.75\n",
     );
-    let app = launch_with(Some(&text), None);
-    let editor = open_set(&app, "spare");
-    choose_key(editor, 1, "B");
+    let app = launch_with(Some(&source), None);
+    let editor = open_map(&app, "spare");
+    // Turned clockwise on the left, as nowhere used: B a quarter in from
+    // A's side, from a key and a half down.
+    let r = window_rect(part(editor, SAMPLE));
+    let b = POINT { x: r.left + s(editor, INSET + KEY / 2), y: r.top + s(editor, INSET + KEY * 2) };
+    reach(editor, part(editor, SAMPLE), b);
+    click(b);
+    assert!(within_3s(|| text(editor, LABEL) == "B"), "B chosen: {:?}", text(editor, LABEL));
     enter(editor, LABEL, "Bee");
     let saved = save_until(&app, editor, "Bee");
     assert!(section(&saved, "spare").contains("layout = free"), "{saved}");
@@ -1008,7 +1022,7 @@ const LAYER_TOGGLE: i32 = 1069;
 fn a_key_becomes_a_layer_key_of_a_set_held_or_toggled() {
     let _desktop = desktop();
     let app = launch_with(Some(SETTINGS), None);
-    let editor = open_set(&app, "mods");
+    let editor = open_map(&app, "mods");
     choose_key(editor, 0, "Esc");
     click_id(editor, KINDS + LAYER_KIND);
     assert!(within_3s(|| shown(editor, LAYER_SET) && shown(editor, LAYER_HOLD) && shown(editor, LAYER_TOGGLE)), "the layer's fields");
