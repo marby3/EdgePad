@@ -20,7 +20,7 @@ pub const SIDEBAR: i32 = 10;
 pub const HEADING: i32 = 11;
 pub const STATUS: i32 = 12;
 pub const PATH: i32 = 13;
-pub const PAGES: [&str; 4] = ["キー配置", "アプリ別", "辺と表示", "操作"];
+pub const PAGES: [&str; 7] = ["キー配置", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"];
 
 /// Sets `[general] opacity` to wParam in the window's copy of the file
 /// (test build only).
