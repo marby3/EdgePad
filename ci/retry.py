@@ -72,6 +72,8 @@ def run(args):
 
 
 def main():
+    # The tests write Japanese; the runner's console is not UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     output, passed = run([])
     OUTPUT.write_text(output, encoding="utf-8")
     if passed:

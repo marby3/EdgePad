@@ -102,8 +102,10 @@ right = pad
     assert_eq!(left.right - left.left, px(6), "default width 6");
     assert!(((left.bottom - left.top) - h * 40 / 100).abs() <= 1, "default length 40%");
     assert!(((left.top + left.bottom) / 2 - (m.top + h / 2)).abs() <= 1, "centred by default");
-    // 30% opaque: drawn pixel by pixel since Issue #117 (the strip to a
-    // screen edge it is kept off is clear), not by a constant alpha.
+    let (hwnd, _) = handles(&app)[0];
+    let (mut alpha, mut flags) = (0u8, 0u32);
+    unsafe { GetLayeredWindowAttributes(hwnd, null_mut(), &mut alpha, &mut flags) };
+    assert!((76..=77).contains(&alpha), "30% opaque, alpha {alpha}");
 
     assert_eq!(launch_again(&app).code(), Some(0), "a second launch hides the right edge too");
     let right = wait_handle(&app, "right").expect("a handle on the hidden right edge");
