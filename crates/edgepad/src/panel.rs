@@ -36,9 +36,9 @@ use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
 const HANDLE_OPACITY: u8 = 77;
-/// A handle's strip to the screen's edge, faint: at 1 of 255 it took no
-/// mouse on CI's runners (Issue #123).
-const STRIP_OPACITY: u8 = 13;
+/// A handle's strip to the screen's edge: all but clear. A window of a
+/// constant alpha takes the mouse however faint it is.
+const STRIP_OPACITY: u8 = 1;
 
 /// One key as the panel needs it.
 struct PanelKey {
