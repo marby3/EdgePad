@@ -114,7 +114,8 @@ fn the_mouse_at_the_screens_edge_still_shows_a_panel_kept_off_it() {
     // strip at the taskbar's top. With none, at the very edge, where the
     // mouse stops.
     let gap = taskbar() + 16;
-    let app = launch_with(Some(&pads(&format!("[general]\nhover_ms = 400\n[edge.bottom]\ngap = {gap}\n"))), None);
+    let text = pads(&format!("[general]\nhover_ms = 400\n[edge.bottom]\ngap = {gap}\n"));
+    let app = launch_with_args(Some(&text), None, &["--debug"]);
     find_panel(&app);
     choose(&app, "下辺");
     assert!(within_3s(|| bottom_panel(&app).is_none()), "precondition: the bottom panel hidden");
@@ -126,9 +127,18 @@ fn the_mouse_at_the_screens_edge_still_shows_a_panel_kept_off_it() {
     let n = unsafe { GetClassNameW(under, class.as_mut_ptr(), 64) };
     let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
     let r = work_area();
-    assert!(
-        within_3s(|| bottom_panel(&app).is_some()),
-        "resting at the edge shows the panel: {class:?} under ({}, {}), work area bottom {}, screen bottom {}",
-        at.x, at.y, r.bottom, m.bottom
-    );
+    if !within_3s(|| bottom_panel(&app).is_some()) {
+        // What the run did, and whether the handle shown takes the mouse.
+        let log = std::fs::read_to_string(exe_dir(&app).join("edgepad-debug.log")).unwrap_or_default();
+        mouse_move_to(away);
+        pump(300);
+        mouse_move_to(POINT { x: away.x, y: m.bottom - px(gap) - px(3) });
+        pump(700);
+        let on_shown = within_3s(|| bottom_panel(&app).is_some());
+        panic!(
+            "resting at the edge shows the panel: {class:?} under ({}, {}), work area bottom {}, screen bottom {}; \
+             on the handle shown it {}; log:\n{log}",
+            at.x, at.y, r.bottom, m.bottom, if on_shown { "shows" } else { "does not show either" }
+        );
+    }
 }
