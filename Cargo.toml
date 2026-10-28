@@ -13,3 +13,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The tests drive the real exe: a debug build draws the settings window
+# slowly enough to slow every test of it (Issue #123). Checks stay on.
+[profile.dev]
+opt-level = 1

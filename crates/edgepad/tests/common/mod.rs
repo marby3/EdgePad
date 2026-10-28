@@ -191,7 +191,7 @@ pub fn tray_menu(app: &Running) -> Vec<MenuItem> {
         });
     }
     unsafe { PostMessageW(menu_window, WM_KEYDOWN, VK_ESCAPE as usize, 0) };
-    pump(200);
+    settle(menu_window);
     items
 }
 
@@ -206,22 +206,27 @@ pub fn choose(app: &Running, text: &str) {
     let id = menu_item(app, text).id;
     let tray = find_window(app, TRAY_CLASS, false);
     unsafe { PostMessageW(tray, WM_COMMAND, id as usize, 0) };
-    pump(300);
+    settle(tray);
 }
 
 /// Pump this thread's messages for `ms` so test windows stay painted.
 pub fn pump(ms: u64) {
     let end = Instant::now() + Duration::from_millis(ms);
     while Instant::now() < end {
-        unsafe {
-            let mut msg: MSG = zeroed();
-            while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
+        pump_for(Duration::from_millis(10));
     }
+}
+
+/// Pump this thread's messages, then sleep for `nap`.
+fn pump_for(nap: Duration) {
+    unsafe {
+        let mut msg: MSG = zeroed();
+        while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    std::thread::sleep(nap);
 }
 
 /// Wait for a top-level window of class `class` owned by `app` to appear.
@@ -428,7 +433,7 @@ pub fn force_foreground(hwnd: HWND) {
         SetForegroundWindow(hwnd);
         AttachThreadInput(me, fg_thread, 0);
     }
-    pump(200);
+    settle(hwnd);
 }
 
 /// Bring `hwnd`, of this process or another, to the front, and fail with
@@ -524,7 +529,24 @@ pub fn keyboard(vk: u16, down: bool) {
         input.Anonymous.ki.dwExtraInfo = KEYBOARD_TAG;
         assert_eq!(SendInput(1, &input, size_of::<INPUT>() as i32), 1, "SendInput");
     }
-    pump(100);
+    settle(unsafe { GetForegroundWindow() });
+}
+
+/// Wait for the thread of window `hwnd` to have handled the input just
+/// sent it, and what that input posted it, instead of a fixed while
+/// (Issue #123). The input reaches its queue within a few milliseconds; a
+/// message sent the window is answered only once the thread is back for
+/// more, done with what it was handling. Three rounds take what it posted
+/// itself on the way. This thread's own messages, a hook's among them,
+/// are pumped meanwhile.
+pub fn settle(hwnd: HWND) {
+    for _ in 0..3 {
+        pump_for(Duration::from_millis(3));
+        if !hwnd.is_null() {
+            let mut result = 0;
+            unsafe { SendMessageTimeoutW(hwnd, WM_NULL, 0, 0, SMTO_NORMAL, 3000, &mut result) };
+        }
+    }
 }
 
 /// Records and swallows injected key events while alive.

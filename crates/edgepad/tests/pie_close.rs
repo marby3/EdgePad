@@ -171,7 +171,6 @@ fn hotkey() {
     for (vk, down) in [(VK_LCONTROL, true), (VK_LMENU, true), (VK_F13, true), (VK_F13, false), (VK_LMENU, false), (VK_LCONTROL, false)] {
         keyboard(vk, down);
     }
-    pump(200);
 }
 
 /// Choose the tray item `id` of `app` without opening the tray menu: its
@@ -180,7 +179,7 @@ fn hotkey() {
 fn command(app: &Running, id: u32) {
     let tray = find_window(app, TRAY_CLASS, false);
     unsafe { PostMessageW(tray, WM_COMMAND, id as usize, 0) };
-    pump(300);
+    settle(tray);
 }
 
 fn shown(app: &Running) -> bool {

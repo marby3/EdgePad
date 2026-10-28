@@ -98,7 +98,7 @@ fn is_default(editor: HWND, name: &str) -> bool {
 fn click_on(editor: HWND, hwnd: HWND) {
     wait_in_front(editor);
     click(centre(window_rect(hwnd)));
-    pump(300);
+    settle(editor);
 }
 
 fn show_page(editor: HWND, page: usize) {
@@ -127,7 +127,7 @@ fn type_text(text: &str) {
             }
         }
     }
-    pump(200);
+    settle(unsafe { GetForegroundWindow() });
 }
 
 fn press(vk: u16) {
@@ -175,7 +175,7 @@ fn type_into(editor: HWND, name: &str, text: &str) {
 fn enter(editor: HWND, name: &str, text: &str) {
     type_into(editor, name, text);
     press(VK_RETURN);
-    pump(300);
+    settle(editor);
 }
 
 /// Choose `option` in the drop-down of `name`, by keyboard: Home, then
@@ -197,7 +197,7 @@ fn choose_option(editor: HWND, name: &str, option: &str) {
     for _ in 0..at {
         press(VK_DOWN);
     }
-    pump(300);
+    settle(editor);
 }
 
 fn options(editor: HWND, name: &str) -> Vec<String> {
@@ -245,7 +245,7 @@ fn enter_accent(editor: HWND, colour: &str) {
     press_with(VK_CONTROL, b'A' as u16);
     type_text(colour);
     press(VK_RETURN);
-    pump(300);
+    settle(editor);
 }
 
 // AC1
@@ -485,7 +485,7 @@ fn a_value_out_of_range_is_stopped_in_its_field() {
     let fine = inside(editor, "opacity");
     // Typing, not yet entered: nothing said.
     type_into(editor, "opacity", "1");
-    pump(300);
+    settle(editor);
     assert!(!status(editor).contains("opacity"), "not stopped while typing: {:?}", status(editor));
     type_into(editor, "opacity", "150");
     press(VK_RETURN);
@@ -520,7 +520,7 @@ fn wheel(p: POINT, notches: i32) {
         input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
         SendInput(1, &input, size_of::<INPUT>() as i32);
     }
-    pump(300);
+    settle(unsafe { WindowFromPoint(p) });
 }
 
 // AC9
@@ -569,7 +569,7 @@ fn click_link(editor: HWND, line: HWND) {
     wait_in_front(editor);
     let r = window_rect(line);
     click(POINT { x: r.left + 12, y: r.top + 8 });
-    pump(300);
+    settle(editor);
 }
 
 // AC10
@@ -714,22 +714,22 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     let new = dpi * 3 / 2;
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
-    pump(300);
+    settle(editor);
     assert!((width(field(editor, "monitor")) - row0 * 3 / 2).abs() <= 3, "a field grows: {row0} -> {}", width(field(editor, "monitor")));
     assert!((width(part(editor, DIAGRAM)) - fig0 * 3 / 2).abs() <= 3, "the figure grows: {fig0} -> {}", width(part(editor, DIAGRAM)));
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
-    pump(300);
+    settle(editor);
     drop(dark);
 
     // The keyboard: from the sidebar, Tab reaches the first field, and on
     // 辺ごとの設定 through the figure to the edge's fields.
     wait_in_front(editor);
     click(centre(sidebar_item(editor, LOOK_PAGE)));
-    pump(300);
+    settle(editor);
     press(VK_TAB);
     assert!(within_3s(|| focus_of(editor) == field(editor, "key_size")), "Tab: the first field");
     click(centre(sidebar_item(editor, EDGES_PAGE)));
-    pump(300);
+    settle(editor);
     let figure = part(editor, DIAGRAM);
     let mut reached = false;
     for _ in 0..30 {

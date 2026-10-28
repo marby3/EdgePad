@@ -131,7 +131,7 @@ pub fn click_button(editor: HWND, text: &str) {
     let c = child(editor, "Button", text).unwrap_or_else(|| panic!("no button 「{text}」"));
     wait_in_front(editor);
     click(centre(window_rect(c)));
-    pump(300);
+    settle(editor);
 }
 
 /// The text of `hwnd`, a window of EdgePad's: asked with WM_GETTEXT, as
@@ -165,7 +165,7 @@ pub fn file(app: &Running) -> String {
 /// Set `[general] opacity` in the window's copy of the file.
 pub fn change(editor: HWND, opacity: usize) {
     unsafe { PostMessageW(editor, test_set(), opacity, 0) };
-    pump(200);
+    settle(editor);
 }
 
 /// The sidebar item `i`'s rectangle on the screen.
