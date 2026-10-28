@@ -232,6 +232,28 @@ pub fn pick_monitor(monitors: &[Rect], primary: usize, cursor: (i32, i32), choic
     }
 }
 
+/// `monitor` less `by` pixels along `edge`: the room a panel kept `by` off
+/// the screen's edge is laid out in (Issue #117).
+pub fn inset(monitor: Rect, edge: Edge, by: i32) -> Rect {
+    match edge {
+        Edge::Left => Rect { x: monitor.x + by, w: monitor.w - by, ..monitor },
+        Edge::Right => Rect { w: monitor.w - by, ..monitor },
+        Edge::Top => Rect { y: monitor.y + by, h: monitor.h - by, ..monitor },
+        Edge::Bottom => Rect { h: monitor.h - by, ..monitor },
+    }
+}
+
+/// `r` stretched across to `edge` of `monitor`: a handle kept off the
+/// screen's edge, with the strip between, which the mouse still reaches.
+pub fn to_edge(r: Rect, monitor: Rect, edge: Edge) -> Rect {
+    match edge {
+        Edge::Left => Rect { x: monitor.x, w: r.x + r.w - monitor.x, ..r },
+        Edge::Right => Rect { w: monitor.x + monitor.w - r.x, ..r },
+        Edge::Top => Rect { y: monitor.y, h: r.y + r.h - monitor.y, ..r },
+        Edge::Bottom => Rect { h: monitor.y + monitor.h - r.y, ..r },
+    }
+}
+
 /// The handle on `edge` of `monitor`: `width` pixels thick against the screen
 /// edge, `length` percent of the edge long, its centre `position` percent
 /// along the edge, moved inward where it would stick out.

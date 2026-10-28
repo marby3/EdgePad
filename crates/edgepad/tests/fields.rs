@@ -789,5 +789,6 @@ fn the_gap_from_the_screens_edge_is_a_field_of_each_edge() {
     for line in before.lines() {
         assert!(saved.contains(line), "kept: {line}\n{saved}");
     }
-    assert_eq!(saved.lines().count(), before.lines().count() + 2, "a section and its line added: {saved}");
+    assert!(saved.contains("[edge.bottom]
+gap = 24"), "the bottom's section added with it: {saved}");
 }

@@ -113,7 +113,8 @@ bottom = four
     assert!((r.top - centred).abs() <= 1, "right panel centred vertically: {} vs {centred}", r.top);
 
     let b = panel_on(&all, Side::Bottom);
-    assert_eq!(b.bottom, m.bottom, "bottom panel flush with the bottom edge");
+    // Kept 16 px off the bottom since Issue #117.
+    assert_eq!(b.bottom, m.bottom - px(16), "bottom panel off the bottom edge by its gap");
     assert_eq!((b.right - b.left, b.bottom - b.top), (4 * k, k), "one row of four keys");
     let centred = m.left + (m.right - m.left - 4 * k) / 2;
     assert!((b.left - centred).abs() <= 1, "bottom panel centred horizontally: {} vs {centred}", b.left);

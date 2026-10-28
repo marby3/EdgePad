@@ -173,7 +173,14 @@ pub struct EdgeConfig {
     /// Registered as an AppBar while shown, so maximised windows leave it
     /// room (spec 5.5).
     pub dock: bool,
+    /// How far the panel and its handle keep off the screen's edge, in
+    /// logical pixels (Issue #117).
+    pub gap: u32,
 }
+
+/// The bottom edge's `gap` unless written: a swipe up from its handle then
+/// starts clear of where Windows takes it for its own (the Start menu).
+pub const BOTTOM_GAP: u32 = 16;
 
 impl Default for EdgeConfig {
     fn default() -> Self {
@@ -183,7 +190,16 @@ impl Default for EdgeConfig {
             lines: 1,
             handle: Some(Handle { width: 6, length: 40, position: 50 }),
             dock: false,
+            gap: 0,
         }
+    }
+}
+
+impl EdgeConfig {
+    /// Edge `edge`'s settings unless written: the bottom kept off the edge.
+    pub fn of(edge: Edge) -> EdgeConfig {
+        let gap = if edge == Edge::Bottom { BOTTOM_GAP } else { 0 };
+        EdgeConfig { gap, ..EdgeConfig::default() }
     }
 }
 
@@ -411,7 +427,7 @@ impl Default for Parser<'_> {
             key_lines: Vec::new(),
             config: Config {
                 general: General::default(),
-                edges: [EdgeConfig::default(); 4],
+                edges: [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom].map(EdgeConfig::of),
                 sets: Vec::new(),
                 profiles: Vec::new(),
             },
@@ -571,6 +587,7 @@ impl Parser<'_> {
         match name {
             "enabled" => e.enabled = boolean(name, value)?,
             "dock" => e.dock = boolean(name, value)?,
+            "gap" => e.gap = ranged(name, name, value)?,
             "monitor" => {
                 e.monitor = match value.to_ascii_lowercase().as_str() {
                     "primary" => Monitor::Primary,
@@ -1006,6 +1023,7 @@ pub struct Ranges {
     pub handle_width: Range,
     pub handle_length: Range,
     pub handle_position: Range,
+    pub gap: Range,
 }
 
 pub const RANGES: Ranges = Ranges {
@@ -1020,6 +1038,7 @@ pub const RANGES: Ranges = Ranges {
     handle_width: range(4, 8, false),
     handle_length: range(1, 100, false),
     handle_position: range(0, 100, false),
+    gap: range(0, 64, false),
 };
 
 /// The range of number setting `name`: `opacity`, `columns`, or a part of
@@ -1038,6 +1057,7 @@ pub fn range_of(name: &str) -> Option<Range> {
         "handle.width" => r.handle_width,
         "handle.length" => r.handle_length,
         "handle.position" => r.handle_position,
+        "gap" => r.gap,
         _ => return None,
     })
 }
@@ -1092,10 +1112,11 @@ pub fn default_value(section: &str, name: &str) -> Option<String> {
     if !kind.eq_ignore_ascii_case("edge") || Edge::parse(edge).is_none() {
         return None;
     }
-    let e = EdgeConfig::default();
+    let e = Edge::parse(edge).map_or_else(EdgeConfig::default, EdgeConfig::of);
     Some(match name.as_str() {
         "enabled" => e.enabled.to_string(),
         "dock" => e.dock.to_string(),
+        "gap" => e.gap.to_string(),
         "monitor" => match e.monitor {
             Monitor::Primary => "primary".into(),
             Monitor::Cursor => "cursor".into(),

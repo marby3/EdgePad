@@ -56,8 +56,8 @@ fn the_bottom_panel_and_handle_keep_off_the_screens_edge_and_the_others_do_not()
     choose(&app, "下辺");
     assert!(within_3s(|| bottom_panel(&app).is_none()), "precondition: the bottom panel hidden");
     let x = (m.left + m.right) / 2;
-    tap(POINT { x, y: m.bottom - 2 });
-    assert!(bottom_panel(&app).is_none(), "a tap at the very edge is not on the handle");
+    tap(POINT { x, y: m.bottom - px(8) });
+    assert!(bottom_panel(&app).is_none(), "a tap between the handle and the edge is not on it");
     tap(POINT { x, y: m.bottom - px(16) - px(3) });
     assert!(within_3s(|| bottom_panel(&app).is_some()), "a tap on the handle shows the panel");
 
