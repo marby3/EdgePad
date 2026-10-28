@@ -120,6 +120,9 @@ fn the_mouse_at_the_screens_edge_still_shows_a_panel_kept_off_it() {
     choose(&app, "下辺");
     assert!(within_3s(|| bottom_panel(&app).is_none()), "precondition: the bottom panel hidden");
     let at = POINT { x: away.x, y: work_area().bottom.min(m.bottom) - 1 };
+    // Moved on to it, then along it, as a mouse goes: on CI's runners, one
+    // jump onto a window just shown was seen to bring it nothing.
+    mouse_move_to(POINT { x: at.x - 4, y: at.y });
     mouse_move_to(at);
     pump(700);
     let under = unsafe { WindowFromPoint(at) };
