@@ -1397,7 +1397,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 0
             }
             WM_CHOOSE_KEY => {
-                keymap::choose_key(wp);
+                keymap::choose_key(wp, lp != 0);
                 0
             }
             WM_PLACE_KEY => {

@@ -647,9 +647,10 @@ fn each_kind_has_its_own_fields() {
     next("ブラシ");
     assert_eq!(text(editor, INTERVAL), "60");
     enter(editor, INTERVAL, "120");
-    // pie: its fan opens on its first item (Issue #113); back to the panel.
-    focus_sample(editor);
-    arrow(&[], VK_DOWN);
+    // pie: Enter opens its fan on its first item (Issue #113); back to
+    // the panel.
+    next("変形");
+    press(VK_RETURN);
     assert!(within_3s(|| text(editor, LABEL) == "拡大" && shown(editor, PIE_BACK)), "the fan: {:?}", text(editor, LABEL));
     click_id(editor, PIE_BACK);
     assert!(within_3s(|| text(editor, LABEL) == "変形"), "{:?}", text(editor, LABEL));
@@ -1589,8 +1590,9 @@ fn fan_point(editor: HWND, right: bool, i: usize, items: usize) -> POINT {
     POINT { x: x.round() as i32, y: (f64::from(r.top + h / 2) + along).round() as i32 }
 }
 
-/// Choose key `i` of the set shown by the keyboard, a pie key: its fan
-/// opens on its first item, `first`.
+/// Choose key `i` of the set shown by the keyboard, a pie key, and press
+/// Enter: its fan opens on its first item, `first`. Gone over with the
+/// arrows, it does not.
 fn open_fan(editor: HWND, i: i32, first: &str) {
     for _ in 0..3 {
         focus_sample(editor);
@@ -1598,6 +1600,8 @@ fn open_fan(editor: HWND, i: i32, first: &str) {
         for _ in 0..i {
             arrow(&[], VK_DOWN);
         }
+        assert!(!shown(editor, PIE_BACK), "no fan by the arrows");
+        press(VK_RETURN);
         if within_3s(|| text(editor, LABEL) == first && shown(editor, PIE_BACK)) {
             return;
         }

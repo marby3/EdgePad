@@ -54,7 +54,7 @@ use windows_sys::Win32::Foundation::{FreeLibrary, HWND, LPARAM, LRESULT, POINT, 
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_DOWN, VK_END, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
-    VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_UP,
+    VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_UP,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::{
     OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
@@ -2300,14 +2300,15 @@ unsafe fn press_button(e: &mut Editor, id: usize, key: Key) {
     }
 }
 
-/// Choose key `key` of the set shown: from the sample. A pie key on
-/// キーマッピング opens its fan; on the fan, an item is chosen.
-pub(super) unsafe fn choose_key(key: usize) {
+/// Choose key `key` of the set shown: from the sample. A pie key clicked,
+/// or chosen with Enter or Space (`open`), opens its fan on キーマッピング;
+/// gone over with the arrows, not. On the fan, an item is chosen.
+pub(super) unsafe fn choose_key(key: usize, open: bool) {
     with_editor(|e| unsafe {
         let Some(line) = keys_of(e).get(key).map(|raw| Line::of(raw)) else { return };
         let set = e.keymap.set.clone();
         let items = line.content.to_ascii_lowercase();
-        if e.page == MAP_PAGE && e.keymap.pie.is_none() && line.kind() == Some(PIE_KIND) && set_names(&e.doc).contains(&items) {
+        if open && e.page == MAP_PAGE && e.keymap.pie.is_none() && line.kind() == Some(PIE_KIND) && set_names(&e.doc).contains(&items) {
             e.keymap.pie = set.map(|s| (s, key));
             choose(e, Some(items), 0);
         } else {
@@ -2853,7 +2854,7 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
                 let dragged = SAMPLE_VIEW.with_borrow_mut(|v| {
                     let (i, cell, unit) = v.hit(client, dpi, p)?;
                     if i < v.count {
-                        PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, i, 0);
+                        PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, i, 1);
                     }
                     let places = v.places.as_ref().filter(|_| v.movable && i < v.count)?;
                     let from = places[i];
@@ -2942,6 +2943,11 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
             }
             WM_KEYDOWN => {
                 let (chosen, count) = SAMPLE_VIEW.with_borrow(|v| (v.chosen, v.count));
+                // Enter or Space opens the chosen pie key's fan, as a click.
+                if matches!(wp as u16, VK_RETURN | VK_SPACE) {
+                    PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, chosen, 1);
+                    return 0;
+                }
                 let to = match wp as u16 {
                     VK_UP | VK_LEFT => chosen.checked_sub(1),
                     VK_DOWN | VK_RIGHT => Some(chosen + 1),
