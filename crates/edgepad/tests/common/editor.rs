@@ -147,6 +147,12 @@ pub fn status(editor: HWND) -> String {
     text_of(part(editor, STATUS))
 }
 
+/// What the band at the top says (Issue #107): what was done, for a
+/// while; its text stays once it is hidden.
+pub fn notice(editor: HWND) -> String {
+    text_of(part(editor, 15))
+}
+
 /// The heading of the page shown.
 pub fn heading(editor: HWND) -> String {
     text_of(part(editor, HEADING))

@@ -1229,7 +1229,7 @@ unsafe fn import_kle() {
             let key = e.keymap.key;
             choose(e, Some(set), key);
             mark_unsaved(e);
-            tell(e, &format!("「{name}」の配列を読み込みました"));
+            super::notify(e, &format!("「{name}」の配列を読み込みました"));
         } else {
             tell(e, &format!("「{name}」は設定ファイルに書けない名前です"));
         }

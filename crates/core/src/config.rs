@@ -948,6 +948,7 @@ pub fn check(section: &str, name: &str, value: &str) -> Result<(), String> {
     let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
     match section.split_once('.') {
         None if section.eq_ignore_ascii_case("general") => parser.general(&name, value),
+        None if section.eq_ignore_ascii_case("edge") => parser.common(&name, value),
         Some((kind, edge)) if kind.eq_ignore_ascii_case("edge") => match Edge::parse(edge) {
             Some(edge) => parser.edge(edge, &name, value),
             None => Err(format!("知らないセクション [{section}]")),
@@ -1069,7 +1070,8 @@ pub fn default_value(section: &str, name: &str) -> Option<String> {
             _ => return None,
         });
     }
-    let (kind, edge) = section.split_once('.')?;
+    // [edge], every edge's, has an edge's defaults.
+    let (kind, edge) = section.split_once('.').unwrap_or((section, "left"));
     if !kind.eq_ignore_ascii_case("edge") || Edge::parse(edge).is_none() {
         return None;
     }

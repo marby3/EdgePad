@@ -3,11 +3,15 @@
 //! [edge.*], and the 辺と表示 page's figure of the screen's four edges
 //! (spec 7.1).
 //!
-//! A row of a page is a label with the setting's name, its field (an Edit,
-//! a ComboBox, or a check box), a note of what it takes, and 既定に戻す
+//! Since Issue #107 the rows are on the pages 辺ごとの設定 (the figure and
+//! the edge's rows), 見た目, タッチと修飾キー and 表示と非表示.
+//!
+//! A row of a page is a label, the setting's name, its field (an Edit, a
+//! ComboBox, or a check box), a note of what it takes, and 既定に戻す
 //! (written in the file) or 既定値 (not written). The tests find a row by
-//! its label's text, and its other parts by control id: label 600 + i,
-//! field 400 + i, note 700 + i, 既定に戻す 500 + i, 既定値 800 + i. The
+//! its setting's name, control 900 + i, and its other parts by control id:
+//! label 600 + i, field 400 + i, note 700 + i, 既定に戻す 500 + i, 既定値
+//! 800 + i; accent's #RRGGBB is 22. The
 //! figure is control 20; it draws the screen as its client area less 8
 //! logical pixels all round, and each edge as a band 12 logical pixels
 //! wide along that side. Values are typed as characters, so the keyboard
@@ -31,9 +35,10 @@ use common::*;
 const DIAGRAM: i32 = 20;
 const FIELD: i32 = 400;
 const RESET: i32 = 500;
-const LABEL: i32 = 600;
 const NOTE: i32 = 700;
 const MARK: i32 = 800;
+const NAME: i32 = 900;
+const ACCENT_HEX: i32 = 22;
 
 /// Some of [general] and [edge.left] written, by hand, with comments.
 fn settings(general: &str) -> String {
@@ -59,8 +64,8 @@ fn visible(hwnd: HWND) -> bool {
 /// The index of the row of setting `name`, if its label is shown.
 fn row_of(editor: HWND, name: &str) -> Option<i32> {
     (0..64).find(|i| {
-        let label = unsafe { GetDlgItem(editor, LABEL + i) };
-        !label.is_null() && visible(label) && text_of(label) == name
+        let n = unsafe { GetDlgItem(editor, NAME + i) };
+        !n.is_null() && visible(n) && text_of(n) == name
     })
 }
 
@@ -224,27 +229,44 @@ fn open_page(app: &Running, page: usize) -> HWND {
     editor
 }
 
-const EDGES_PAGE: usize = 2;
-const OPERATION_PAGE: usize = 3;
+const EDGES_PAGE: usize = 3;
+const LOOK_PAGE: usize = 4;
+const TOUCH_PAGE: usize = 5;
+const SHOW_PAGE: usize = 6;
+
+/// Give accent `colour`: 色を指定, then #RRGGBB typed and entered; or auto.
+fn enter_accent(editor: HWND, colour: &str) {
+    if colour == "auto" {
+        return choose_option(editor, "accent", "Windows に合わせる");
+    }
+    choose_option(editor, "accent", "色を指定");
+    let hex = part(editor, ACCENT_HEX);
+    assert!(within_3s(|| visible(hex)), "#RRGGBB to give");
+    click_on(editor, hex);
+    press_with(VK_CONTROL, b'A' as u16);
+    type_text(colour);
+    press(VK_RETURN);
+    pump(300);
+}
 
 // AC1
 #[test]
 fn the_edges_page_has_a_field_for_each_display_setting_with_its_range() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
-    let editor = open_page(&app, EDGES_PAGE);
+    let editor = open_page(&app, LOOK_PAGE);
     for (name, class, takes) in [
         ("key_size", "Edit", "24〜200"),
         ("opacity", "Edit", "10〜100"),
         ("dim_opacity", "Edit", "10〜100"),
         ("slide_ms", "Edit", "0 でオフ、50〜500"),
         ("theme", "ComboBox", ""),
-        ("accent", "Edit", "auto か #RRGGBB"),
+        ("accent", "ComboBox", ""),
     ] {
         assert_eq!(class_of(field(editor, name)), class, "the field of {name}");
         assert!(note(editor, name).contains(takes), "{name} takes {takes}: {:?}", note(editor, name));
     }
-    assert_eq!(options(editor, "theme"), ["light", "dark", "auto"]);
+    assert_eq!(options(editor, "theme"), ["ライト", "ダーク", "Windows に合わせる"]);
     assert!(row_of(editor, "latch_ms").is_none(), "操作's settings are not here");
 }
 
@@ -295,7 +317,7 @@ fn the_figure_shows_the_four_edges_and_chooses_one() {
     let figure = part(editor, DIAGRAM);
     assert!(visible(figure), "a figure of the screen");
     let top = window_rect(figure).top;
-    assert!(top <= window_rect(field(editor, "key_size")).top, "at the top of the page");
+    assert!(top <= window_rect(field(editor, "enabled")).top, "at the top of the page");
     // Neither chosen: left is, the window opens on it.
     select_edge(&app, editor, "right");
     // Enabled bottom filled, disabled top only outlined: their middles differ.
@@ -331,10 +353,9 @@ fn the_chosen_edge_has_its_fields_under_the_figure() {
     let app = launch_with(Some(&settings("")), None);
     let editor = open_page(&app, EDGES_PAGE);
     select_edge(&app, editor, "left");
-    for (name, class) in [("enabled", "Button"), ("dock", "Button"), ("monitor", "Edit"), ("columns", "Edit"), ("handle", "Button")] {
+    for (name, class) in [("enabled", "Button"), ("dock", "Button"), ("monitor", "ComboBox"), ("columns", "Edit"), ("handle", "Button")] {
         assert_eq!(class_of(field(editor, name)), class, "the field of {name}");
     }
-    assert!(note(editor, "monitor").contains("primary / cursor / 1〜16"), "{:?}", note(editor, "monitor"));
     assert!(note(editor, "columns").contains("1〜3"));
     assert_eq!(value(editor, "columns"), "2", "the left edge's columns");
     for (name, takes, now) in [("handle の幅", "4〜8", "6"), ("handle の長さ", "1〜100%", "50"), ("handle の位置", "0〜100%", "0")] {
@@ -361,20 +382,24 @@ fn the_chosen_edge_has_its_fields_under_the_figure() {
 fn the_operation_page_has_a_field_for_each_operation_setting_with_its_range() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
-    let editor = open_page(&app, OPERATION_PAGE);
-    for (name, class, takes) in [
-        ("latch_ms", "Edit", "50〜2000"),
-        ("hover_ms", "Edit", "0 でオフ、100〜5000"),
-        ("auto_hide_ms", "Edit", "0 でオフ、1000〜3600000"),
-        ("latch", "ComboBox", ""),
-        ("pen_presses", "Button", ""),
-        ("hotkey", "Edit", "キーの組み合わせか none"),
+    let editor = open_page(&app, TOUCH_PAGE);
+    for (page, name, class, takes) in [
+        (TOUCH_PAGE, "latch_ms", "Edit", "50〜2000"),
+        (TOUCH_PAGE, "latch", "ComboBox", ""),
+        (TOUCH_PAGE, "pen_presses", "Button", ""),
+        (SHOW_PAGE, "hover_ms", "Edit", "0 でオフ、100〜5000"),
+        (SHOW_PAGE, "auto_hide_ms", "Edit", "0 でオフ、1000〜3600000"),
+        (SHOW_PAGE, "hotkey", "Edit", ""),
     ] {
+        if heading(editor) != PAGES[page] {
+            show_page(editor, page);
+        }
         assert_eq!(class_of(field(editor, name)), class, "the field of {name}");
         assert!(note(editor, name).contains(takes), "{name} takes {takes}: {:?}", note(editor, name));
     }
-    assert_eq!(options(editor, "latch"), ["oneshot", "lock"]);
-    assert!(row_of(editor, "opacity").is_none(), "辺と表示's settings are not here");
+    show_page(editor, TOUCH_PAGE);
+    assert_eq!(options(editor, "latch"), ["1 回使うと解ける", "もう一度押すまで続く"]);
+    assert!(row_of(editor, "opacity").is_none(), "見た目's settings are not here");
 }
 
 // AC5
@@ -382,12 +407,12 @@ fn the_operation_page_has_a_field_for_each_operation_setting_with_its_range() {
 fn fields_show_the_file_defaults_marked_and_follow_a_reload() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
-    let editor = open_page(&app, EDGES_PAGE);
+    let editor = open_page(&app, LOOK_PAGE);
     assert_eq!(value(editor, "opacity"), "70", "as written");
     assert!(!is_default(editor, "opacity"), "written: 既定に戻す");
     assert_eq!(value(editor, "key_size"), "56", "not written: the default");
     assert!(is_default(editor, "key_size"), "and marked 既定値");
-    assert_eq!(value(editor, "theme"), "auto");
+    assert_eq!(value(editor, "theme"), "Windows に合わせる");
 
     std::fs::write(exe_dir(&app).join("edgepad.ini"), settings("key_size = 64").replace("opacity = 70", "opacity = 40")).unwrap();
     assert!(within_3s(|| child(editor, "Button", "読み直す").is_some()), "told of the change");
@@ -402,14 +427,15 @@ fn fields_show_the_file_defaults_marked_and_follow_a_reload() {
 fn a_change_rewrites_only_its_line_and_adds_what_is_missing() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
-    let editor = open_page(&app, EDGES_PAGE);
+    let editor = open_page(&app, LOOK_PAGE);
     let before = file(&app);
     enter(editor, "opacity", "80");
     enter(editor, "key_size", "64");
-    choose_option(editor, "theme", "dark");
+    choose_option(editor, "theme", "ダーク");
+    show_page(editor, EDGES_PAGE);
     select_edge(&app, editor, "bottom");
     click_on(editor, field(editor, "dock"));
-    show_page(editor, OPERATION_PAGE);
+    show_page(editor, TOUCH_PAGE);
     click_on(editor, field(editor, "pen_presses"));
     save(editor);
     assert!(before.contains("opacity = 70   ; 通常表示"), "precondition");
@@ -430,7 +456,7 @@ fn a_change_rewrites_only_its_line_and_adds_what_is_missing() {
 fn reset_takes_the_line_out_of_the_file() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
-    let editor = open_page(&app, EDGES_PAGE);
+    let editor = open_page(&app, LOOK_PAGE);
     let i = row(editor, "opacity");
     click_on(editor, part(editor, RESET + i));
     assert!(within_3s(|| is_default(editor, "opacity")), "shown as the default now");
@@ -452,7 +478,7 @@ fn inside(editor: HWND, name: &str) -> [i32; 3] {
 fn a_value_out_of_range_is_stopped_in_its_field() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
-    let editor = open_page(&app, EDGES_PAGE);
+    let editor = open_page(&app, LOOK_PAGE);
     let fine = inside(editor, "opacity");
     // Typing, not yet entered: nothing said.
     type_into(editor, "opacity", "1");
@@ -463,11 +489,9 @@ fn a_value_out_of_range_is_stopped_in_its_field() {
     assert!(within_3s(|| status(editor).contains("opacity")), "the reason shows: {:?}", status(editor));
     let wrong = inside(editor, "opacity");
     assert!(wrong[0] > wrong[1] + 30 && differs(wrong, fine), "the field shows it wrong: {wrong:?}");
-    for (name, bad) in [("accent", "#12345")] {
-        enter(editor, name, bad);
-        assert!(within_3s(|| status(editor).contains(name)), "{name} = {bad} stopped: {:?}", status(editor));
-    }
-    show_page(editor, OPERATION_PAGE);
+    enter_accent(editor, "#12345");
+    assert!(within_3s(|| status(editor).contains("accent")), "accent = #12345 stopped: {:?}", status(editor));
+    show_page(editor, SHOW_PAGE);
     enter(editor, "hotkey", "Ctrl+Foo");
     assert!(within_3s(|| status(editor).contains("hotkey")), "hotkey = Ctrl+Foo stopped: {:?}", status(editor));
     save(editor);
@@ -476,8 +500,8 @@ fn a_value_out_of_range_is_stopped_in_its_field() {
     assert!(saved.contains("opacity = 70   ;") && !saved.contains("150") && !saved.contains("Foo") && !saved.contains("#12345"), "{saved}");
     // Put right, the marks go.
     enter(editor, "hotkey", "none");
-    show_page(editor, EDGES_PAGE);
-    enter(editor, "accent", "auto");
+    show_page(editor, LOOK_PAGE);
+    enter_accent(editor, "auto");
     enter(editor, "opacity", "60");
     assert!(within_3s(|| !status(editor).contains("opacity") && !status(editor).contains("accent")), "{:?}", status(editor));
     assert!(within_3s(|| !differs(inside(editor, "opacity"), fine)), "the field looks right again");
@@ -501,7 +525,7 @@ fn wheel(p: POINT, notches: i32) {
 fn the_wheel_and_the_arrows_step_numbers_to_their_ends() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("slide_ms = 50")), None);
-    let editor = open_page(&app, EDGES_PAGE);
+    let editor = open_page(&app, LOOK_PAGE);
     click_on(editor, field(editor, "opacity"));
     press(VK_UP);
     assert!(within_3s(|| value(editor, "opacity") == "71"), "↑: {}", value(editor, "opacity"));
@@ -523,7 +547,7 @@ fn the_wheel_and_the_arrows_step_numbers_to_their_ends() {
     assert!(within_3s(|| value(editor, "slide_ms") == "50"), "off up: 50, {}", value(editor, "slide_ms"));
     press(VK_UP);
     assert!(within_3s(|| value(editor, "slide_ms") == "60"), "by 10: {}", value(editor, "slide_ms"));
-    show_page(editor, OPERATION_PAGE);
+    show_page(editor, SHOW_PAGE);
     click_on(editor, field(editor, "auto_hide_ms"));
     press(VK_UP);
     assert!(within_3s(|| value(editor, "auto_hide_ms") == "1000"), "off up: 1000, {}", value(editor, "auto_hide_ms"));
@@ -550,19 +574,19 @@ fn click_link(editor: HWND, line: HWND) {
 fn a_save_that_fails_leads_to_the_line_at_fault() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings("")), None);
-    let editor = open_page(&app, OPERATION_PAGE);
+    let editor = open_page(&app, TOUCH_PAGE);
     // Past any field's check, a value the parser turns away.
     change(editor, 150);
     save(editor);
     assert!(within_3s(|| status(editor).contains("150")), "the reason: {:?}", status(editor));
     let line = part(editor, STATUS);
     click_link(editor, line);
-    assert!(within_3s(|| heading(editor) == "辺と表示"), "its page: {:?}", heading(editor));
+    assert!(within_3s(|| heading(editor) == "見た目"), "its page: {:?}", heading(editor));
     assert!(within_3s(|| focus_of(editor) == field(editor, "opacity")), "its field has the focus");
     assert!(status(editor).contains("150"), "the reason stays: {:?}", status(editor));
 
     // By keyboard: Tab to the reason, Enter.
-    show_page(editor, OPERATION_PAGE);
+    show_page(editor, TOUCH_PAGE);
     save(editor);
     let mut reached = false;
     for _ in 0..40 {
@@ -574,13 +598,13 @@ fn a_save_that_fails_leads_to_the_line_at_fault() {
     }
     assert!(reached, "the reason takes the focus");
     press(VK_RETURN);
-    assert!(within_3s(|| heading(editor) == "辺と表示" && focus_of(editor) == field(editor, "opacity")), "Enter leads there too");
+    assert!(within_3s(|| heading(editor) == "見た目" && focus_of(editor) == field(editor, "opacity")), "Enter leads there too");
 
     // A key set's line: キー配置.
     drop(app);
     let bad = settings("").replace("key = B | hold | B", "key = B | hold");
     let app = launch_with(Some(&bad), None);
-    let editor = open_page(&app, OPERATION_PAGE);
+    let editor = open_page(&app, TOUCH_PAGE);
     change(editor, 90);
     save(editor);
     assert!(within_3s(|| status(editor).contains("行目")), "the line and reason: {:?}", status(editor));
@@ -592,12 +616,12 @@ fn a_save_that_fails_leads_to_the_line_at_fault() {
     drop(app);
     let bad = settings("").replace("enabled = false", "enabled = maybe");
     let app = launch_with(Some(&bad), None);
-    let editor = open_page(&app, OPERATION_PAGE);
+    let editor = open_page(&app, TOUCH_PAGE);
     change(editor, 90);
     save(editor);
     assert!(within_3s(|| status(editor).contains("行目")), "the line and reason: {:?}", status(editor));
     click_link(editor, part(editor, STATUS));
-    assert!(within_3s(|| heading(editor) == "辺と表示"), "its page");
+    assert!(within_3s(|| heading(editor) == "辺ごとの設定"), "its page");
     assert!(within_3s(|| focus_of(editor) == field(editor, "enabled")), "the top edge's enabled has the focus");
     assert!(test_events(&app).iter().any(|e| e == "settings: edge top"), "the top edge chosen");
     assert!(status(editor).contains("行目"), "the line stays: {:?}", status(editor));
@@ -665,38 +689,43 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     let _desktop = desktop();
     let dark = Dark::set();
     let app = launch_with(Some(&settings("")), None);
-    let editor = open_page(&app, EDGES_PAGE);
+    let editor = open_page(&app, LOOK_PAGE);
     let _ = within_3s(|| brightness(inside(editor, "opacity")) < 90);
     assert!(brightness(inside(editor, "opacity")) < 90, "a field dark: {:?}", inside(editor, "opacity"));
+    show_page(editor, EDGES_PAGE);
     let figure = window_rect(part(editor, DIAGRAM));
     let corner = colour_at(POINT { x: figure.left + 2, y: figure.top + 2 });
     assert!(brightness(corner) < 90, "the figure dark: {corner:?}");
     dark.light();
+    show_page(editor, LOOK_PAGE);
     let _ = within_3s(|| brightness(inside(editor, "opacity")) > 170);
     assert!(brightness(inside(editor, "opacity")) > 170, "light again: {:?}", inside(editor, "opacity"));
 
     // The DPI: fields and the figure grow with it. Across: down the
     // page, rows come closer where the screen is small (CI's 1024 x 768).
     let width = |w: HWND| window_rect(w).right - window_rect(w).left;
-    let (row0, fig0) = (width(field(editor, "opacity")), width(part(editor, DIAGRAM)));
+    show_page(editor, EDGES_PAGE);
+    let (row0, fig0) = (width(field(editor, "monitor")), width(part(editor, DIAGRAM)));
     let dpi = unsafe { GetDpiForWindow(editor) } as i32;
     let new = dpi * 3 / 2;
     let suggested = window_rect(editor);
     unsafe { SendMessageW(editor, WM_DPICHANGED, (new << 16 | new) as usize, &suggested as *const _ as isize) };
     pump(300);
-    assert!((width(field(editor, "opacity")) - row0 * 3 / 2).abs() <= 3, "a field grows: {row0} -> {}", width(field(editor, "opacity")));
+    assert!((width(field(editor, "monitor")) - row0 * 3 / 2).abs() <= 3, "a field grows: {row0} -> {}", width(field(editor, "monitor")));
     assert!((width(part(editor, DIAGRAM)) - fig0 * 3 / 2).abs() <= 3, "the figure grows: {fig0} -> {}", width(part(editor, DIAGRAM)));
     unsafe { SendMessageW(editor, WM_DPICHANGED, (dpi << 16 | dpi) as usize, &suggested as *const _ as isize) };
     pump(300);
     drop(dark);
 
     // The keyboard: from the sidebar, Tab reaches the first field, and on
-    // through the figure to the edge's fields.
+    // 辺ごとの設定 through the figure to the edge's fields.
     wait_in_front(editor);
-    click(centre(sidebar_item(editor, EDGES_PAGE)));
+    click(centre(sidebar_item(editor, LOOK_PAGE)));
     pump(300);
     press(VK_TAB);
     assert!(within_3s(|| focus_of(editor) == field(editor, "key_size")), "Tab: the first field");
+    click(centre(sidebar_item(editor, EDGES_PAGE)));
+    pump(300);
     let figure = part(editor, DIAGRAM);
     let mut reached = false;
     for _ in 0..30 {
@@ -712,7 +741,7 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
 }
 
 // Issue #97 AC5: an edge's field not written takes [edge]'s value, marked
-// 共通; 既定に戻す goes back to it.
+// 共通; 共通に戻す (既定に戻す before Issue #107) goes back to it.
 #[test]
 fn an_edge_field_not_written_shows_the_common_value_marked() {
     let _desktop = desktop();

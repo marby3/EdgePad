@@ -3,7 +3,7 @@
 //! parser reads it. The panels pick the file up as when it is saved by hand.
 //!
 //! Its parts are Windows's own controls, of the common controls version 6:
-//! a sidebar of the four pages (a list box), the page shown on its right
+//! a sidebar of the seven pages (a list box), the page shown on its right
 //! under its heading, a status line, and a row along the bottom with the
 //! file's path, テキストで開く and 保存. A question (the file changed outside,
 //! or changes not saved on closing) shows in the status line, its answers
@@ -61,7 +61,8 @@ mod keymap;
 /// The window's class: also how the running EdgePad and the tests find it.
 pub const CLASS: *const u16 = w!("EdgePadSettings");
 
-const PAGES: [&str; 4] = ["キー配置", "アプリ別", "辺と表示", "操作"];
+/// The pages, by use (Issue #107).
+const PAGES: [&str; 7] = ["キー配置", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"];
 
 /// Control ids: the sidebar, the page's heading, the status line, the
 /// file's path, テキストで開く, 保存, and the answers to questions. Clear of
@@ -71,6 +72,11 @@ const HEADING: usize = 11;
 const STATUS: usize = 12;
 const PATH: usize = 13;
 const OPEN_TEXT: usize = 14;
+/// The band that says what was done, for a while.
+const NOTICE: usize = 15;
+/// How long the band shows, and its timer.
+const NOTICE_MS: u32 = 4000;
+const NOTICE_TIMER: usize = 1;
 const SAVE: usize = 200;
 const RELOAD: usize = 300;
 const KEEP: usize = 301;
@@ -82,7 +88,7 @@ const CANCEL: usize = 304;
 const CLIENT_W: i32 = 900;
 const CLIENT_H: i32 = 660;
 /// The least the client area may be: the sidebar, and room beside it for
-/// the rows of 辺と表示, the display rows beside the figure.
+/// the rows of the pages, a label, a name and a field each.
 const MIN_W: i32 = 900;
 const MIN_H: i32 = 640;
 const MARGIN: i32 = 12;
@@ -111,6 +117,7 @@ const WM_OPEN_EDGE: u32 = WM_APP + 5;
 /// Win32_UI_Controls, features taken for these alone otherwise.
 const SS_NOPREFIX: u32 = 0x80;
 const SS_CENTERIMAGE: u32 = 0x200;
+const SS_CENTER: u32 = 0x1;
 const SS_PATHELLIPSIS: u32 = 0x8000;
 const ODS_SELECTED: u32 = 0x1;
 const ODS_FOCUS: u32 = 0x10;
@@ -251,6 +258,7 @@ struct Paint {
     sidebar: HBRUSH,
     field: HBRUSH,
     wrong: HBRUSH,
+    accent: HBRUSH,
     font: HFONT,
     path: HWND,
 }
@@ -264,13 +272,14 @@ impl Paint {
             sidebar: brush(look.sidebar),
             field: brush(look.field),
             wrong: brush(look.wrong),
+            accent: brush(look.accent),
             font,
             path,
         }
     }
 
     fn delete(&self) {
-        for b in [self.background, self.sidebar, self.field, self.wrong] {
+        for b in [self.background, self.sidebar, self.field, self.wrong, self.accent] {
             unsafe { DeleteObject(b) };
         }
     }
@@ -624,6 +633,8 @@ unsafe fn open() -> bool {
             }
             let shown = path.display().to_string();
             let path_part = part(hwnd, w!("Static"), &shown, PATH, SS_NOPREFIX | SS_CENTERIMAGE | SS_PATHELLIPSIS);
+            // Hidden till there is something to say.
+            part(hwnd, w!("Static"), "", NOTICE, SS_NOPREFIX | SS_CENTERIMAGE | SS_CENTER);
             // The pages' parts, between the sidebar and the bottom row, for
             // the Tab key's order.
             let keymap = keymap::make(hwnd);
@@ -716,6 +727,8 @@ unsafe fn set_fonts(e: &Editor) {
             SendMessageW(p, WM_SETFONT, e.font as WPARAM, 1);
         }
         SendMessageW(e.heading, WM_SETFONT, e.heading_font as WPARAM, 1);
+        SendMessageW(GetDlgItem(e.hwnd, NOTICE as i32), WM_SETFONT, e.font as WPARAM, 1);
+        fields::set_name_font(e, e.font);
         SendMessageW(e.sidebar, LB_SETITEMHEIGHT, 0, scale(ITEM_H, e.dpi) as LPARAM);
     }
 }
@@ -779,6 +792,7 @@ unsafe fn lay_out() {
         let left = m + s(SIDEBAR_W) + 2 * m;
         let width = (client.right - m - left).max(0);
         MoveWindow(heading, left, m, width, s(HEADING_H), 1);
+        MoveWindow(GetDlgItem(hwnd, NOTICE as i32), left + width / 2, m, width / 2, s(HEADING_H), 1);
         // The rows, down to the status line, a row of answers left room for.
         let rows_bottom = side_bottom - bh - m - s(STATUS_H) - m;
         with_editor(|e| {
@@ -818,6 +832,7 @@ unsafe fn show_page(index: usize) {
         e.page = index;
         keymap::cancel_capture(e);
         unsafe {
+            fields::refresh(e);
             fields::show(e);
             if index == keymap::PAGE {
                 keymap::refresh(e);
@@ -841,6 +856,18 @@ unsafe fn show_page(index: usize) {
         SetWindowTextW(heading, text.as_ptr());
     }
     tray::test_event(&format!("settings: page {}", PAGES[index]));
+}
+
+/// Say what was done, `text`, in the band at the top, for a while: apart
+/// from the status line, which says what to fix (Issue #107).
+fn notify(e: &Editor, text: &str) {
+    unsafe {
+        let band = GetDlgItem(e.hwnd, NOTICE as i32);
+        let text = wide(text);
+        SetWindowTextW(band, text.as_ptr());
+        ShowWindow(band, SW_SHOWNA);
+        SetTimer(e.hwnd, NOTICE_TIMER, NOTICE_MS, None);
+    }
 }
 
 /// Say `text` in the status line.
@@ -1220,9 +1247,12 @@ unsafe fn command(id: usize) {
             } else {
                 // Saved with a field's value turned away: that value is not
                 // in the file, which the status line goes on saying.
-                with_editor(|e| match standing_reason(e).filter(|_| id == SAVE) {
-                    Some(reason) => set_status(e, &format!("{said}\n保存していない値があります: {reason}")),
-                    None => set_status(e, said),
+                with_editor(|e| {
+                    notify(e, said);
+                    match standing_reason(e).filter(|_| id == SAVE) {
+                        Some(reason) => set_status(e, &format!("保存していない値があります: {reason}")),
+                        None => set_status(e, ""),
+                    }
                 });
             }
         }
@@ -1276,7 +1306,8 @@ unsafe fn part_colours(dc: HDC, part: HWND) -> LRESULT {
         "Edit" | "ComboLBox" => (look.text, look.field, paint.map_or(brush, |p| p.field)),
         "ListBox" if sidebar => (look.text, look.sidebar, side),
         "ListBox" => (look.text, look.field, paint.map_or(brush, |p| p.field)),
-        _ if part == path => (look.dim, look.background, brush),
+        _ if part == path || fields::is_name(part) => (look.dim, look.background, brush),
+        _ if unsafe { GetDlgCtrlID(part) } as usize == NOTICE => (look.accent_text, look.accent, paint.map_or(brush, |p| p.accent)),
         _ => (look.text, look.background, brush),
     };
     unsafe {
@@ -1303,6 +1334,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 1
             }
             WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLORLISTBOX | WM_CTLCOLOREDIT => part_colours(wp as HDC, lp as HWND),
+            WM_TIMER if wp == NOTICE_TIMER => {
+                KillTimer(hwnd, NOTICE_TIMER);
+                ShowWindow(GetDlgItem(hwnd, NOTICE as i32), SW_HIDE);
+                0
+            }
+            // The mouse over a row: its note shows.
+            WM_SETCURSOR => {
+                if with_editor(|e| fields::hover(e, wp as HWND)) == Some(true) {
+                    with_editor(|e| fields::show(e));
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
             WM_NOTIFY => {
                 let header = &*(lp as *const NotifyHeader);
                 if header.id == STATUS && matches!(header.code, NM_CLICK | NM_RETURN) {
@@ -1412,6 +1455,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         if !fields::commit(id, false) {
                             PostMessageW(hwnd, WM_COMMIT, id, 0);
                         }
+                        with_editor(|e| fields::show(e));
+                    }
+                    // A note shows while its field has the focus.
+                    EN_SETFOCUS | CBN_SETFOCUS | CBN_KILLFOCUS => {
+                        with_editor(|e| fields::show(e));
                     }
                     CBN_SELCHANGE | BN_CLICKED => {
                         fields::commit(id, true);
@@ -1500,6 +1548,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     p.delete();
                 }
                 TAPPED.set((0, null_mut()));
+                fields::drop_name_font();
                 if let Some(e) = EDITOR.take() {
                     for object in [e.font, e.heading_font] {
                         DeleteObject(object);

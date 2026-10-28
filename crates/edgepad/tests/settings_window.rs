@@ -442,9 +442,9 @@ fn the_keyboard_alone_moves_along_its_parts_and_the_focus_shows() {
     assert!(within_3s(|| heading(editor) == "アプリ別"), "down: アプリ別, not {:?}", heading(editor));
     press(VK_DOWN);
     press(VK_DOWN);
-    assert!(within_3s(|| heading(editor) == "操作"), "down twice more: 操作");
+    assert!(within_3s(|| heading(editor) == PAGES[3]), "down twice more: {}", PAGES[3]);
     press(VK_UP);
-    assert!(within_3s(|| heading(editor) == "辺と表示"), "up: 辺と表示");
+    assert!(within_3s(|| heading(editor) == PAGES[2]), "up: {}", PAGES[2]);
     // Back to キー配置. From the sidebar, Shift+Tab goes back round to the
     // bottom row, past the page's fields.
     press(VK_UP);

@@ -509,12 +509,12 @@ fn the_sample_draws_the_set_as_its_panel_and_chooses_a_key() {
     click(sample_cell(editor, 3, 0));
     assert!(within_3s(|| text(editor, LABEL) == "C"), "C chosen: {:?}", text(editor, LABEL));
 
-    // The panels' theme changed on 辺と表示 (its field 404): the sample
+    // The panels' theme changed on 見た目 (its field 403): the sample
     // follows it, back on キー配置.
     wait_in_front(editor);
-    click(centre(sidebar_item(editor, 2)));
-    assert!(within_3s(|| heading(editor) == "辺と表示"));
-    choose(editor, 404, "dark");
+    click(centre(sidebar_item(editor, 4)));
+    assert!(within_3s(|| heading(editor) == "見た目"));
+    choose(editor, 403, "ダーク");
     wait_in_front(editor);
     click(centre(sidebar_item(editor, 0)));
     assert!(within_3s(|| heading(editor) == "キー配置"));
@@ -541,7 +541,7 @@ fn a_key_value_that_does_not_read_is_stopped_in_its_field() {
     let inside = colour_at(POINT { x: r.right - 4, y: (r.top + r.bottom) / 2 });
     assert!(inside[0] > inside[1] + 30, "the field shows it wrong: {inside:?}");
     save(editor);
-    assert!(within_3s(|| status(editor).contains("保存しました")), "{:?}", status(editor));
+    assert!(within_3s(|| notice(editor).contains("保存しました")), "{:?}", notice(editor));
     assert!(!file(&app).contains("width"), "not written: {}", file(&app));
 }
 
@@ -690,7 +690,7 @@ fn the_keys_sent_are_chosen_from_lists_or_captured() {
     assert!(within_3s(|| text(editor, SENDS) == "Alt"), "{:?}", text(editor, SENDS));
     assert!(!checked(part(editor, MODS + CTRL_ON)), "one at a time");
     save(editor);
-    assert!(within_3s(|| status(editor).contains("保存しました")), "the parser reads it: {:?}", status(editor));
+    assert!(within_3s(|| notice(editor).contains("保存しました")), "the parser reads it: {:?}", status(editor));
     let saved = file(&app);
     assert_eq!(key_of(&saved, "mods", "Ctrl"), ["Ctrl", "modifier", "Alt"]);
     assert_eq!(key_of(&saved, "mods", "Esc"), ["Esc", "shortcut", "Shift+K"]);
@@ -775,8 +775,8 @@ fn the_hotkey_is_captured_too() {
     let app = launch_with(Some(SETTINGS), None);
     let editor = open(&app, open_id(&app));
     wait_in_front(editor);
-    click(centre(sidebar_item(editor, 3)));
-    assert!(within_3s(|| heading(editor) == "操作"), "{:?}", heading(editor));
+    click(centre(sidebar_item(editor, 6)));
+    assert!(within_3s(|| heading(editor) == "表示と非表示"), "{:?}", heading(editor));
     let capture = part(editor, HOTKEY_CAPTURE);
     assert!(visible(capture) && text_of(capture) == "押して取り込む", "beside hotkey");
     click_on(editor, capture);
