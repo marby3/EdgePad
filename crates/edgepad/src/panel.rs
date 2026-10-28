@@ -188,8 +188,11 @@ struct Panel {
     /// The panel on screen, and the side of a key, in pixels at the current DPI.
     rect: Rect,
     key: i32,
-    /// The monitor the panel is on.
+    /// The monitor the panel is on, and the room it is laid out in: less
+    /// `gap` logical pixels along its edge (Issue #117).
     screen: Rect,
+    room: Rect,
+    gap: u32,
     keys: Vec<PanelKey>,
     /// The page shown, of how many.
     page: usize,
@@ -212,8 +215,12 @@ struct Panel {
     /// Where each pointer down on the panel started.
     starts: Vec<Start>,
     handle: Option<Handle>,
-    /// The handle's window; null with `handle = none`.
+    /// The handle's window; null with `handle = none`. The window reaches
+    /// the screen's edge; the handle shown is `handle_shown` of it, the
+    /// rest the mouse's alone.
     handle_hwnd: HWND,
+    handle_rect: Rect,
+    handle_shown: Rect,
     /// From the settings; 0 is off.
     hover_ms: u32,
     auto_hide_ms: u32,
@@ -336,9 +343,7 @@ pub unsafe fn restyle() -> bool {
         for panel in panels.iter() {
             unsafe {
                 draw(panel);
-                if !panel.handle_hwnd.is_null() {
-                    InvalidateRect(panel.handle_hwnd, null(), 1);
-                }
+                draw_handle(panel);
             }
         }
         true
@@ -447,9 +452,6 @@ unsafe fn create_handle() -> HWND {
             instance,
             null(),
         );
-        if !hwnd.is_null() {
-            SetLayeredWindowAttributes(hwnd, 0, HANDLE_OPACITY, LWA_ALPHA);
-        }
         hwnd
     }
 }
@@ -505,6 +507,8 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             rect,
             key: 0,
             screen: rect,
+            room: rect,
+            gap: p.gap,
             keys,
             page: 0,
             pages: 1,
@@ -519,6 +523,8 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             starts: Vec::new(),
             handle: p.handle,
             handle_hwnd,
+            handle_rect: rect,
+            handle_shown: rect,
             hover_ms: panels.hover_ms,
             auto_hide_ms: panels.auto_hide_ms,
             mouse_out: false,
@@ -829,10 +835,14 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
         });
         panel.key = layout::scale(panel.key_size as i32, dpi);
         panel.screen = screen;
+        panel.room = layout::inset(screen, panel.edge, layout::scale(panel.gap as i32, dpi));
         place_keys(panel);
         if let (Some(h), false) = (panel.handle, panel.handle_hwnd.is_null()) {
-            let r = layout::handle(screen, panel.edge, layout::scale(h.width as i32, dpi), h.length, h.position);
+            let shown = layout::handle(panel.room, panel.edge, layout::scale(h.width as i32, dpi), h.length, h.position);
+            let r = layout::to_edge(shown, screen, panel.edge);
+            (panel.handle_rect, panel.handle_shown) = (r, shown);
             SetWindowPos(panel.handle_hwnd, HWND_TOPMOST, r.x, r.y, r.w, r.h, SWP_NOACTIVATE);
+            draw_handle(panel);
         }
         // Moved or resized: a docked panel takes the room it needs now.
         if panel.docked {
@@ -847,7 +857,7 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
 fn place_keys(panel: &mut Panel) {
     let places: Option<Vec<Place>> = panel.keys.iter().map(|k| k.place).collect();
     if let Some(places) = places.filter(|p| !p.is_empty()) {
-        let (rect, rects) = layout::free_panel(panel.screen, panel.edge, panel.key, &places);
+        let (rect, rects) = layout::free_panel(panel.room, panel.edge, panel.key, &places);
         (panel.pages, panel.page, panel.rect) = (1, 0, rect);
         for (key, r) in panel.keys.iter_mut().zip(rects) {
             key.rect = Some(r);
@@ -856,12 +866,12 @@ fn place_keys(panel: &mut Panel) {
     }
     let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
     let sticky: Vec<bool> = panel.keys.iter().map(PanelKey::turns_pages).collect();
-    let pages = layout::pages(panel.screen, panel.edge, panel.key, panel.lines, &widths, &sticky);
+    let pages = layout::pages(panel.room, panel.edge, panel.key, panel.lines, &widths, &sticky);
     panel.pages = pages.len().max(1);
     panel.page = panel.page.min(panel.pages - 1);
     let shown = pages.get(panel.page).map_or(&[][..], Vec::as_slice);
     let shown_widths: Vec<usize> = shown.iter().map(|&i| widths[i]).collect();
-    let (rect, rects) = layout::edge_panel(panel.screen, panel.edge, panel.key, panel.lines, &shown_widths);
+    let (rect, rects) = layout::edge_panel(panel.room, panel.edge, panel.key, panel.lines, &shown_widths);
     panel.rect = rect;
     for key in &mut panel.keys {
         key.rect = None;
@@ -1139,6 +1149,11 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 hover_off(hwnd);
                 if let Some(kind) = finger_or_mouse(id) {
                     let (x, y) = pointer_at(lp);
+                    // A finger between the handle and the screen's edge is
+                    // not on it: Windows takes a swipe from there.
+                    if kind != PT_MOUSE && !on_shown_handle(hwnd, (x, y)) {
+                        return 0;
+                    }
                     HANDLE_DRAGS.with_borrow_mut(|drags| {
                         drags.retain(|d| d.id != id);
                         drags.push(Start { hwnd, id, x, y, at: Instant::now() });
@@ -1167,17 +1182,64 @@ unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 hover_over(hwnd);
                 0
             }
-            WM_ERASEBKGND => {
-                let mut r: RECT = zeroed();
-                GetClientRect(hwnd, &mut r);
-                // Held keys are the accent, as plain as it comes.
-                let brush = CreateSolidBrush(colorref(palette().held));
-                FillRect(wp as HDC, &r, brush);
-                DeleteObject(brush);
-                1
-            }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
+    }
+}
+
+/// Whether screen point `at` is on the part of handle `hwnd` shown.
+fn on_shown_handle(hwnd: HWND, (x, y): (i32, i32)) -> bool {
+    PANELS.with(|panels| {
+        let Ok(panels) = panels.try_borrow() else { return true };
+        panels.iter().find(|p| p.handle_hwnd == hwnd).is_none_or(|p| p.handle_shown.contains(x, y))
+    })
+}
+
+/// Draw `panel`'s handle: held keys' accent, as plain as it comes, at
+/// HANDLE_OPACITY over the part shown; the strip to the screen's edge all
+/// but clear, there for the mouse (a pixel of no alpha takes no input).
+unsafe fn draw_handle(panel: &Panel) {
+    let (hwnd, r, shown) = (panel.handle_hwnd, panel.handle_rect, panel.handle_shown);
+    if hwnd.is_null() || r.w <= 0 || r.h <= 0 {
+        return;
+    }
+    unsafe {
+        let screen = GetDC(null_mut());
+        let mem = CreateCompatibleDC(screen);
+        let mut bmi: BITMAPINFO = zeroed();
+        bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = r.w;
+        bmi.bmiHeader.biHeight = -r.h;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        let mut bits = null_mut();
+        let dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if dib.is_null() || bits.is_null() {
+            DeleteDC(mem);
+            ReleaseDC(null_mut(), screen);
+            return;
+        }
+        let old_bitmap = SelectObject(mem, dib);
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (r.w * r.h) as usize);
+        // Premultiplied: 0xAARRGGBB, each colour scaled by the alpha.
+        let [red, green, blue] = palette().held;
+        let a = HANDLE_OPACITY as u32;
+        let scaled = |c: u8| c as u32 * a / 255;
+        let lit = a << 24 | scaled(red) << 16 | scaled(green) << 8 | scaled(blue);
+        for y in 0..r.h {
+            for x in 0..r.w {
+                let on = shown.contains(r.x + x, r.y + y);
+                pixels[(y * r.w + x) as usize] = if on { lit } else { 1 << 24 };
+            }
+        }
+        let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+        let (at, size, from) = (POINT { x: r.x, y: r.y }, SIZE { cx: r.w, cy: r.h }, POINT { x: 0, y: 0 });
+        UpdateLayeredWindow(hwnd, screen, &at, &size, mem, &from, 0, &blend, ULW_ALPHA);
+        SelectObject(mem, old_bitmap);
+        DeleteObject(dib);
+        DeleteDC(mem);
+        ReleaseDC(null_mut(), screen);
     }
 }
 
@@ -1873,7 +1935,9 @@ unsafe fn dock(panel: &mut Panel) {
         }
         let m = panel.screen;
         data.rc = RECT { left: m.x, top: m.y, right: m.x + m.w, bottom: m.y + m.h };
-        let thick = if panel.edge.is_side() { panel.rect.w } else { panel.rect.h };
+        // Kept off the edge, the gap too: no window slips under it.
+        let gap = if panel.edge.is_side() { panel.screen.w - panel.room.w } else { panel.screen.h - panel.room.h };
+        let thick = if panel.edge.is_side() { panel.rect.w } else { panel.rect.h } + gap;
         data.uEdge = match panel.edge {
             Edge::Left => ABE_LEFT,
             Edge::Right => ABE_RIGHT,

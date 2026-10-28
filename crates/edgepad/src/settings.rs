@@ -106,6 +106,8 @@ pub struct EdgePanel {
     pub handle: Option<Handle>,
     /// Registered as an AppBar while shown.
     pub dock: bool,
+    /// How far it keeps off the screen's edge, in logical pixels.
+    pub gap: u32,
 }
 
 /// What reading the settings file came to.
@@ -208,6 +210,7 @@ pub fn fallback() -> Panels {
             keys: config::fallback_keys(),
             handle: config::EdgeConfig::default().handle,
             dock: false,
+            gap: 0,
         }],
         hotkey: None,
         latch_ms: general.latch_ms,
@@ -231,7 +234,7 @@ pub fn panels(config: &Config, profile: &Profile) -> Panels {
         .filter_map(|edge| {
             let set = config.set(profile.edges[edge as usize].as_deref()?)?;
             let e = &config.edges[edge as usize];
-            Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone(), handle: e.handle, dock: e.dock })
+            Some(EdgePanel { edge, monitor: e.monitor, lines: e.lines as usize, keys: set.keys.clone(), handle: e.handle, dock: e.dock, gap: e.gap })
         })
         .collect();
     let g = &config.general;

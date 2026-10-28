@@ -766,3 +766,29 @@ fn an_edge_field_not_written_shows_the_common_value_marked() {
     save(editor);
     assert!(within_3s(|| !file(&app).contains("columns = 3")), "the edge's line gone: {}", file(&app));
 }
+
+// Issue #117, AC3: how far the edge keeps off the screen's edge, `gap`, on
+// 辺ごとの設定 (and 辺（共通）): a number of logical pixels.
+#[test]
+fn the_gap_from_the_screens_edge_is_a_field_of_each_edge() {
+    let _desktop = desktop();
+    let app = launch_with(Some(&settings("")), None);
+    let editor = open_page(&app, EDGES_PAGE);
+    select_edge(&app, editor, "bottom");
+    assert_eq!(class_of(field(editor, "gap")), "Edit", "a number");
+    assert!(note(editor, "gap").contains("0〜64"), "{:?}", note(editor, "gap"));
+    assert_eq!(value(editor, "gap"), "16", "the bottom's default");
+    assert!(is_default(editor, "gap"));
+    let label = text_of(part(editor, 600 + row(editor, "gap")));
+    assert!(label.contains("画面の端"), "says what it changes: {label:?}");
+    let before = file(&app);
+    enter(editor, "gap", "24");
+    save(editor);
+    assert!(within_3s(|| file(&app).contains("gap = 24")), "{}", file(&app));
+    let saved = file(&app);
+    for line in before.lines() {
+        assert!(saved.contains(line), "kept: {line}\n{saved}");
+    }
+    assert!(saved.contains("[edge.bottom]
+gap = 24"), "the bottom's section added with it: {saved}");
+}
