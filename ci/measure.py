@@ -15,7 +15,8 @@ is open, and the running EdgePad's after each closing; and whether the
 common controls (comctl32 v6) were loaded in the running EdgePad, before
 and after, and in the settings window's process.
 
-With --settings, the hotkey the file names is checked as well: free before
+With --settings, the KLE files (*.json) beside the file go with it. The
+hotkey the file names is checked as well: free before
 the launch, held once EdgePad is up. That shows the settings were applied
 (a rejected file falls back to the fixed keys, which have no hotkey). If
 another app already holds that hotkey, the run says so instead.
@@ -387,6 +388,10 @@ def measure(idle, settings=None, window=False):
             folder = pathlib.Path(appdata) / "EdgePad"
             folder.mkdir()
             shutil.copy2(settings, folder / "edgepad.ini")
+            # The KLE files beside it, which its key sets may read (the
+            # shipped settings do: presets/, Issue #129).
+            for kle in pathlib.Path(settings).parent.glob("*.json"):
+                shutil.copy2(kle, folder / kle.name)
         hotkey = hotkey_of(settings) if settings else None
         free_before = hotkey_free(hotkey) if hotkey else None
         env = os.environ | {"APPDATA": appdata}
