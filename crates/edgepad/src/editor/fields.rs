@@ -139,7 +139,7 @@ use Kind::*;
 
 /// Every row, in the order the Tab key follows: the look's, then (after
 /// the figure) the edges', then touch's and showing's.
-const ROWS: [Spec; 22] = [
+const ROWS: [Spec; 23] = [
     spec(L, "key_size", "キーの大きさ", "", Number, 1),
     spec(L, "opacity", "ふだんの不透明度", "", Number, 1),
     spec(L, "dim_opacity", "パイメニュー・ペンの時の不透明度", "", Number, 1),
@@ -149,6 +149,7 @@ const ROWS: [Spec; 22] = [
     spec(E, "enabled", "表示する", "", Check, 0),
     spec(E, "dock", "画面の端を空ける", "", Check, 0),
     spec(E, "gap", "画面の端からの距離", "", Number, 1),
+    spec(E, "start", "起動した時", "", Choice(&[("shown", "出す"), ("hidden", "隠す")]), 0),
     spec(E, "monitor", "モニター", "", Monitor, 0),
     spec(E, "columns", "列数（左右の辺）", "", Columns, 1),
     spec(E, "rows", "行数（上下の辺）", "", Rows, 1),
@@ -165,7 +166,7 @@ const ROWS: [Spec; 22] = [
 ];
 
 /// hotkey's row, and accent's.
-const HOTKEY: usize = 19;
+const HOTKEY: usize = 20;
 const ACCENT: usize = 4;
 
 /// The names of the monitor's first choices, then the monitors by number.

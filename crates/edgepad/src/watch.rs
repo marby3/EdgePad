@@ -79,6 +79,7 @@ pub unsafe fn reload(force: bool) {
         settings::Outcome::Loaded(config, bytes) => {
             UNREADABLE.set(None);
             let panels = unsafe { profile::use_config(Some(config)) };
+            panel::hide_at_start(profile::hidden_at_start());
             let built = unsafe { panel::rebuild(&panels) };
             unsafe { tray::set_hotkey(panels.hotkey) };
             match built {

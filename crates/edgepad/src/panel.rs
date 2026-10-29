@@ -744,6 +744,16 @@ pub fn is_paused() -> bool {
     PAUSED.get()
 }
 
+/// Hide the edges `which` says, as the settings were just read: the panels
+/// made next start hidden there, their handles shown (Issue #127).
+pub fn hide_at_start(which: [bool; 4]) {
+    let mut hidden = HIDDEN.get();
+    for (h, w) in hidden.iter_mut().zip(which) {
+        *h |= w;
+    }
+    HIDDEN.set(hidden);
+}
+
 /// Hide the panel on `edge`, or show it again.
 pub unsafe fn toggle_edge(edge: Edge) {
     let mut hidden = HIDDEN.get();

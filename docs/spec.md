@@ -227,6 +227,8 @@ Windowsの仕様（UIPI）により、通常権限のEdgePadからは管理者�
 
 設定はUTF-8のテキスト1ファイル（edgepad.ini）で行います。テキストエディタで直接書くほか、本体に内蔵した設定画面（7.1）でも全項目を編集できます。exeと同じフォルダに置けばポータブル動作、なければ %APPDATA%\EdgePad\edgepad.ini を使います。
 
+配布の zip には、既定の設定（リポジトリの presets/）が exe と同じフォルダに入っています。左辺に CLIP STUDIO PAINT 向けのキー、下の辺にキーボード（起動した時は隠しておく。US 配列のほか、左右分割 42 キー、Corne V4 46 キー、キーを回した 64 キーの配列を、キーセットとして同梱）を置きます。設定ファイルがどこにもない時に設定画面かトレイの「設定ファイルを開く」を使うと、同じものを書き出します（設定ファイルがないまま起動した時は、左辺の固定の5キーで動きます）。
+
 - 保存を検知して自動で再読込する（FindFirstChangeNotification、待機はイベント駆動）
 - 読込エラー時は直前の設定のまま動き続け、トレイ通知に行番号と理由を出す
 - キー名はWindowsの仮想キー名に準じた英字表記（Ctrl, Shift, Alt, Win, A〜Z, F1〜F24, Space, Enter, Esc, Left, PgUp 等）。+ で組み合わせる。テンキーは Numpad0〜Numpad9, Multiply, Add, Subtract, Decimal, Divide。JIS 配列にしかないキーは Hankaku（半角/全角）, Henkan（変換）, Muhenkan（無変換）, Kana（カタカナひらがな）, Ro（ろ）。JIS 配列のほかのキーは、Windows が同じ仮想キーとして送る US 配列のキーの名前で書く（@ は `、¥ は \、^ は '、; は =、: は ;）
@@ -248,6 +250,7 @@ monitor  = primary           ; primary / 1,2... / cursor
 columns  = 1
 handle   = 6, 40%            ; ハンドル幅px, 長さ
 gap      = 0                 ; 画面の端から離す距離（論理px、0〜64。下の辺の既定は 16）
+start    = shown             ; shown / hidden。hidden は起動した時と読み直した時に隠しておく
 
 [edge.right]
 enabled  = true
