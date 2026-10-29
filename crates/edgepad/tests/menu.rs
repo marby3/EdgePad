@@ -167,8 +167,14 @@ fn opening_the_settings_file_opens_the_one_in_use_or_creates_a_template_beside_t
     assert!(test_events(&app).contains(&format!("open: {}", ini.display())), "events: {:?}", test_events(&app));
     pump(800);
     assert!(notices(&app).is_empty(), "the template reads without errors: {:?}", notices(&app));
+    // Issue #127, AC6: the shipped settings, their keyboards beside them.
+    let presets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets");
+    for file in ["edgepad.ini", "kb-us.json", "kb-split42.json", "kb-corne-v4.json", "kb-alice64.json"] {
+        let written = std::fs::read(exe_dir(&app).join(file)).unwrap_or_else(|e| panic!("{file} written: {e}"));
+        assert!(written == std::fs::read(presets.join(file)).unwrap(), "{file} as shipped");
+    }
     let r = left_panel(&app);
-    assert_eq!((r.bottom - r.top) / key_px(), KEY_COUNT, "the template makes the same panel as the fixed keys");
+    assert_eq!((r.bottom - r.top) / key_px(), 11, "the template makes the CSP keys on the left");
 }
 
 // AC4
