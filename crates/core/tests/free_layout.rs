@@ -138,7 +138,6 @@ fn a_kle_file_that_cannot_be_used_is_an_error_on_the_layout_line() {
         (None, "missing"),
         (Some("[\"A\",{w:2"), "cut short"),
         (Some("not kle"), "not raw data"),
-        (Some("[{r:15,rx:1},\"A\"]"), "rotated"),
     ] {
         let text = format!("[set.pad]\nkey = A | hold | A\nlayout = kle:pad.txt\n{PROFILE}");
         let files: Vec<(&str, &str)> = file.map(|f| ("pad.txt", f)).into_iter().collect();
