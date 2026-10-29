@@ -62,6 +62,7 @@ fn main() -> ExitCode {
         log::debug_log!("起動 EdgePad {} 設定: {shown}", env!("CARGO_PKG_VERSION"));
         let (config, seen, notice) = settings::load();
         let panels = profile::use_config(config);
+        panel::hide_at_start(profile::hidden_at_start());
         match (&notice, path) {
             (Some(notice), _) => log::debug_log!("設定を読めない（固定のキーで動く）: {notice}"),
             (None, Some(_)) => log::debug_log!("設定を読み込んだ: パネル {} 枚", panels.edges.len()),

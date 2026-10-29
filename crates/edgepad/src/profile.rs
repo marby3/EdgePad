@@ -62,6 +62,11 @@ pub unsafe fn use_config(config: Option<Config>) -> Panels {
     LAST.with_borrow(|process| panels_for(process.as_deref()))
 }
 
+/// The edges written `start = hidden`, in the settings in use (Issue #127).
+pub fn hidden_at_start() -> [bool; 4] {
+    CONFIG.with_borrow(|config| config.as_ref().map_or([false; 4], |c| c.edges.map(|e| e.hidden_at_start)))
+}
+
 /// The panels of the pinned profile, or else of the one for `process`; the
 /// profile becomes the one shown. A pin on a profile no longer there ends.
 fn panels_for(process: Option<&str>) -> Panels {

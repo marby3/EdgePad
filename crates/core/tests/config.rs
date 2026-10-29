@@ -79,7 +79,7 @@ fn the_spec_example_reads_without_errors_and_every_value_comes_through() {
     assert_eq!(g.theme, Theme::Auto);
 
     let left = &config.edges[Edge::Left as usize];
-    assert_eq!(*left, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false, gap: 0 });
+    assert_eq!(*left, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false, gap: 0, hidden_at_start: false });
     let right = &config.edges[Edge::Right as usize];
     assert_eq!((right.enabled, right.monitor, right.lines), (true, Monitor::Primary, 2));
 
@@ -163,7 +163,7 @@ top = more
     // The bottom kept off the screen's edge since Issue #117.
     for (i, edge) in config.edges.iter().enumerate() {
         let gap = if i == Edge::Bottom as usize { BOTTOM_GAP } else { 0 };
-        assert_eq!(*edge, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false, gap });
+        assert_eq!(*edge, EdgeConfig { enabled: true, monitor: Monitor::Primary, lines: 1, handle: Some(Handle { width: 6, length: 40, position: 50 }), dock: false, gap, hidden_at_start: false });
     }
     assert_eq!(config.default_profile().edges, [None, None, Some("more".into()), None]);
 }

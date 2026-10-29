@@ -15,21 +15,29 @@ use edgepad_core::modifier::LatchMode;
 
 const FILE: &str = "edgepad.ini";
 
-/// A settings file that makes the same panel as the fixed keys.
-const TEMPLATE: &str = "\
-; EdgePad の設定ファイル。書き方は docs/spec.md の 7 章を参照。
-; 保存すると、EdgePad がすぐに読み直す。
+/// The settings shipped with EdgePad (presets/, Issue #127), and the KLE
+/// files of their keyboards: written as they are when there is no settings
+/// file yet.
+const TEMPLATE: [(&str, &[u8]); 5] = [
+    ("kb-us.json", include_bytes!("../../../presets/kb-us.json")),
+    ("kb-split42.json", include_bytes!("../../../presets/kb-split42.json")),
+    ("kb-corne-v4.json", include_bytes!("../../../presets/kb-corne-v4.json")),
+    ("kb-alice64.json", include_bytes!("../../../presets/kb-alice64.json")),
+    // Last: once it is there, the folder has all it names.
+    (FILE, include_bytes!("../../../presets/edgepad.ini")),
+];
 
-[set.mods]
-key = Esc   | hold     | Esc
-key = Ctrl  | modifier | Ctrl
-key = Shift | modifier | Shift
-key = Alt   | modifier | Alt
-key = Space | hold     | Space
-
-[profile.default]
-left = mods
-";
+/// Write the template into `dir`: the settings file's path, if all of it
+/// was written. A KLE file already there of the same name is left alone.
+fn write_template(dir: &Path) -> Option<PathBuf> {
+    for (name, bytes) in TEMPLATE {
+        let path = dir.join(name);
+        if name == FILE || !path.exists() {
+            std::fs::write(&path, bytes).ok()?;
+        }
+    }
+    Some(dir.join(FILE))
+}
 
 /// The settings file in use, if there is one.
 pub fn path() -> Option<PathBuf> {
@@ -55,15 +63,12 @@ pub fn path_or_template() -> Option<PathBuf> {
     if let Some(path) = path() {
         return Some(path);
     }
-    let beside = beside_exe()?;
-    if std::fs::write(&beside, TEMPLATE).is_ok() {
-        return Some(beside);
+    if let Some(path) = beside_exe().and_then(|p| write_template(p.parent()?)) {
+        return Some(path);
     }
     let dir = appdata_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join(FILE);
-    std::fs::write(&path, TEMPLATE).ok()?;
-    Some(path)
+    write_template(&dir)
 }
 
 /// What the panels need from the settings.

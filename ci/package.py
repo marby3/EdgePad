@@ -19,9 +19,15 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # Beside the exe in the zip: (path in the repo, name in the zip). The
-# README and the settings presets join with their Issues.
+# README joins with its Issue. The settings shipped beside the exe are the
+# ones it reads (Issue #127).
 FILES = [
     ("LICENSE", "LICENSE"),
+    ("presets/edgepad.ini", "edgepad.ini"),
+    ("presets/kb-us.json", "kb-us.json"),
+    ("presets/kb-split42.json", "kb-split42.json"),
+    ("presets/kb-corne-v4.json", "kb-corne-v4.json"),
+    ("presets/kb-alice64.json", "kb-alice64.json"),
 ]
 
 

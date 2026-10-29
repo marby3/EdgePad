@@ -176,6 +176,9 @@ pub struct EdgeConfig {
     /// How far the panel and its handle keep off the screen's edge, in
     /// logical pixels (Issue #117).
     pub gap: u32,
+    /// `start = hidden`: hidden, its handle shown, when EdgePad starts and
+    /// whenever the file is read again (Issue #127).
+    pub hidden_at_start: bool,
 }
 
 /// The bottom edge's `gap` unless written: a swipe up from its handle then
@@ -191,6 +194,7 @@ impl Default for EdgeConfig {
             handle: Some(Handle { width: 6, length: 40, position: 50 }),
             dock: false,
             gap: 0,
+            hidden_at_start: false,
         }
     }
 }
@@ -588,6 +592,13 @@ impl Parser<'_> {
             "enabled" => e.enabled = boolean(name, value)?,
             "dock" => e.dock = boolean(name, value)?,
             "gap" => e.gap = ranged(name, name, value)?,
+            "start" => {
+                e.hidden_at_start = match value.to_ascii_lowercase().as_str() {
+                    "shown" => false,
+                    "hidden" => true,
+                    _ => return Err(format!("start は shown / hidden のどちらか（「{value}」）")),
+                }
+            }
             "monitor" => {
                 e.monitor = match value.to_ascii_lowercase().as_str() {
                     "primary" => Monitor::Primary,
@@ -1117,6 +1128,7 @@ pub fn default_value(section: &str, name: &str) -> Option<String> {
         "enabled" => e.enabled.to_string(),
         "dock" => e.dock.to_string(),
         "gap" => e.gap.to_string(),
+        "start" => if e.hidden_at_start { "hidden" } else { "shown" }.into(),
         "monitor" => match e.monitor {
             Monitor::Primary => "primary".into(),
             Monitor::Cursor => "cursor".into(),

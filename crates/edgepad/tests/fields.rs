@@ -792,3 +792,54 @@ fn the_gap_from_the_screens_edge_is_a_field_of_each_edge() {
     assert!(saved.contains("[edge.bottom]
 gap = 24"), "the bottom's section added with it: {saved}");
 }
+
+// Issue #127, AC4: an edge started hidden shows its handle only, at the
+// start and when the file is read again; 辺ごとの設定 sets it.
+#[test]
+fn an_edge_set_to_start_hidden_is_hidden_at_the_start_and_on_a_reload() {
+    let _desktop = desktop();
+    let text = "[edge.bottom]\nstart = hidden\n[set.pad]\nkey = A | hold | A\n[profile.default]\nleft = pad\nbottom = pad\n";
+    let app = launch_with(Some(text), None);
+    let m = primary_monitor();
+    let bottom_shown = |app: &Running| panels_now(app).iter().any(|r| r.bottom > m.bottom - key_px());
+    left_panel(&app);
+    pump(300);
+    assert!(!bottom_shown(&app), "the bottom edge starts hidden");
+    assert!(bottom_handle(&app), "its handle is there to show it");
+
+    // Shown, then the file read again: hidden again.
+    choose(&app, "下辺");
+    assert!(within_3s(|| bottom_shown(&app)), "precondition: shown from the tray");
+    std::fs::write(exe_dir(&app).join("edgepad.ini"), format!("{text}; read again\n")).expect("save edgepad.ini");
+    assert!(within_3s(|| !bottom_shown(&app)), "hidden again on a reload");
+    left_panel(&app);
+
+    // 辺ごとの設定: 起動した時, shown or hidden.
+    let editor = open_page(&app, EDGES_PAGE);
+    select_edge(&app, editor, "bottom");
+    assert_eq!(options(editor, "start"), ["出す", "隠す"]);
+    assert_eq!(value(editor, "start"), "隠す");
+    choose_option(editor, "start", "出す");
+    save(editor);
+    assert!(within_3s(|| file(&app).contains("start = shown")), "{}", file(&app));
+}
+
+/// Whether a handle of `app` is shown against the bottom of the primary
+/// monitor.
+fn bottom_handle(app: &Running) -> bool {
+    let m = primary_monitor();
+    let name = wide("EdgePadHandle");
+    let mut hwnd = null_mut();
+    loop {
+        hwnd = unsafe { FindWindowExW(null_mut(), hwnd, name.as_ptr(), std::ptr::null()) };
+        if hwnd.is_null() {
+            return false;
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        let r = window_rect(hwnd);
+        if pid == app.0.id() && unsafe { IsWindowVisible(hwnd) } != 0 && r.bottom > m.bottom - key_px() && r.top > m.top + key_px() {
+            return true;
+        }
+    }
+}
