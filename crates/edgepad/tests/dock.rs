@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
-use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_COMMAND};
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use common::*;
 
 /// The work area of the primary monitor.
@@ -173,4 +173,187 @@ fn a_docked_edge_kept_off_the_screens_edge_takes_its_gap_too() {
     let want = RECT { bottom: base.bottom - key - px(16), ..base };
     assert!(work_area_becomes(want), "docked: work area {:?}, want {:?}", rect(work_area()), rect(want));
     drop(docked);
+}
+
+// Issue #121: the room a docked edge takes runs its whole length; where the
+// panel is not, EdgePad's fill covers it, at the panel's background colour
+// and opacity, and takes a press there as the panel's background does.
+
+/// EdgePad's fill windows shown now: the class is the contract with
+/// crates/edgepad/src/panel.rs.
+fn fills(app: &Running) -> Vec<windows_sys::Win32::Foundation::HWND> {
+    let name = wide("EdgePadDockFill");
+    let mut found = Vec::new();
+    let mut hwnd = std::ptr::null_mut();
+    loop {
+        hwnd = unsafe { FindWindowExW(std::ptr::null_mut(), hwnd, name.as_ptr(), std::ptr::null()) };
+        if hwnd.is_null() {
+            return found;
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid == app.0.id() && unsafe { IsWindowVisible(hwnd) } != 0 {
+            found.push(hwnd);
+        }
+    }
+}
+
+/// A point of the left strip three keys below the left panel, and one
+/// above it: past where a pie menu opened from it reaches.
+fn beside(app: &Running) -> [POINT; 2] {
+    let (panel, key) = (left_panel(app), key_px());
+    [POINT { x: panel.left + key / 2, y: panel.bottom + key * 3 }, POINT { x: panel.left + key / 2, y: panel.top - key * 3 }]
+}
+
+/// Whether the window on top at `p` is one of `app`'s.
+fn ours_at(app: &Running, p: POINT) -> bool {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(WindowFromPoint(p), &mut pid) };
+    pid == app.0.id()
+}
+
+/// The average colour of the 3 x 3 pixels at `p`.
+fn colour_at(p: POINT) -> [i32; 3] {
+    let pixels = capture(RECT { left: p.x - 1, top: p.y - 1, right: p.x + 2, bottom: p.y + 2 });
+    let sum = pixels.iter().map(|&c| channels(c)).fold([0; 3], |a, c| [a[0] + c[0], a[1] + c[1], a[2] + c[2]]);
+    sum.map(|v| v / 9)
+}
+
+fn same(a: [i32; 3], b: [i32; 3]) -> bool {
+    (0..3).all(|i| (a[i] - b[i]).abs() <= 3)
+}
+
+/// The opacity in percent at `p`, from how much of `backdrop` shows through.
+fn opacity_at(backdrop: &TestWindow, p: POINT) -> i32 {
+    set_backdrop(backdrop.0, 0x00FF_FFFF);
+    let on_white = colour_at(p);
+    set_backdrop(backdrop.0, 0);
+    let on_black = colour_at(p);
+    100 - (0..3).map(|c| on_white[c] - on_black[c]).sum::<i32>() / 3 * 100 / 255
+}
+
+/// Wait up to 2 s for `done`.
+fn within_2s(mut done: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + Duration::from_secs(2);
+    while !done() {
+        if Instant::now() > end {
+            return false;
+        }
+        pump(50);
+    }
+    true
+}
+
+// Issue #121, AC1
+#[test]
+fn the_docked_strip_is_covered_beside_the_panel_too() {
+    let _desktop = desktop();
+    let docked = Docked::launch(&pad("[edge.left]\ndock = true\n"));
+    assert!(within_2s(|| work_area().left > docked.base.left), "precondition: docked");
+    for p in beside(&docked.app) {
+        assert!(within_2s(|| ours_at(&docked.app, p)), "EdgePad covers the strip at ({}, {})", p.x, p.y);
+    }
+}
+
+// Issue #121, AC2
+#[test]
+fn the_fill_has_the_panels_colour_and_opacity_and_follows_them() {
+    let _desktop = desktop();
+    let m = primary_monitor();
+    let backdrop = test_window("EdgePadTestDockFill", WS_EX_TOPMOST | WS_EX_TOOLWINDOW, RECT { right: m.left + key_px() * 3, ..m });
+    let text = |theme: &str| {
+        format!(
+            "[general]\nopacity = 70\ndim_opacity = 40\ntheme = {theme}\n[edge.left]\ndock = true\n\
+             [set.pad]\nkey = A | hold | A\nkey = 変形 | pie | menu\n[set.menu]\nkey = 一 | shortcut | F1\nkey = 二 | shortcut | F2\n\
+             [profile.default]\nleft = pad\n"
+        )
+    };
+    let docked = Docked::launch(&text("light"));
+    assert!(within_2s(|| work_area().left > docked.base.left), "precondition: docked");
+    let [fill, _] = beside(&docked.app);
+    let corner = |app: &Running| {
+        let panel = left_panel(app);
+        POINT { x: panel.left + 2, y: panel.top + 2 }
+    };
+    let o = opacity_at(&backdrop, fill);
+    assert!((o - 70).abs() <= 4, "at the panel's opacity 70%, not {o}%");
+    set_backdrop(backdrop.0, 0x00FF_FFFF);
+    let light = colour_at(fill);
+    assert!(same(light, colour_at(corner(&docked.app))), "the panel's background colour: {light:?}");
+
+    // Dimmed with the panel while its pie menu is open.
+    let _log = KeyLog::start();
+    let mut touch = Touch::new();
+    touch.down(1, key_centre(left_panel(&docked.app), 1));
+    pump(300);
+    let o = opacity_at(&backdrop, fill);
+    assert!((o - 40).abs() <= 4, "dimmed to 40% with the pie menu open, not {o}%");
+    touch.up(1);
+    drop(touch);
+    pump(300);
+
+    // The theme changes with the panel's.
+    save(&docked.app, &text("dark"));
+    set_backdrop(backdrop.0, 0x00FF_FFFF);
+    assert!(
+        within_2s(|| !same(colour_at(fill), light) && same(colour_at(fill), colour_at(corner(&docked.app)))),
+        "dark with the panel: fill {:?}, panel {:?}",
+        colour_at(fill),
+        colour_at(corner(&docked.app))
+    );
+}
+
+// Issue #121, AC3
+#[test]
+fn a_press_on_the_fill_is_a_press_on_the_panels_background() {
+    let _desktop = desktop();
+    let docked = Docked::launch(&pad("[edge.left]\ndock = true\n"));
+    assert!(within_2s(|| work_area().left > docked.base.left), "precondition: docked");
+    let [fill, _] = beside(&docked.app);
+    assert!(within_2s(|| ours_at(&docked.app, fill)), "precondition: the strip covered");
+
+    // A tap there sends nothing and leaves the panel shown.
+    let log = KeyLog::start();
+    let mut touch = Touch::new();
+    touch.down(1, fill);
+    pump(100);
+    touch.up(1);
+    pump(300);
+    assert!(log.keys().is_empty(), "no key: {:?}", log.keys());
+    left_panel(&docked.app);
+
+    // A swipe from there toward the edge hides the panel, as from its
+    // background.
+    touch.down(1, POINT { x: fill.x + key_px() / 3, y: fill.y });
+    touch.move_to(1, POINT { x: fill.x - key_px() / 3, y: fill.y });
+    touch.move_to(1, POINT { x: primary_monitor().left + 1, y: fill.y });
+    touch.up(1);
+    let m = primary_monitor();
+    assert!(within_2s(|| panels_now(&docked.app).iter().all(|r| r.left != m.left)), "swiped to the edge: hidden");
+}
+
+// Issue #121, AC4
+#[test]
+fn the_fill_goes_with_the_room_and_overlay_edges_have_none() {
+    let _desktop = desktop();
+    let docked = Docked::launch(&pad("[edge.left]\ndock = true\n"));
+    assert!(within_2s(|| !fills(&docked.app).is_empty()), "precondition: filled while docked");
+
+    choose(&docked.app, "左辺");
+    assert!(within_2s(|| fills(&docked.app).is_empty()), "hidden: no fill");
+    choose(&docked.app, "左辺");
+    assert!(within_2s(|| !fills(&docked.app).is_empty()), "shown again: filled");
+    choose(&docked.app, "一時停止");
+    assert!(within_2s(|| fills(&docked.app).is_empty()), "paused: no fill");
+    choose(&docked.app, "一時停止");
+    assert!(within_2s(|| !fills(&docked.app).is_empty()), "resumed: filled");
+    save(&docked.app, &pad("[edge.left]\ndock = false\n"));
+    assert!(within_2s(|| fills(&docked.app).is_empty()), "dock turned off: no fill");
+    drop(docked);
+
+    let overlay = Docked::launch(&pad(""));
+    pump(500);
+    assert!(fills(&overlay.app).is_empty(), "an edge not docked has no fill");
+    let [below, _] = beside(&overlay.app);
+    assert!(!ours_at(&overlay.app, below), "and nothing of EdgePad's beside its panel");
 }
