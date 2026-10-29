@@ -830,7 +830,7 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
     };
     let (x, y, w, h) = (place_part("x")?, place_part("y")?, place_part("w")?, place_part("h")?);
     let place = match (x, y) {
-        (Some(x), Some(y)) => Some(Place { x, y, w: w.unwrap_or(4), h: h.unwrap_or(4) }),
+        (Some(x), Some(y)) => Some(Place { x, y, w: w.unwrap_or(4), h: h.unwrap_or(4), tilt: None }),
         (None, None) if w.is_none() && h.is_none() => None,
         _ => return Err("キーの位置は x と y を両方書く".into()),
     };
@@ -928,7 +928,7 @@ pub fn key_place(value: &str) -> Option<Place> {
     };
     let (x, y) = (get("x", 0, 4 * MAX_PLACE)??, get("y", 0, 4 * MAX_PLACE)??);
     let size = |name: &str| get(name, 1, 4 * MAX_SIZE).unwrap_or(Some(4));
-    Some(Place { x, y, w: size("w")?, h: size("h")? })
+    Some(Place { x, y, w: size("w")?, h: size("h")?, tilt: None })
 }
 
 /// `q` quarters as a number of keys, as the file writes it.

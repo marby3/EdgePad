@@ -619,7 +619,7 @@ impl Sample {
                 let (x, y) = (left.min(now.x), top.min(now.y));
                 let w = (left + wide).max(now.x + now.w) - x;
                 let h = (top + tall).max(now.y + now.h) - y;
-                layout::free_panel_in(screen, edge, UNIT, places, Place { x, y, w, h })
+                layout::free_panel_in(screen, edge, UNIT, places, Place { x, y, w, h, tilt: None })
             }
             Some(places) => layout::free_panel(screen, edge, UNIT, places),
             None => layout::edge_panel(screen, edge, UNIT, self.lines.max(1), &self.widths),
@@ -676,9 +676,18 @@ impl Sample {
             return Some((i, RECT { left: 0, top: 0, right: 0, bottom: 0 }, f.key));
         }
         let (key, _, cells) = self.lay_out(client, dpi);
-        let on = |r: &RECT| p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
-        let i = self.order(cells.len()).into_iter().rev().find(|&i| on(&cells[i]))?;
+        let on = |i: usize| {
+            let r = &cells[i];
+            let cell = layout::Rect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top };
+            layout::on_key(cell, self.tilt(i), p.x, p.y)
+        };
+        let i = self.order(cells.len()).into_iter().rev().find(|&i| on(i))?;
         Some((i, cells[i], key))
+    }
+
+    /// How key `i` is turned, if it is: a KLE file's (Issue #126).
+    fn tilt(&self, i: usize) -> Option<layout::Tilt> {
+        self.places.as_ref()?.get(i)?.tilt
     }
 
     /// The order the keys of `count` are drawn in: as written, the chosen
@@ -731,7 +740,7 @@ fn kle_places(e: &Editor, name: &str) -> Option<Vec<(Place, String)>> {
 
 /// The place `line` writes, or the top left corner, a key in size.
 fn line_place(line: &Line) -> Place {
-    config::key_place(&format!("_ | _ | _ | {}", line.options_text())).unwrap_or(Place { x: 0, y: 0, w: 4, h: 4 })
+    config::key_place(&format!("_ | _ | _ | {}", line.options_text())).unwrap_or(Place { x: 0, y: 0, w: 4, h: 4, tilt: None })
 }
 
 /// Write place `p` in `line`, all four of it.
@@ -748,7 +757,7 @@ fn edge_places(doc: &Document, set: &str, widths: &[usize]) -> Vec<Place> {
     let screen = layout::Rect { x: 0, y: 0, w: 4 * 4096, h: 4 * 4096 };
     let (panel, keys) = layout::edge_panel(screen, edge, 4, lines, widths);
     let (wide, tall) = if edge.is_side() { (panel.h, panel.w) } else { (panel.w, panel.h) };
-    keys.iter().map(|k| layout::unturn(edge, wide, tall, Place { x: k.x, y: k.y, w: k.w, h: k.h })).collect()
+    keys.iter().map(|k| layout::unturn(edge, wide, tall, Place { x: k.x, y: k.y, w: k.w, h: k.h, tilt: None })).collect()
 }
 
 thread_local! {
@@ -2534,7 +2543,7 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
             edge_places(&e.doc, &set, &widths)
         }
         Arrangement::Free => lines.iter().map(line_place).collect(),
-        Arrangement::Kle(_) => (0..lines.len()).map(|i| kle.get(i).map_or(Place { x: 0, y: 0, w: 4, h: 4 }, |(p, _)| *p)).collect(),
+        Arrangement::Kle(_) => (0..lines.len()).map(|i| kle.get(i).map_or(Place { x: 0, y: 0, w: 4, h: 4, tilt: None }, |(p, _)| *p)).collect(),
     };
     let chosen = e.keymap.key;
     let mut order: Vec<usize> = (0..lines.len()).collect();
@@ -2585,6 +2594,9 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
     }
     if !written {
         tell(e, "並べ方を書き換えられません");
+    } else if free && kle.iter().any(|(p, _)| p.tilt.is_some()) {
+        // A key line has no angle: a turned key keeps its middle and size.
+        tell(e, "回転したキーは、回転を外して置きました");
     }
     e.keymap.key = order.iter().position(|&k| k == chosen).unwrap_or(0);
     e.keymap.wrong = None;
@@ -2597,7 +2609,7 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
 /// Key `key` of the sample dragged to `packed`: x, y, w and h, a byte each.
 pub(super) unsafe fn place_key(key: usize, packed: u32) {
     let at = |i: u32| (packed >> (8 * i) & 0xFF) as i32;
-    let place = Place { x: at(0), y: at(1), w: at(2), h: at(3) };
+    let place = Place { x: at(0), y: at(1), w: at(2), h: at(3), tilt: None };
     with_editor(|e| unsafe {
         if key >= keys_of(e).len() {
             return;
@@ -2972,7 +2984,7 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
                     }
                     let u = layout::unturn(edge, wide, tall, t);
                     let (most, largest) = (4 * config::MAX_PLACE, 4 * config::MAX_SIZE);
-                    let now = Place { x: (u.x + left).clamp(0, most), y: (u.y + top).clamp(0, most), w: u.w.clamp(1, largest), h: u.h.clamp(1, largest) };
+                    let now = Place { x: (u.x + left).clamp(0, most), y: (u.y + top).clamp(0, most), w: u.w.clamp(1, largest), h: u.h.clamp(1, largest), tilt: None };
                     if now == d.now {
                         return false;
                     }
@@ -3093,12 +3105,14 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
                 let (colour, ink) = if chosen { (palette.held, palette.held_text) } else { (palette.face, palette.text) };
                 let brush = CreateSolidBrush(colorref(colour));
                 let old_brush = SelectObject(dc, brush);
-                RoundRect(dc, face.left, face.top, face.right + 1, face.bottom + 1, corner, corner);
+                panel::turned(dc, cell, v.tilt(i), || {
+                    RoundRect(dc, face.left, face.top, face.right + 1, face.bottom + 1, corner, corner);
+                    SetTextColor(dc, colorref(ink));
+                    let label = &v.labels[i];
+                    DrawTextW(dc, label.as_ptr(), label.len() as i32, &mut face, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                });
                 SelectObject(dc, old_brush);
                 DeleteObject(brush);
-                SetTextColor(dc, colorref(ink));
-                let label = &v.labels[i];
-                DrawTextW(dc, label.as_ptr(), label.len() as i32, &mut face, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
             SelectObject(dc, old_pen);
             SelectObject(dc, old_font);

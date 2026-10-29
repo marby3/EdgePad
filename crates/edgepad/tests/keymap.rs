@@ -884,12 +884,12 @@ fn a_kle_file_is_imported_into_the_settings_folder_for_the_chosen_set() {
     std::fs::create_dir_all(&from).expect("a folder to import from");
     let raw = r#"["A","B"],["C"]"#;
     std::fs::write(from.join("pad.json"), raw).expect("write the KLE file");
-    std::fs::write(from.join("bad.json"), r#"[{r:15},"A"]"#).expect("write the KLE file");
+    std::fs::write(from.join("bad.json"), "not kle").expect("write the KLE file");
     let editor = open_set(&app, "spare");
 
     // A file that does not read: not copied, why on the status line.
     import(editor, &from.join("bad.json"));
-    assert!(within_3s(|| dialog_of(editor).is_none() && status(editor).contains("bad.json") && status(editor).contains("回転")), "why: {:?}", status(editor));
+    assert!(within_3s(|| dialog_of(editor).is_none() && status(editor).contains("bad.json") && status(editor).contains("raw data")), "why: {:?}", status(editor));
     assert!(!dir.join("bad.json").exists(), "not copied");
 
     // The same name, other content: asked first; on yes, copied over.
@@ -1867,4 +1867,73 @@ fn jis_only_keys_are_written_by_name_sent_and_shown_on_jis() {
     assert_eq!(text(editor, SUMMARY), "Kana を送る");
     choose_key(editor, 3, "ろ");
     assert!(within_3s(|| checked(part(editor, button_named(editor, JIS_KEYBOARD, 100, "ろ")))), "ろ on");
+}
+
+// Issue #126: a KLE set with a key turned 45° about its middle (R), and
+// one not turned to its right (N), on the top edge.
+const TURNED_KLE: &str = r#"[{r:45,rx:0.5,ry:0.5,x:-0.5,y:-0.5},"R"],[{r:0,rx:0,ry:0,x:3},"N"]"#;
+
+fn open_turned(app: &Running) -> HWND {
+    std::fs::write(exe_dir(app).join("turn.json"), TURNED_KLE).expect("write the KLE file");
+    open_set(app, "turned")
+}
+
+fn turned_settings() -> String {
+    SETTINGS
+        .replace(
+            "[set.spare]\nkey = A | shortcut | A\n",
+            "[set.spare]\nkey = A | shortcut | A\n\n[set.turned]\nlayout = kle:turn.json\nkey = R | shortcut | R\nkey = N | shortcut | N\n",
+        )
+        .replace("[profile.default]\nleft = mods\n", "[profile.default]\nleft = mods\ntop = turned\n")
+}
+
+/// R's middle in the sample: the layout starts a quarter left of and above
+/// R's square.
+fn turned_middle(editor: HWND) -> POINT {
+    let r = window_rect(part(editor, SAMPLE));
+    let key = s(editor, KEY);
+    POINT { x: r.left + s(editor, INSET) + key * 3 / 4, y: r.top + s(editor, INSET) + key * 3 / 4 }
+}
+
+// Issue #126, AC4
+#[test]
+fn the_sample_draws_a_turned_key_turned_and_picks_it_by_its_shape() {
+    let _desktop = desktop();
+    let app = launch_with(Some(&turned_settings()), None);
+    let editor = open_turned(&app);
+    let key = s(editor, KEY);
+    let c = turned_middle(editor);
+    let (tip, corner) = (POINT { x: c.x + key * 55 / 100, y: c.y }, POINT { x: c.x + key * 42 / 100, y: c.y + key * 42 / 100 });
+    let r = window_rect(part(editor, SAMPLE));
+    let background = colour_at(POINT { x: r.left + s(editor, INSET) + 1, y: r.top + s(editor, INSET) + 1 });
+    assert!(near(colour_at(tip), colour_at(POINT { x: c.x, y: c.y + key * 3 / 10 })), "R's tip drawn as R");
+    assert!(near(colour_at(corner), background), "the square's corner not drawn");
+
+    // N chosen; its x is 3.
+    let n = POINT { x: c.x + key * 3, y: c.y };
+    reach(editor, part(editor, SAMPLE), n);
+    click(n);
+    assert!(within_3s(|| text(editor, PLACE_X) == "3"), "N chosen: x {:?}", text(editor, PLACE_X));
+    // The corner is no key's: N stays chosen.
+    reach(editor, part(editor, SAMPLE), corner);
+    click(corner);
+    pump(300);
+    assert_eq!(text(editor, PLACE_X), "3", "the corner chooses nothing");
+    // The tip is R's.
+    reach(editor, part(editor, SAMPLE), tip);
+    click(tip);
+    assert!(within_3s(|| text(editor, PLACE_X) == "0"), "R chosen by its tip: x {:?}", text(editor, PLACE_X));
+}
+
+// Issue #126, AC5
+#[test]
+fn a_turned_kle_set_made_free_loses_the_turn_and_says_so() {
+    let _desktop = desktop();
+    let app = launch_with(Some(&turned_settings()), None);
+    let editor = open_turned(&app);
+    arrange(editor, ARRANGEMENTS[1]);
+    assert!(within_3s(|| status(editor).contains("回転")), "said: {:?}", status(editor));
+    let saved = save_until(&app, editor, "R | shortcut | R | x=");
+    assert_eq!(options_of(&saved, "turned", "R"), ["x=0", "y=0", "w=1", "h=1"], "{saved}");
+    assert_eq!(options_of(&saved, "turned", "N"), ["x=3", "y=0", "w=1", "h=1"], "{saved}");
 }

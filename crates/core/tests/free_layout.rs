@@ -2,14 +2,14 @@
 //! hand or from Keyboard Layout Editor's raw data (spec 4.4, 5.2, 7).
 
 use edgepad_core::config::*;
-use edgepad_core::layout::{Place, Rect, free_panel};
+use edgepad_core::layout::{Place, Rect, Tilt, free_panel};
 
 const PROFILE: &str = "[profile.default]\nleft = pad\n";
 
 /// A place in keys: (x, y, w, h).
 fn at(x: f32, y: f32, w: f32, h: f32) -> Place {
     let q = |v: f32| (v * 4.0) as i32;
-    Place { x: q(x), y: q(y), w: q(w), h: q(h) }
+    Place { x: q(x), y: q(y), w: q(w), h: q(h), tilt: None }
 }
 
 fn read(text: &str, files: &[(&str, &str)]) -> Result<Config, Vec<Error>> {
@@ -138,7 +138,6 @@ fn a_kle_file_that_cannot_be_used_is_an_error_on_the_layout_line() {
         (None, "missing"),
         (Some("[\"A\",{w:2"), "cut short"),
         (Some("not kle"), "not raw data"),
-        (Some("[{r:15,rx:1},\"A\"]"), "rotated"),
     ] {
         let text = format!("[set.pad]\nkey = A | hold | A\nlayout = kle:pad.txt\n{PROFILE}");
         let files: Vec<(&str, &str)> = file.map(|f| ("pad.txt", f)).into_iter().collect();
@@ -161,4 +160,27 @@ fn a_set_without_layout_runs_along_the_edge_as_before() {
     // x, y, w, h belong to a free set.
     let errors = parse(b"[set.pad]\nkey = A | hold | A | x=0, y=0\n[profile.default]\nleft = pad\n").expect_err("x outside free");
     assert_eq!(errors[0].line, 2);
+}
+
+// Issue #126, AC1: turned keys are read as KLE places them. A turns 90°
+// about (1, 1), and B after it, in the next row, starts again from rx and
+// turns as A does. C, after rx and ry written again, starts from them, not
+// turned. Each turned key keeps its size, its middle where KLE turns it to:
+// its place is the square about that middle, in quarters (where it goes
+// should it lose the turn), its tilt the middle in thousandths of a key and
+// the angle in hundredths of a degree, clockwise.
+#[test]
+fn turned_kle_keys_are_read_where_kle_turns_them() {
+    let kle = r#"[{r:90,rx:1,ry:1},"A"],["B"],[{r:0,rx:5,ry:0},"C"]"#;
+    let text = format!("[set.pad]\nlayout = kle:pad.txt\nkey = 1 | hold | A\nkey = 2 | hold | B\nkey = 3 | hold | C\n{PROFILE}");
+    let config = read(&text, &[("pad.txt", kle)]).unwrap_or_else(|e| panic!("{e:?}"));
+    let turned = |x, y| Some(Tilt { x, y, angle: 9000 });
+    assert_eq!(
+        places(&config),
+        [
+            Some(Place { x: 24, y: 0, w: 4, h: 4, tilt: None }),
+            Some(Place { x: 0, y: 4, w: 4, h: 4, tilt: turned(500, 1500) }),
+            Some(Place { x: 4, y: 4, w: 4, h: 4, tilt: turned(1500, 1500) }),
+        ]
+    );
 }

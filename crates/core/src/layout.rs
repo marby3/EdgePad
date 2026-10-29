@@ -88,6 +88,54 @@ pub struct Place {
     pub y: i32,
     pub w: i32,
     pub h: i32,
+    /// A KLE key turned (Issue #126): then x, y, w and h are the square
+    /// about its middle, unturned.
+    pub tilt: Option<Tilt>,
+}
+
+/// How a KLE key is turned: its middle, in thousandths of a key from the
+/// layout's top left, and its angle, in hundredths of a degree clockwise.
+/// Finer than quarters: KLE turns keys about any point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tilt {
+    pub x: i32,
+    pub y: i32,
+    pub angle: i32,
+}
+
+impl Tilt {
+    /// Its middle, in quarters.
+    fn middle(self) -> (f64, f64) {
+        (f64::from(self.x) / 250.0, f64::from(self.y) / 250.0)
+    }
+
+    fn radians(self) -> f64 {
+        (f64::from(self.angle) / 100.0).to_radians()
+    }
+}
+
+/// The left, top, right and bottom of place `p` as drawn, in quarters: a
+/// turned key's corners, reached whole.
+fn bounds(p: &Place) -> (i32, i32, i32, i32) {
+    let Some(t) = p.tilt else { return (p.x, p.y, p.x + p.w, p.y + p.h) };
+    let ((cx, cy), a) = (t.middle(), t.radians());
+    let (hw, hh) = (f64::from(p.w) / 2.0, f64::from(p.h) / 2.0);
+    let ex = hw * a.cos().abs() + hh * a.sin().abs();
+    let ey = hw * a.sin().abs() + hh * a.cos().abs();
+    // Clear of the rounding on the way: a key turned 90° is still square.
+    let (down, up) = (|v: f64| (v + 1e-6).floor() as i32, |v: f64| (v - 1e-6).ceil() as i32);
+    (down(cx - ex), down(cy - ey), up(cx + ex), up(cy + ey))
+}
+
+/// Whether point `x`, `y` is on key `r`, turned as `tilt` says about its
+/// middle: inside its turned shape, not merely its square.
+pub fn on_key(r: Rect, tilt: Option<Tilt>, x: i32, y: i32) -> bool {
+    let Some(t) = tilt else { return r.contains(x, y) };
+    let (cx, cy) = (f64::from(r.x) + f64::from(r.w) / 2.0, f64::from(r.y) + f64::from(r.h) / 2.0);
+    let (dx, dy, a) = (f64::from(x) + 0.5 - cx, f64::from(y) + 0.5 - cy, t.radians());
+    // Turned back by the angle, onto the square.
+    let (ux, uy) = (dx * a.cos() + dy * a.sin(), -dx * a.sin() + dy * a.cos());
+    ux.abs() <= f64::from(r.w) / 2.0 && uy.abs() <= f64::from(r.h) / 2.0
 }
 
 /// A panel of keys at `places`, on `edge` of `monitor`, a key `key` pixels
@@ -106,18 +154,19 @@ pub fn free_panel(monitor: Rect, edge: Edge, key: i32, places: &[Place]) -> (Rec
 /// The left, top, width and height of the layout `places` spans, in
 /// quarters.
 pub fn frame(places: &[Place]) -> Place {
-    let left = places.iter().map(|p| p.x).min().unwrap_or(0);
-    let top = places.iter().map(|p| p.y).min().unwrap_or(0);
-    let wide = places.iter().map(|p| p.x + p.w).max().unwrap_or(0) - left;
-    let tall = places.iter().map(|p| p.y + p.h).max().unwrap_or(0) - top;
-    Place { x: left, y: top, w: wide, h: tall }
+    let b: Vec<_> = places.iter().map(bounds).collect();
+    let left = b.iter().map(|b| b.0).min().unwrap_or(0);
+    let top = b.iter().map(|b| b.1).min().unwrap_or(0);
+    let wide = b.iter().map(|b| b.2).max().unwrap_or(0) - left;
+    let tall = b.iter().map(|b| b.3).max().unwrap_or(0) - top;
+    Place { x: left, y: top, w: wide, h: tall, tilt: None }
 }
 
 /// `free_panel`, the layout taken to span `frame`: the settings window's
 /// sample keeps the frame a drag started in, so the keys not dragged stay
 /// where they are.
 pub fn free_panel_in(monitor: Rect, edge: Edge, key: i32, places: &[Place], frame: Place) -> (Rect, Vec<Rect>) {
-    let Place { x: left, y: top, w: wide, h: tall } = frame;
+    let Place { x: left, y: top, w: wide, h: tall, .. } = frame;
     // Quarters to pixels, each edge on its own: keys that touch still do.
     let px = |q: i32| (q * key + 2) / 4;
     let span = |from: i32, len: i32| (px(from), px(from + len) - px(from));
@@ -131,6 +180,20 @@ pub fn free_panel_in(monitor: Rect, edge: Edge, key: i32, places: &[Place], fram
     let keys = places
         .iter()
         .map(|p| {
+            if let Some(t) = p.tilt {
+                // Its middle, in quarters from the panel's top left, as the
+                // panel on `edge` turns it; its size as it turns.
+                let (cx, cy) = t.middle();
+                let (cx, cy) = (cx - f64::from(left), cy - f64::from(top));
+                let ((cx, cy), (w, h)) = match edge {
+                    Edge::Top | Edge::Bottom => ((cx, cy), (p.w, p.h)),
+                    Edge::Left => ((f64::from(tall) - cy, cx), (p.h, p.w)),
+                    Edge::Right => ((cy, f64::from(wide) - cx), (p.h, p.w)),
+                };
+                let (w, h) = ((w * key + 2) / 4, (h * key + 2) / 4);
+                let at = |c: f64, len: i32| (c * f64::from(key) / 4.0 - f64::from(len) / 2.0).round() as i32;
+                return Rect { x: at(cx, w), y: at(cy, h), w, h };
+            }
             let t = turn(edge, wide, tall, Place { x: p.x - left, y: p.y - top, ..*p });
             let ((x, w), (y, h)) = (span(t.x, t.w), span(t.y, t.h));
             Rect { x, y, w, h }
@@ -145,8 +208,8 @@ pub fn free_panel_in(monitor: Rect, edge: Edge, key: i32, places: &[Place], fram
 pub fn turn(edge: Edge, wide: i32, tall: i32, p: Place) -> Place {
     match edge {
         Edge::Top | Edge::Bottom => p,
-        Edge::Left => Place { x: tall - p.y - p.h, y: p.x, w: p.h, h: p.w },
-        Edge::Right => Place { x: p.y, y: wide - p.x - p.w, w: p.h, h: p.w },
+        Edge::Left => Place { x: tall - p.y - p.h, y: p.x, w: p.h, h: p.w, ..p },
+        Edge::Right => Place { x: p.y, y: wide - p.x - p.w, w: p.h, h: p.w, ..p },
     }
 }
 
@@ -155,8 +218,8 @@ pub fn turn(edge: Edge, wide: i32, tall: i32, p: Place) -> Place {
 pub fn unturn(edge: Edge, wide: i32, tall: i32, q: Place) -> Place {
     match edge {
         Edge::Top | Edge::Bottom => q,
-        Edge::Left => Place { x: q.y, y: tall - q.x - q.w, w: q.h, h: q.w },
-        Edge::Right => Place { x: wide - q.y - q.h, y: q.x, w: q.h, h: q.w },
+        Edge::Left => Place { x: q.y, y: tall - q.x - q.w, w: q.h, h: q.w, ..q },
+        Edge::Right => Place { x: wide - q.y - q.h, y: q.x, w: q.h, h: q.w, ..q },
     }
 }
 
