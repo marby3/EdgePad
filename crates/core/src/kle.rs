@@ -7,11 +7,13 @@
 //! first). A row is an array of labels, each a key, and of objects of
 //! properties for the keys after them: x and y move the next key along and
 //! down (y for the rows after it too), w and h are its width and height.
-//! Rotated keys (r, rx, ry) are not read; properties of looks (colours,
+//! r turns the keys after it by that many degrees clockwise, about rx, ry
+//! (Issue #126); writing rx or ry starts the next key there, and each row
+//! after starts again at rx, as in KLE. Properties of looks (colours,
 //! fonts, profiles and the like) are passed over. A layout may reach left
 //! of and above where KLE starts: it is moved to start at 0, 0.
 
-use crate::layout::Place;
+use crate::layout::{Place, Tilt};
 
 /// Furthest a key sits from where KLE starts, and largest it is, in keys:
 /// as far as a settings file may write (config's x, y, w and h).
@@ -48,39 +50,55 @@ pub fn parse(text: &str) -> Result<Vec<KleKey>, String> {
     }
     let mut keys = Vec::new();
     let mut y = 0.0;
+    // The turn, and the point it is about.
+    let (mut r, mut rx, mut ry) = (0.0, 0.0, 0.0);
     for item in items {
         match item {
             // The layout's details.
             Value::Object(_) => continue,
             Value::Array(row) => {
-                let (mut x, mut w, mut h) = (0.0, 1.0, 1.0);
+                let (mut x, mut w, mut h) = (rx, 1.0, 1.0);
                 for entry in row {
                     match entry {
                         Value::Object(props) => {
-                            for (name, value) in props {
-                                let number = || match &value {
-                                    Value::Number(n) => Ok(*n),
-                                    _ => Err(format!("KLE の {name} が数でない")),
-                                };
-                                match name.as_str() {
-                                    "x" => x += number()?,
-                                    "y" => y += number()?,
-                                    "w" => w = number()?,
-                                    "h" => h = number()?,
-                                    "r" | "rx" | "ry" if number().is_ok_and(|n| n == 0.0) => {}
-                                    "r" | "rx" | "ry" => return Err("回転したキー（r, rx, ry）は読めない".into()),
-                                    _ => {}
+                            let read = |name: &str| -> Result<Option<f64>, String> {
+                                match props.iter().find(|(n, _)| n == name) {
+                                    Some((_, Value::Number(n))) => Ok(Some(*n)),
+                                    Some(_) => Err(format!("KLE の {name} が数でない")),
+                                    None => Ok(None),
                                 }
+                            };
+                            // In KLE's order, whatever the file's: the turn,
+                            // then the moves from where it starts.
+                            let (nr, nrx, nry) = (read("r")?, read("rx")?, read("ry")?);
+                            r = nr.unwrap_or(r);
+                            if nrx.is_some() || nry.is_some() {
+                                (rx, ry) = (nrx.unwrap_or(rx), nry.unwrap_or(ry));
+                                (x, y) = (rx, ry);
                             }
+                            x += read("x")?.unwrap_or(0.0);
+                            y += read("y")?.unwrap_or(0.0);
+                            w = read("w")?.unwrap_or(w);
+                            h = read("h")?.unwrap_or(h);
                         }
                         Value::Text(labels) => {
                             let label = labels.split('\n').find(|l| !l.is_empty()).unwrap_or("").to_string();
-                            let placed = x.abs() <= MAX_PLACE && y.abs() <= MAX_PLACE;
+                            // Its middle, turned about rx, ry.
+                            let (mx, my) = (x + w / 2.0, y + h / 2.0);
+                            let (sin, cos) = f64::to_radians(r).sin_cos();
+                            let (mx, my) = if r == 0.0 {
+                                (mx, my)
+                            } else {
+                                (rx + (mx - rx) * cos - (my - ry) * sin, ry + (mx - rx) * sin + (my - ry) * cos)
+                            };
+                            let placed = mx.abs() <= MAX_PLACE && my.abs() <= MAX_PLACE;
                             if !placed || !(0.25..=MAX_SIZE).contains(&w) || !(0.25..=MAX_SIZE).contains(&h) {
                                 return Err(format!("KLE のキー「{label}」の位置か大きさが大きすぎる"));
                             }
                             let q = |v: f64| (v * 4.0).round() as i32;
-                            let place = Place { x: q(x), y: q(y), w: q(w), h: q(h) };
+                            let thousandths = |v: f64| (v * 1000.0).round() as i32;
+                            let tilt = (r != 0.0).then(|| Tilt { x: thousandths(mx), y: thousandths(my), angle: (r * 100.0).round() as i32 });
+                            let place = Place { x: q(mx - w / 2.0), y: q(my - h / 2.0), w: q(w), h: q(h), tilt };
                             keys.push((place, label));
                             x += w;
                             (w, h) = (1.0, 1.0);
@@ -100,6 +118,9 @@ pub fn parse(text: &str) -> Result<Vec<KleKey>, String> {
     let top = keys.iter().map(|(p, _)| p.y).min().unwrap_or(0);
     for (p, _) in &mut keys {
         (p.x, p.y) = (p.x - left, p.y - top);
+        if let Some(t) = &mut p.tilt {
+            (t.x, t.y) = (t.x - left * 250, t.y - top * 250);
+        }
     }
     keys.sort_by_key(|(p, _)| (p.y, p.x));
     Ok(keys)

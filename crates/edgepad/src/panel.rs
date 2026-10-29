@@ -1431,7 +1431,7 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
                 panel.captured = Some(id);
             }
             let (x, y) = (sx - panel.rect.x, sy - panel.rect.y);
-            let key = panel.keys.iter().position(|k| k.rect.is_some_and(|r| r.contains(x, y)));
+            let key = panel.keys.iter().position(|k| k.rect.is_some_and(|r| layout::on_key(r, k.place.and_then(|p| p.tilt), x, y)));
             debug_log!("ポインタ {id} ({sx}, {sy}) が押す: キー {key:?}");
             // A menu left open by a tap closes on a tap in its middle or on
             // a pie key, and that press goes no further.
@@ -2162,6 +2162,30 @@ pub unsafe fn redock_all() {
     });
 }
 
+/// Run `draw` on `dc` turned as `tilt` says about the middle of `cell`: a
+/// KLE key turned (Issue #126), its face and its label alike.
+pub unsafe fn turned<R>(dc: HDC, cell: &RECT, tilt: Option<layout::Tilt>, draw: impl FnOnce() -> R) -> R {
+    let Some(t) = tilt else { return draw() };
+    unsafe {
+        let old = SetGraphicsMode(dc, GM_ADVANCED);
+        let (sin, cos) = (f64::from(t.angle) / 100.0).to_radians().sin_cos();
+        let (cx, cy) = (f64::from(cell.left + cell.right) / 2.0, f64::from(cell.top + cell.bottom) / 2.0);
+        let turn = XFORM {
+            eM11: cos as f32,
+            eM12: sin as f32,
+            eM21: -sin as f32,
+            eM22: cos as f32,
+            eDx: (cx - cx * cos + cy * sin) as f32,
+            eDy: (cy - cx * sin - cy * cos) as f32,
+        };
+        SetWorldTransform(dc, &turn);
+        let r = draw();
+        ModifyWorldTransform(dc, null(), MWT_IDENTITY);
+        SetGraphicsMode(dc, old);
+        r
+    }
+}
+
 /// The space between a key's face and its cell, keys `key` pixels across:
 /// half the gap between neighbouring keys.
 pub fn key_gap(key: i32) -> i32 {
@@ -2226,8 +2250,11 @@ unsafe fn draw(panel: &Panel) -> bool {
             };
             SelectObject(mem, brush);
             SetTextColor(mem, colorref(text));
-            RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
-            DrawTextW(mem, k.label.as_ptr(), k.label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            let whole = RECT { left: at.x, top: at.y, right: at.x + at.w, bottom: at.y + at.h };
+            turned(mem, &whole, k.place.and_then(|p| p.tilt), || {
+                RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
+                DrawTextW(mem, k.label.as_ptr(), k.label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            });
         }
 
         SelectObject(mem, old_font);
