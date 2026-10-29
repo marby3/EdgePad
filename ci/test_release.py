@@ -65,7 +65,9 @@ class ReleaseTest(unittest.TestCase):
             with zipfile.ZipFile(zipped) as z:
                 # Issue #127, AC7: the shipped settings and keyboards too.
                 presets = ["edgepad.ini", "kb-alice64.json", "kb-corne-v4.json", "kb-split42.json", "kb-us.json"]
-                self.assertEqual(sorted(z.namelist()), sorted(["LICENSE", "edgepad.exe", *presets]))
+                # Issue #128, AC4: the READMEs too.
+                readmes = ["README.md", "README.ja.md"]
+                self.assertEqual(sorted(z.namelist()), sorted(["LICENSE", "edgepad.exe", *presets, *readmes]))
                 self.assertEqual(z.read("edgepad.ini"), (ROOT / "presets" / "edgepad.ini").read_bytes())
                 self.assertEqual(z.read("edgepad.exe"), b"MZ not really", "the exe given, signed or not")
 
