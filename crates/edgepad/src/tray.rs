@@ -5,12 +5,13 @@
 
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 
 use edgepad_core::config::Edge;
 use edgepad_core::keys::{Combo, Mods};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow, GetSystemMetricsForDpi};
 use windows_sys::Win32::System::RemoteDesktop::{
     NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
 };
@@ -25,7 +26,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
 use crate::log::debug_log;
-use crate::{autostart, editor_process, panel, pie_menu, profile, send, settings, watch};
+use crate::{autostart, editor_process, icon, panel, pie_menu, profile, send, settings, watch};
 
 // The class name, TRAY_ID, TRAY_CALLBACK, the menu texts and the test
 // messages are the contract the tests drive the tray through: change them
@@ -142,10 +143,60 @@ unsafe fn add_icon(hwnd: HWND) {
         let mut data = icon_data(hwnd);
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = TRAY_CALLBACK;
-        // Placeholder artwork until the real icon ships (v1.0).
-        data.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
+        let old = TRAY_ICON.load(Ordering::Relaxed);
+        data.hIcon = tray_icon();
         fill(&mut data.szTip, "EdgePad");
         Shell_NotifyIconW(NIM_ADD, &data);
+        drop_old(old, data.hIcon);
+    }
+}
+
+/// Destroy the tray's last icon `old` once `new` is shown in its place.
+unsafe fn drop_old(old: HICON, new: HICON) {
+    if !old.is_null() && old != new {
+        unsafe { DestroyIcon(old) };
+    }
+}
+
+/// The icon shown in the tray now, and its size; null before the first.
+static TRAY_ICON: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
+static TRAY_ICON_SIZE: AtomicI32 = AtomicI32::new(0);
+
+/// EdgePad's icon at the small icon size of the screen the tray is on,
+/// read again only when that size changed. Windows's own as a last resort.
+unsafe fn tray_icon() -> HICON {
+    unsafe {
+        let taskbar = FindWindowW(w!("Shell_TrayWnd"), null());
+        let dpi = if taskbar.is_null() { 0 } else { GetDpiForWindow(taskbar) };
+        let dpi = if dpi == 0 { GetDpiForSystem() } else { dpi };
+        let size = GetSystemMetricsForDpi(SM_CXSMICON, dpi);
+        let old = TRAY_ICON.load(Ordering::Relaxed);
+        if !old.is_null() && TRAY_ICON_SIZE.load(Ordering::Relaxed) == size {
+            return old;
+        }
+        let new = icon::load(dpi, true);
+        if new.is_null() {
+            return if old.is_null() { LoadIconW(null_mut(), IDI_APPLICATION) } else { old };
+        }
+        TRAY_ICON.store(new, Ordering::Relaxed);
+        TRAY_ICON_SIZE.store(size, Ordering::Relaxed);
+        test_event(&format!("tray icon: {:#x}", new as usize));
+        new
+    }
+}
+
+/// The tray's screen may have changed its scale: show the icon at its new
+/// size.
+unsafe fn refresh_icon(hwnd: HWND) {
+    unsafe {
+        let old = TRAY_ICON.load(Ordering::Relaxed);
+        let mut data = icon_data(hwnd);
+        data.uFlags = NIF_ICON;
+        data.hIcon = tray_icon();
+        if data.hIcon != old {
+            Shell_NotifyIconW(NIM_MODIFY, &data);
+            drop_old(old, data.hIcon);
+        }
     }
 }
 
@@ -400,6 +451,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 debug_log!("全キー解放: スリープ");
                 panel::release_all();
                 1
+            }
+            // A screen's scale changed: maybe the tray's.
+            WM_DPICHANGED | WM_DISPLAYCHANGE => {
+                refresh_icon(hwnd);
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
             // Windows' theme or accent colour may have changed.
             WM_SETTINGCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED => {
