@@ -106,6 +106,12 @@ class ReleaseTest(unittest.TestCase):
         self.assertRegex(policy, r"(?i)privacy")
         self.assertRegex(policy, r"(?i)network")
         self.assertIn("[Code signing policy](", step("Attach to the Release"))
+        # Issue #145, AC2: the attribution beside the link, added to a
+        # Release that has the link alone.
+        attach = step("Attach to the Release")
+        self.assertIn("Free code signing provided by SignPath.io, certificate by SignPath Foundation", attach)
+        self.assertNotIn('*"Code signing policy"*) ;;', attach, "a link alone is not enough")
+        self.assertIn('*"Free code signing provided by SignPath.io, certificate by SignPath Foundation"*) ;;', attach)
         self.assertIn("docs/code-signing-policy.md", step("Attach to the Release"))
 
 
