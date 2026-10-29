@@ -3,6 +3,7 @@ name = "edgepad"
 description = "Edge keypad for Windows: macro keys on the screen edges for touch and mouse"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 repository.workspace = true
 
 [dependencies]

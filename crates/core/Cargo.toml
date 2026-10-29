@@ -3,6 +3,7 @@ name = "edgepad-core"
 description = "OS-independent core of EdgePad: settings, key sets, modifier state, layout, gestures"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 repository.workspace = true
 
 # No dependencies: the core must never reach an OS API.

@@ -9,7 +9,8 @@
 //!
 //! The icon, icon/edgepad.ico (made by icon/make_ico.py), goes in as icon
 //! group 1, in a .res file built here and handed to the linker: no rc.exe,
-//! no crate (Issue #116).
+//! no crate (Issue #116). So does the version resource, at Cargo.toml's
+//! version (Issue #79).
 
 use std::path::Path;
 
@@ -17,6 +18,7 @@ use std::path::Path;
 const GROUP: u16 = 1;
 const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
+const RT_VERSION: u16 = 16;
 
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
@@ -29,7 +31,9 @@ fn main() {
         println!("cargo:rerun-if-changed=icon/edgepad.ico");
         let ico = std::fs::read("icon/edgepad.ico").expect("icon/edgepad.ico");
         let res = Path::new(&std::env::var("OUT_DIR").unwrap()).join("edgepad.res");
-        std::fs::write(&res, icon_res(&ico)).expect("write edgepad.res");
+        let mut data = icon_res(&ico);
+        entry(&mut data, RT_VERSION, 1, 0x0030, &version_info(env!("CARGO_PKG_VERSION")));
+        std::fs::write(&res, data).expect("write edgepad.res");
         println!("cargo:rustc-link-arg-bins={}", res.display());
     }
 }
@@ -56,6 +60,60 @@ fn icon_res(ico: &[u8]) -> Vec<u8> {
     }
     entry(&mut res, RT_GROUP_ICON, GROUP, 0x1030, &group);
     res
+}
+
+/// The version resource (VS_VERSIONINFO) of `version`, x.y.z: named
+/// EdgePad, in US English and UTF-16.
+fn version_info(version: &str) -> Vec<u8> {
+    let part = |i: usize| version.split('.').nth(i).and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let (high, low) = (part(0) << 16 | part(1), part(2) << 16);
+    let mut fixed = Vec::new();
+    // Signature, structure version; file and product versions; flags mask,
+    // flags; for Windows NT, an application; no subtype, no date.
+    for v in [0xFEEF04BD, 0x0001_0000, high, low, high, low, 0x3F, 0, 0x0004_0004, 1, 0, 0, 0] {
+        fixed.extend(u32::to_le_bytes(v));
+    }
+    let text = |key: &str, value: &str| node(key, &utf16(value), true, &[]);
+    let strings = [
+        text("ProductName", "EdgePad"),
+        text("FileDescription", "EdgePad"),
+        text("FileVersion", version),
+        text("ProductVersion", version),
+        text("OriginalFilename", "edgepad.exe"),
+        text("LegalCopyright", "Copyright (c) 2026 Marby3, MIT License"),
+    ];
+    let table = node("040904B0", &[], true, &strings);
+    let translation: Vec<u8> = [0x0409u16, 1200].iter().flat_map(|v| v.to_le_bytes()).collect();
+    node(
+        "VS_VERSION_INFO",
+        &fixed,
+        false,
+        &[node("StringFileInfo", &[], true, &[table]), node("VarFileInfo", &[], true, &[node("Translation", &translation, false, &[])])],
+    )
+}
+
+/// `s` in UTF-16, with its terminating 0.
+fn utf16(s: &str) -> Vec<u8> {
+    s.encode_utf16().chain(Some(0)).flat_map(u16::to_le_bytes).collect()
+}
+
+/// A block of a version resource: its length, its value's length (in
+/// characters for text), whether it is text, its key, then its value and
+/// its children, each on a 4-byte boundary.
+fn node(key: &str, value: &[u8], text: bool, children: &[Vec<u8>]) -> Vec<u8> {
+    let mut b = vec![0; 6];
+    b.extend(utf16(key));
+    b.resize(b.len().next_multiple_of(4), 0);
+    b.extend(value);
+    for child in children {
+        b.resize(b.len().next_multiple_of(4), 0);
+        b.extend(child);
+    }
+    let (len, value_len) = (b.len(), if text { value.len() / 2 } else { value.len() });
+    b[0..2].copy_from_slice(&(len as u16).to_le_bytes());
+    b[2..4].copy_from_slice(&(value_len as u16).to_le_bytes());
+    b[4..6].copy_from_slice(&(text as u16).to_le_bytes());
+    b
 }
 
 /// Append a resource of type `kind` and id `name`, language neutral, to
