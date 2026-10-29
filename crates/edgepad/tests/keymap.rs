@@ -1871,7 +1871,7 @@ fn jis_only_keys_are_written_by_name_sent_and_shown_on_jis() {
 
 // Issue #126: a KLE set with a key turned 45° about its middle (R), and
 // one not turned to its right (N), on the top edge.
-const TURNED_KLE: &str = r#"[{r:45,rx:0.5,ry:0.5},"R"],[{r:0,rx:0,ry:0,x:3},"N"]"#;
+const TURNED_KLE: &str = r#"[{r:45,rx:0.5,ry:0.5,x:-0.5,y:-0.5},"R"],[{r:0,rx:0,ry:0,x:3},"N"]"#;
 
 fn open_turned(app: &Running) -> HWND {
     std::fs::write(exe_dir(app).join("turn.json"), TURNED_KLE).expect("write the KLE file");

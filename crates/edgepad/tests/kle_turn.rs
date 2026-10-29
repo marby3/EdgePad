@@ -10,7 +10,7 @@ mod common;
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use common::*;
 
-const KLE: &str = r#"[{r:45,rx:0.5,ry:0.5},"R"],[{r:0,rx:0,ry:0,x:3},"N"]"#;
+const KLE: &str = r#"[{r:45,rx:0.5,ry:0.5,x:-0.5,y:-0.5},"R"],[{r:0,rx:0,ry:0,x:3},"N"]"#;
 const R: u16 = b'R' as u16;
 
 fn settings() -> String {
