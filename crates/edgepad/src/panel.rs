@@ -236,6 +236,9 @@ struct Panel {
     /// To be an AppBar while shown, and whether it is one now.
     dock: bool,
     docked: bool,
+    /// While docked, covers the room taken where the panel is not (Issue
+    /// #121); null till the panel first docks.
+    fill_hwnd: HWND,
     /// How long a slide takes (0: none), and the slide going on, if any.
     slide_ms: u32,
     slide: Option<Slide>,
@@ -632,6 +635,7 @@ pub unsafe fn create(p: &EdgePanel, panels: &Panels) -> bool {
             mouse_out: false,
             dock: p.dock,
             docked: false,
+            fill_hwnd: null_mut(),
             slide_ms: panels.slide_ms,
             slide: None,
         };
@@ -705,6 +709,9 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
             }
             if !panel.strip_hwnd.is_null() {
                 DestroyWindow(panel.strip_hwnd);
+            }
+            if !panel.fill_hwnd.is_null() {
+                DestroyWindow(panel.fill_hwnd);
             }
         }
         let held = HOLDS.replace([0; 256]);
@@ -2020,6 +2027,101 @@ unsafe fn dock(panel: &mut Panel) {
         SHAppBarMessage(ABM_QUERYPOS, &mut data);
         fit(&mut data.rc);
         SHAppBarMessage(ABM_SETPOS, &mut data);
+        fill(panel, data.rc);
+    }
+}
+
+/// Cover the room `taken` for docked `panel`, all but the panel itself:
+/// nothing behind shows through beside it (Issue #121).
+unsafe fn fill(panel: &mut Panel, taken: RECT) {
+    unsafe {
+        if panel.fill_hwnd.is_null() {
+            panel.fill_hwnd = create_fill();
+            if panel.fill_hwnd.is_null() {
+                return;
+            }
+        }
+        let (w, h) = (taken.right - taken.left, taken.bottom - taken.top);
+        let r = panel.rect;
+        let region = CreateRectRgn(0, 0, w, h);
+        let hole = CreateRectRgn(r.x - taken.left, r.y - taken.top, r.x + r.w - taken.left, r.y + r.h - taken.top);
+        CombineRgn(region, region, hole, RGN_DIFF);
+        DeleteObject(hole);
+        // The window owns the region from here.
+        SetWindowRgn(panel.fill_hwnd, region, 0);
+        SetWindowPos(panel.fill_hwnd, HWND_TOPMOST, taken.left, taken.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        paint_fill(panel);
+    }
+}
+
+/// Colour `panel`'s fill as its background, at the alpha the panel has now.
+unsafe fn paint_fill(panel: &Panel) {
+    if !panel.fill_hwnd.is_null() {
+        unsafe {
+            SetLayeredWindowAttributes(panel.fill_hwnd, 0, panel.current_alpha(), LWA_ALPHA);
+            InvalidateRect(panel.fill_hwnd, null(), 1);
+        }
+    }
+}
+
+/// Make a fill window, hidden.
+unsafe fn create_fill() -> HWND {
+    unsafe {
+        let instance = GetModuleHandleW(null());
+        let mut wc: WNDCLASSW = zeroed();
+        wc.lpfnWndProc = Some(fill_proc);
+        wc.hInstance = instance;
+        wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+        wc.lpszClassName = w!("EdgePadDockFill");
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            return null_mut();
+        }
+        CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            w!("EdgePadDockFill"),
+            w!("EdgePad"),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            null_mut(),
+            null_mut(),
+            instance,
+            null(),
+        )
+    }
+}
+
+/// A docked panel's fill: drawn as the panel's background, and a pointer
+/// on it goes to the panel, as one on the background between its keys.
+unsafe extern "system" fn fill_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let panel = || {
+        PANELS.with(|panels| {
+            let panels = panels.try_borrow().ok()?;
+            panels.iter().find(|p| p.fill_hwnd == hwnd).map(|p| p.hwnd)
+        })
+    };
+    unsafe {
+        match msg {
+            WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+            WM_POINTERDOWN | WM_POINTERUP | WM_POINTERUPDATE | WM_POINTERCAPTURECHANGED | WM_POINTERENTER
+            | WM_POINTERLEAVE => {
+                if let Some(p) = panel() {
+                    SendMessageW(p, msg, wp, lp);
+                }
+                0
+            }
+            WM_ERASEBKGND => {
+                let mut r: RECT = zeroed();
+                GetClientRect(hwnd, &mut r);
+                let brush = CreateSolidBrush(colorref(palette().background));
+                FillRect(wp as HDC, &r, brush);
+                DeleteObject(brush);
+                1
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
     }
 }
 
@@ -2027,7 +2129,10 @@ unsafe fn dock(panel: &mut Panel) {
 unsafe fn undock(panel: &mut Panel) {
     if panel.docked {
         let mut data = appbar_data(panel.hwnd);
-        unsafe { SHAppBarMessage(ABM_REMOVE, &mut data) };
+        unsafe {
+            SHAppBarMessage(ABM_REMOVE, &mut data);
+            ShowWindow(panel.fill_hwnd, SW_HIDE);
+        }
         panel.docked = false;
         debug_log!("パネル {}: ドッキング解除", edge_name(panel.edge));
     }
@@ -2149,6 +2254,9 @@ unsafe fn draw(panel: &Panel) -> bool {
         // Sliding, only the part already in is shown, against the edge.
         let (at, size, from) = in_part(panel);
         let shown = UpdateLayeredWindow(hwnd, screen, &at, &size, mem, &from, 0, &blend, ULW_ALPHA) != 0;
+        if panel.docked {
+            paint_fill(panel);
+        }
 
         SelectObject(mem, old_bitmap);
         DeleteObject(dib);
