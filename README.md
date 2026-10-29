@@ -73,4 +73,4 @@ key = Flip | shortcut | F13   ; F13 given to Flip Horizontal in CLIP STUDIO PAIN
 ## Licence and signing
 
 - [MIT License](LICENSE)
-- How the exe is signed: [Code signing policy](docs/code-signing-policy.md)
+- Free code signing provided by SignPath.io, certificate by SignPath Foundation. How the exe is signed: [Code signing policy](docs/code-signing-policy.md)

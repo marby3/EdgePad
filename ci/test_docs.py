@@ -77,6 +77,14 @@ class DocsTest(unittest.TestCase):
         self.assertRegex(en, r"(?i)Windows 11 only")
         self.assertIn("Windows 11 だけ", ja)
 
+    # Issue #145, AC1: the download's front page says who signs, in
+    # SignPath's own words, beside the policy.
+    def test_both_readmes_carry_signpaths_attribution_beside_the_policy(self):
+        for lang, path in READMES.items():
+            line = next((l for l in text(path).splitlines() if "Free code signing provided by SignPath.io, certificate by SignPath Foundation" in l), None)
+            self.assertIsNotNone(line, f"{lang}: the attribution")
+            self.assertIn("(docs/code-signing-policy.md)", line, f"{lang}: beside the policy's link")
+
     # AC2
     def test_the_reference_in_english_and_japanese_covers_every_section(self):
         en, ja = text(REFERENCES["en"]), text(REFERENCES["ja"])

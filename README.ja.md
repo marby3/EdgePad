@@ -73,4 +73,4 @@ key = 左右反転 | shortcut | F13   ; CLIP STUDIO PAINT 側で F13 を「左�
 ## ライセンスと署名
 
 - ライセンスは [MIT License](LICENSE) です。
-- exe の署名について: [Code signing policy](docs/code-signing-policy.md)
+- exe の署名: Free code signing provided by SignPath.io, certificate by SignPath Foundation（[Code signing policy](docs/code-signing-policy.md)）
