@@ -1,0 +1,70 @@
+name: Release
+
+# A version tag (pushed by the release script, which makes the Release)
+# builds the exe and attaches the zip of it and what goes beside it
+# (ci/package.py) to that tag's Release (Issue #79). Once SignPath is set up
+# (the variable SIGNPATH_ORGANIZATION_ID, and the rest below), the exe is
+# signed before it goes in; until then it goes in unsigned, noted so.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the tag
+        run: python ci/package.py --check ${{ github.ref_name }}
+      - name: Build
+        run: cargo build --release
+      - name: Unsigned exe for SignPath
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: edgepad-unsigned
+          path: target/release/edgepad.exe
+      - name: Sign with SignPath
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+      - name: Note an unsigned release
+        if: vars.SIGNPATH_ORGANIZATION_ID == ''
+        run: echo "::notice::SIGNPATH_ORGANIZATION_ID is not set; the exe goes out unsigned"
+      - name: Zip
+        run: >-
+          python ci/package.py --tag ${{ github.ref_name }} --out dist
+          --exe ${{ vars.SIGNPATH_ORGANIZATION_ID != '' && 'signed/edgepad.exe' || 'target/release/edgepad.exe' }}
+      - name: Attach to the Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          POLICY: "[Code signing policy](https://github.com/${{ github.repository }}/blob/main/docs/code-signing-policy.md)"
+        run: |
+          # Made by the release script as a rule; made here if it is not.
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          fi
+          notes="$(gh release view "$TAG" --json body -q .body)"
+          case "$notes" in
+            *"Code signing policy"*) ;;
+            *) gh release edit "$TAG" --notes "$notes"$'\n\n'"$POLICY" ;;
+          esac
+          gh release upload "$TAG" dist/*.zip --clobber
