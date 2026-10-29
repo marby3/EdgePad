@@ -198,11 +198,11 @@ fn fills(app: &Running) -> Vec<windows_sys::Win32::Foundation::HWND> {
     }
 }
 
-/// A point of the left strip, half a key below the left panel, and one
-/// above it.
+/// A point of the left strip three keys below the left panel, and one
+/// above it: past where a pie menu opened from it reaches.
 fn beside(app: &Running) -> [POINT; 2] {
     let (panel, key) = (left_panel(app), key_px());
-    [POINT { x: panel.left + key / 2, y: panel.bottom + key / 2 }, POINT { x: panel.left + key / 2, y: panel.top - key / 2 }]
+    [POINT { x: panel.left + key / 2, y: panel.bottom + key * 3 }, POINT { x: panel.left + key / 2, y: panel.top - key * 3 }]
 }
 
 /// Whether the window on top at `p` is one of `app`'s.
