@@ -884,12 +884,12 @@ fn a_kle_file_is_imported_into_the_settings_folder_for_the_chosen_set() {
     std::fs::create_dir_all(&from).expect("a folder to import from");
     let raw = r#"["A","B"],["C"]"#;
     std::fs::write(from.join("pad.json"), raw).expect("write the KLE file");
-    std::fs::write(from.join("bad.json"), r#"[{r:15},"A"]"#).expect("write the KLE file");
+    std::fs::write(from.join("bad.json"), "not kle").expect("write the KLE file");
     let editor = open_set(&app, "spare");
 
     // A file that does not read: not copied, why on the status line.
     import(editor, &from.join("bad.json"));
-    assert!(within_3s(|| dialog_of(editor).is_none() && status(editor).contains("bad.json") && status(editor).contains("回転")), "why: {:?}", status(editor));
+    assert!(within_3s(|| dialog_of(editor).is_none() && status(editor).contains("bad.json") && status(editor).contains("raw data")), "why: {:?}", status(editor));
     assert!(!dir.join("bad.json").exists(), "not copied");
 
     // The same name, other content: asked first; on yes, copied over.
