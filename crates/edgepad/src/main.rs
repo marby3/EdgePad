@@ -20,6 +20,7 @@ mod watch;
 
 use std::process::ExitCode;
 
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
@@ -90,6 +91,10 @@ fn main() -> ExitCode {
         }
         tray::set_hotkey(panels.hotkey);
         let unreadable = if seen.is_none() { notice } else { None };
+        // Started: what starting touched (the shell's DLLs above all, for the
+        // tray) leaves the working set. Pages used again come back as used
+        // (spec 8, Issue #10).
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
         watch::run(seen, unreadable, toggle);
     }
     ExitCode::SUCCESS

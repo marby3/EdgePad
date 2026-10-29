@@ -59,6 +59,8 @@ class MeasureTest(unittest.TestCase):
 
 # Spec, chapter 8: private memory 2.5 MiB or less (MiB as the spec's MB).
 PRIVATE_LIMIT = 5 * 1024 * 1024 // 2
+# Spec, chapter 8: working set 5 MB or less, idle after starting (Issue #10).
+WORKING_SET_LIMIT = 5 * 1024 * 1024
 
 
 def measure(*args, env=None):
@@ -92,6 +94,19 @@ class MemoryTest(unittest.TestCase):
             private, PRIVATE_LIMIT,
             f"private memory {private / 1024 / 1024:.2f} MiB ({private:,} bytes) is over the spec's 2.5 MiB",
         )
+
+    # Issue #10, AC1
+    def test_the_working_set_once_idle_is_at_most_5_mib(self):
+        for settings in ([], ["--settings", "ci/example.ini"]):
+            with self.subTest(settings=settings):
+                out = measure("--idle", "5", *settings)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                working_set = json.loads(out.stdout)["working_set_bytes"]
+                print(f"\n  working set {settings}: {working_set:,} bytes", file=sys.stderr)
+                self.assertLessEqual(
+                    working_set, WORKING_SET_LIMIT,
+                    f"working set {working_set / 1024 / 1024:.2f} MiB is over the spec's 5 MiB",
+                )
 
     # Issue #34, AC2
     def test_measuring_leaves_an_edgepad_already_running_alone(self):
