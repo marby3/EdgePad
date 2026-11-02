@@ -51,12 +51,14 @@ use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Place};
 use edgepad_core::pie;
 use edgepad_core::theme::Palette;
-use windows_sys::Win32::Foundation::{FreeLibrary, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows_sys::Win32::Foundation::{FreeLibrary, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_DOWN, VK_END, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
     VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_UP,
 };
+use windows_sys::Win32::UI::Controls::{SetScrollInfo, ShowScrollBar};
+use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 use windows_sys::Win32::UI::Controls::Dialogs::{
     OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
@@ -220,8 +222,11 @@ const KEYBOARD_WIDE: i32 = 92;
 const PAD_X: i32 = 76;
 const PAD_Y: i32 = 9;
 const MODIFIER_W: i32 = 8;
-/// The sample on キーマッピング at least, in logical pixels.
-const MAP_SAMPLE_H: i32 = 104;
+/// The sample on キーマッピング at least, in logical pixels, before the
+/// keyboard gives way: a KLE file's keyboard of six rows, a key 40 across
+/// (Issue #137). The keyboard's quarters, at least and at most.
+const MAP_SAMPLE_H: i32 = 256;
+const KEYBOARD_QUARTER: (i32, i32) = (6, 8);
 
 /// The keys of 基本, as a US keyboard has them: each key, and its left,
 /// top and width in quarters of a key.
@@ -383,9 +388,11 @@ const PITCH: i32 = 32;
 const SHAPE_W: i32 = 280;
 /// How near a chosen key's right or bottom end the mouse takes that end.
 const END_ZONE: i32 = 6;
-/// The sample's panel, inset from its corner, and its largest keys.
+/// The sample's panel, inset from its corner, and its keys at least and at
+/// most: smaller than the least, it scrolls instead (Issue #137).
 const INSET: i32 = 8;
-const SAMPLE_KEY: i32 = 44;
+const LEAST_KEY: i32 = 40;
+const MOST_KEY: i32 = 64;
 const LIST_H: i32 = 200;
 const TITLE_W: i32 = 64;
 /// The space beside a kind's or a group's name on its button.
@@ -577,6 +584,10 @@ struct Sample {
     /// A pie's fan in place of the panel, from this edge: its keys the
     /// items (Issue #113).
     fan: Option<Edge>,
+    /// The key set drawn, and how far it is scrolled, in pixels (Issue
+    /// #137): back to its start for another set.
+    set: String,
+    scroll: (i32, i32),
 }
 
 /// A fan in a sample: its middle, its keys' size, and its ring.
@@ -617,10 +628,42 @@ impl Sample {
     /// out and turned as the panel is, then fitted to the room, against
     /// the side of its edge (Issue #109).
     fn lay_out(&self, client: RECT, dpi: u32) -> (i32, RECT, Vec<RECT>) {
-        const UNIT: i32 = 64;
+        let edge = self.edge.unwrap_or(Edge::Left);
+        let (panel, keys) = self.panel();
+        let inset = scale(INSET, dpi);
+        let key = fitted_key(panel, client, dpi);
+        let (w, h) = (panel.w * key / UNIT, panel.h * key / UNIT);
+        // Scrolled where it does not fit (Issue #137); else against its
+        // edge's side.
+        let left = match () {
+            _ if w + 2 * inset > client.right => inset - self.scroll.0,
+            _ if edge == Edge::Right => client.right - inset - w,
+            _ => inset,
+        };
+        let top = match () {
+            _ if h + 2 * inset > client.bottom => inset - self.scroll.1,
+            _ if edge == Edge::Bottom => client.bottom - inset - h,
+            _ => inset,
+        };
+        let back = RECT { left, top, right: left + w, bottom: top + h };
+        let cells = keys
+            .iter()
+            .map(|k| RECT {
+                left: left + k.x * key / UNIT,
+                top: top + k.y * key / UNIT,
+                right: left + (k.x + k.w) * key / UNIT,
+                bottom: top + (k.y + k.h) * key / UNIT,
+            })
+            .collect();
+        (key, back, cells)
+    }
+
+    /// The panel laid out and turned as the panel is, a key `UNIT` across:
+    /// its rectangle, and its keys'.
+    fn panel(&self) -> (layout::Rect, Vec<layout::Rect>) {
         let edge = self.edge.unwrap_or(Edge::Left);
         let screen = layout::Rect { x: 0, y: 0, w: UNIT * 4096, h: UNIT * 4096 };
-        let (panel, keys) = match &self.places {
+        match &self.places {
             // Mid-drag, in the frame the drag started in, as large as
             // takes the key dragged: the other keys stay where they are.
             Some(places) if self.drag.is_some() => {
@@ -633,24 +676,19 @@ impl Sample {
             }
             Some(places) => layout::free_panel(screen, edge, UNIT, places),
             None => layout::edge_panel(screen, edge, UNIT, self.lines.max(1), &self.widths, &self.spaces),
-        };
+        }
+    }
+
+    /// How large the panel draws in `client`, at `dpi`, with its inset
+    /// around it, in pixels: None for a fan, or with nothing to draw.
+    fn drawn_size(&self, client: RECT, dpi: u32) -> Option<(i32, i32)> {
+        if self.fan.is_some() || self.labels.is_empty() {
+            return None;
+        }
+        let (panel, _) = self.panel();
+        let key = fitted_key(panel, client, dpi);
         let inset = scale(INSET, dpi);
-        let room = (client.right - 2 * inset, client.bottom - 2 * inset);
-        let key = scale(SAMPLE_KEY, dpi).min(room.0 * UNIT / panel.w.max(1)).min(room.1 * UNIT / panel.h.max(1)).max(1);
-        let (w, h) = (panel.w * key / UNIT, panel.h * key / UNIT);
-        let left = if edge == Edge::Right { client.right - inset - w } else { inset };
-        let top = if edge == Edge::Bottom { client.bottom - inset - h } else { inset };
-        let back = RECT { left, top, right: left + w, bottom: top + h };
-        let cells = keys
-            .iter()
-            .map(|k| RECT {
-                left: left + k.x * key / UNIT,
-                top: top + k.y * key / UNIT,
-                right: left + (k.x + k.w) * key / UNIT,
-                bottom: top + (k.y + k.h) * key / UNIT,
-            })
-            .collect();
-        (key, back, cells)
+        Some((panel.w * key / UNIT + 2 * inset, panel.h * key / UNIT + 2 * inset))
     }
 
     /// Where the fan goes in `client`, at `dpi`, if one is drawn: as the
@@ -716,6 +754,18 @@ impl Sample {
             _ => Pull::Move,
         }
     }
+}
+
+/// The sample's keys across, in its own units, as it lays the panel out.
+const UNIT: i32 = 64;
+
+/// How large the sample draws a key of panel `panel`, laid out in `UNIT`s,
+/// in `client`, at `dpi`: as large as fits, from `LEAST_KEY` to `MOST_KEY`.
+fn fitted_key(panel: layout::Rect, client: RECT, dpi: u32) -> i32 {
+    let inset = scale(INSET, dpi);
+    let room = (client.right - 2 * inset, client.bottom - 2 * inset);
+    let fit = (room.0 * UNIT / panel.w.max(1)).min(room.1 * UNIT / panel.h.max(1));
+    fit.clamp(scale(LEAST_KEY, dpi), scale(MOST_KEY, dpi))
 }
 
 /// The layout `places` spans: its left, top, width and height, in quarters.
@@ -1462,7 +1512,11 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     // keyboard gets the room the sample can spare.
     let rows = 5 * pitch;
     let room = bottom - top - rows;
-    let quarter = (s(32) / 4).min(width / KEYBOARD_WIDE).min((room - s(MAP_SAMPLE_H)) / KEYBOARD_TALL).max(1);
+    let quarter = ((room - s(MAP_SAMPLE_H)) / KEYBOARD_TALL)
+        .min(s(KEYBOARD_QUARTER.1))
+        .max(s(KEYBOARD_QUARTER.0))
+        .min(width / KEYBOARD_WIDE)
+        .max(1);
     let sample_h = (room - quarter * KEYBOARD_TALL - gap).max(s(40));
     let ys = top + 2 * pitch;
     let (yl, ym) = (ys + sample_h + gap, ys + sample_h + gap + pitch);
@@ -1829,6 +1883,10 @@ fn update_sample(e: &Editor) {
         }),
     };
     SAMPLE_VIEW.with_borrow_mut(|v| {
+        if v.set != set {
+            v.set = set.clone();
+            v.scroll = (0, 0);
+        }
         v.labels = labels.iter().map(|l| l.encode_utf16().collect()).collect();
         v.widths = lines.iter().map(|l| l.option("width").and_then(|w| w.parse().ok()).filter(|w| (1..=3).contains(w)).unwrap_or(1)).collect();
         v.spaces = spaces_of(&e.doc, &format!("set.{set}"), lines.len());
@@ -1844,7 +1902,10 @@ fn update_sample(e: &Editor) {
             v.places = None;
         }
     });
-    unsafe { InvalidateRect(part_of(e, SAMPLE), null(), 0) };
+    unsafe {
+        fit_bars(part_of(e, SAMPLE));
+        InvalidateRect(part_of(e, SAMPLE), null(), 0);
+    }
 }
 
 /// Change the chosen key's line with `change`, if the parser reads the
@@ -2978,6 +3039,47 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
     unsafe {
         match msg {
             WM_ERASEBKGND => 1,
+            WM_SIZE => {
+                fit_bars(hwnd);
+                InvalidateRect(hwnd, null(), 0);
+                0
+            }
+            WM_HSCROLL | WM_VSCROLL => {
+                let bar = if msg == WM_HSCROLL { SB_HORZ } else { SB_VERT };
+                let info = scroll_info(hwnd, bar);
+                let line = scale(LEAST_KEY, window_dpi(hwnd));
+                let to = match (wp & 0xFFFF) as i32 {
+                    SB_LINEUP => info.nPos - line,
+                    SB_LINEDOWN => info.nPos + line,
+                    SB_PAGEUP => info.nPos - info.nPage as i32,
+                    SB_PAGEDOWN => info.nPos + info.nPage as i32,
+                    SB_THUMBTRACK | SB_THUMBPOSITION => info.nTrackPos,
+                    SB_TOP => 0,
+                    SB_BOTTOM => info.nMax,
+                    _ => return 0,
+                };
+                scroll_to(hwnd, bar, to);
+                0
+            }
+            // The wheel scrolls the sample down, or across one that only
+            // scrolls across; tilted, across.
+            WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+                let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                if style & (WS_HSCROLL | WS_VSCROLL) == 0 {
+                    return DefWindowProcW(hwnd, msg, wp, lp);
+                }
+                let across = msg == WM_MOUSEHWHEEL || style & WS_VSCROLL == 0;
+                let bar = if across { SB_HORZ } else { SB_VERT };
+                let turned = (wp >> 16) as u16 as i16 as i32;
+                let by = turned * scale(LEAST_KEY, window_dpi(hwnd)) / WHEEL_DELTA as i32;
+                let by = if msg == WM_MOUSEHWHEEL { by } else { -by };
+                scroll_to(hwnd, bar, scroll_info(hwnd, bar).nPos + by);
+                0
+            }
+            WM_NCDESTROY => {
+                RemovePropW(hwnd, w!("key"));
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
             WM_PAINT => {
                 let mut ps: PAINTSTRUCT = zeroed();
                 let dc = BeginPaint(hwnd, &mut ps);
@@ -3111,6 +3213,83 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
     }
 }
 
+thread_local! {
+    /// Set while the scroll bars are fitted: showing one sizes the sample.
+    static FITTING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Show the sample's scroll bars where its panel does not fit, its keys
+/// `LEAST_KEY` across (Issue #137), and keep how far it is scrolled within
+/// them: as far as its end, and back to its start where it fits.
+unsafe fn fit_bars(hwnd: HWND) {
+    if FITTING.replace(true) {
+        return;
+    }
+    unsafe {
+        let dpi = window_dpi(hwnd);
+        let (bar_w, bar_h) = (GetSystemMetricsForDpi(SM_CXVSCROLL, dpi), GetSystemMetricsForDpi(SM_CYHSCROLL, dpi));
+        // The room without the bars.
+        let mut room: RECT = zeroed();
+        GetClientRect(hwnd, &mut room);
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if style & WS_VSCROLL != 0 {
+            room.right += bar_w;
+        }
+        if style & WS_HSCROLL != 0 {
+            room.bottom += bar_h;
+        }
+        let (w, h) = SAMPLE_VIEW.with_borrow(|v| v.drawn_size(room, dpi)).unwrap_or((0, 0));
+        let (mut across, mut down) = (w > room.right, h > room.bottom);
+        down |= across && h > room.bottom - bar_h;
+        across |= down && w > room.right - bar_w;
+        let view = (room.right - if down { bar_w } else { 0 }, room.bottom - if across { bar_h } else { 0 });
+        let at = SAMPLE_VIEW.with_borrow_mut(|v| {
+            let x = if across { v.scroll.0.clamp(0, w - view.0) } else { 0 };
+            let y = if down { v.scroll.1.clamp(0, h - view.1) } else { 0 };
+            v.scroll = (x, y);
+            v.scroll
+        });
+        ShowScrollBar(hwnd, SB_HORZ, across as i32);
+        ShowScrollBar(hwnd, SB_VERT, down as i32);
+        for (bar, on, total, page, pos) in [(SB_HORZ, across, w, view.0, at.0), (SB_VERT, down, h, view.1, at.1)] {
+            if on {
+                let info = SCROLLINFO {
+                    cbSize: size_of::<SCROLLINFO>() as u32,
+                    fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+                    nMin: 0,
+                    nMax: total - 1,
+                    nPage: page as u32,
+                    nPos: pos,
+                    nTrackPos: 0,
+                };
+                SetScrollInfo(hwnd, bar, &info, 1);
+            }
+        }
+    }
+    FITTING.set(false);
+}
+
+/// The sample's scroll bar `bar` as it is.
+unsafe fn scroll_info(hwnd: HWND, bar: SCROLLBAR_CONSTANTS) -> SCROLLINFO {
+    let mut info: SCROLLINFO = unsafe { zeroed() };
+    info.cbSize = size_of::<SCROLLINFO>() as u32;
+    info.fMask = SIF_ALL;
+    unsafe { GetScrollInfo(hwnd, bar, &mut info) };
+    info
+}
+
+/// Scroll the sample along `bar` to `to` pixels, as far as it goes.
+unsafe fn scroll_to(hwnd: HWND, bar: SCROLLBAR_CONSTANTS, to: i32) {
+    unsafe {
+        let info = scroll_info(hwnd, bar);
+        let to = to.clamp(0, (info.nMax - info.nPage as i32 + 1).max(0));
+        let set = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_POS, nPos: to, ..info };
+        SetScrollInfo(hwnd, bar, &set, 1);
+        SAMPLE_VIEW.with_borrow_mut(|v| if bar == SB_HORZ { v.scroll.0 = to } else { v.scroll.1 = to });
+        InvalidateRect(hwnd, null(), 0);
+    }
+}
+
 /// The point a mouse message's `lp` gives, in the client area.
 fn point_of(lp: LPARAM) -> POINT {
     POINT { x: (lp & 0xFFFF) as i16 as i32, y: (lp >> 16 & 0xFFFF) as i16 as i32 }
@@ -3130,9 +3309,12 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
         SAMPLE_VIEW.with_borrow(|v| {
             let Some(palette) = v.palette.filter(|_| !v.labels.is_empty()) else { return };
             if let Some(f) = v.fan(client, dpi) {
+                SetPropW(hwnd, w!("key"), f.key as usize as HANDLE);
                 return draw_fan(dc, look, palette, v, &f, client);
             }
             let (key, back, cells) = v.lay_out(client, dpi);
+            // How large a key is drawn, for the tests to read.
+            SetPropW(hwnd, w!("key"), key as usize as HANDLE);
             fill(&back, palette.background);
 
             let (gap, corner) = (panel::key_gap(key), key / 6);

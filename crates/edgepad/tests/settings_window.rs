@@ -395,6 +395,9 @@ fn it_follows_the_dpi_lays_out_again_when_resized_and_keeps_its_least_size() {
         let (r, s) = (window_rect(editor), window_rect(w));
         (r.right - s.right, r.bottom - s.bottom)
     };
+    // From its least size: it opens as large as CI's screen lets it be.
+    unsafe { SetWindowPos(editor, null_mut(), 0, 0, 120, 90, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) };
+    pump(300);
     let before = corner(save);
     let list0 = height(list);
     let r = window_rect(editor);

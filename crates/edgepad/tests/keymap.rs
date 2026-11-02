@@ -34,7 +34,8 @@
 //! - on 操作, 押して取り込む beside hotkey: 21.
 //!
 //! The sample draws the panel 8 logical pixels in from its top left corner,
-//! keys 44 logical pixels across (as long as the set fits), in the panel's
+//! keys as large as the window lets them be (since Issue #137, from 40 to 64
+//! logical pixels, read from the sample), in the panel's
 //! colours: the chosen key as a held one. Around the panel, it is the
 //! sidebar's colour. A key's colour is read clear of its label, 10 logical
 //! pixels in from its cell's corner. Values are typed as characters,
@@ -88,9 +89,8 @@ const HOTKEY_CAPTURE: i32 = 21;
 const CTRL_ON: i32 = 0;
 const ALT_ON: i32 = 2;
 
-/// Logical pixels: the sample's inset, and its keys.
+/// Logical pixels: the sample's inset.
 const INSET: i32 = 8;
-const KEY: i32 = 44;
 
 /// Key sets used on edges, by a pie key and a page key, and one used
 /// nowhere; written by hand, with comments.
@@ -360,7 +360,8 @@ fn s(editor: HWND, v: i32) -> i32 {
 /// in its key's face, clear of the label.
 fn sample_cell(editor: HWND, column: i32, row: i32) -> POINT {
     let r = window_rect(part(editor, SAMPLE));
-    POINT { x: r.left + s(editor, INSET + KEY * column + 10), y: r.top + s(editor, INSET + KEY * row + 10) }
+    let key = sample_key(editor);
+    POINT { x: r.left + s(editor, INSET + 10) + key * column, y: r.top + s(editor, INSET + 10) + key * row }
 }
 
 /// Give the sample the focus, clicking its corner, clear of its keys.
@@ -981,8 +982,9 @@ fn to_page(editor: HWND, page: usize) {
 /// the sample's right side with `right` and from its bottom with `bottom`.
 fn cell_from(editor: HWND, column: i32, row: i32, right: bool, bottom: bool) -> POINT {
     let r = window_rect(part(editor, SAMPLE));
-    let x = if right { r.right - s(editor, INSET + KEY * (column + 1) - 10) } else { r.left + s(editor, INSET + KEY * column + 10) };
-    let y = if bottom { r.bottom - s(editor, INSET + KEY * (row + 1) - 10) } else { r.top + s(editor, INSET + KEY * row + 10) };
+    let key = sample_key(editor);
+    let x = if right { r.right - s(editor, INSET - 10) - key * (column + 1) } else { r.left + s(editor, INSET + 10) + key * column };
+    let y = if bottom { r.bottom - s(editor, INSET - 10) - key * (row + 1) } else { r.top + s(editor, INSET + 10) + key * row };
     POINT { x, y }
 }
 
@@ -1251,7 +1253,7 @@ fn a_free_key_is_placed_by_its_fields_and_by_dragging() {
     assert_eq!(options_of(&saved, "flat", "A"), ["x=0", "y=0", "w=1.25", "h=1"]);
 
     // Dragged on the top edge, as laid out: a key to the right.
-    let key = s(editor, KEY);
+    let key = sample_key(editor);
     let from = cell_from(editor, 0, 0, false, false);
     drag(editor, from, POINT { x: from.x + key, y: from.y });
     assert!(within_3s(|| text(editor, PLACE_X) == "1"), "x follows at once: {:?}", text(editor, PLACE_X));
@@ -1891,7 +1893,7 @@ fn turned_settings() -> String {
 /// R's square.
 fn turned_middle(editor: HWND) -> POINT {
     let r = window_rect(part(editor, SAMPLE));
-    let key = s(editor, KEY);
+    let key = sample_key(editor);
     POINT { x: r.left + s(editor, INSET) + key * 3 / 4, y: r.top + s(editor, INSET) + key * 3 / 4 }
 }
 
@@ -1901,7 +1903,7 @@ fn the_sample_draws_a_turned_key_turned_and_picks_it_by_its_shape() {
     let _desktop = desktop();
     let app = launch_with(Some(&turned_settings()), None);
     let editor = open_turned(&app);
-    let key = s(editor, KEY);
+    let key = sample_key(editor);
     let c = turned_middle(editor);
     let (tip, corner) = (POINT { x: c.x + key * 55 / 100, y: c.y }, POINT { x: c.x + key * 42 / 100, y: c.y + key * 42 / 100 });
     let r = window_rect(part(editor, SAMPLE));
@@ -1949,11 +1951,12 @@ const SPACED: &str = "[general]\ntheme = light\naccent = #C00000\n\n\
     key = Z | shortcut | Z\n\n\
     [profile.default]\nleft = col\n";
 
-/// Where down the sample's first column its keys are read: near their
-/// left side, clear of their labels, which the smaller keys of
-/// キーマッピング run into.
+/// Where down the sample's first column its keys are read: a quarter in
+/// from their left side, clear of their labels, which the smaller keys of
+/// キーマッピング run into, and of their rounded corners, larger on larger
+/// keys.
 fn down_x(editor: HWND) -> i32 {
-    window_rect(part(editor, SAMPLE)).left + s(editor, INSET + 4)
+    window_rect(part(editor, SAMPLE)).left + s(editor, INSET) + sample_key(editor) / 4
 }
 
 /// Down the sample's first column, the runs of the panel's keys (its face,
@@ -2079,10 +2082,12 @@ fn row_settings(count: usize) -> String {
     text + "key = LAST | shortcut | B\n\n[profile.default]\ntop = row\n"
 }
 
-/// How large the sample draws a key, in pixels.
+/// How large the sample draws a key, in pixels, once it has drawn.
 fn sample_key(editor: HWND) -> i32 {
     let name = wide("key");
-    unsafe { GetPropW(part(editor, SAMPLE), name.as_ptr()) as i32 }
+    let key = || unsafe { GetPropW(part(editor, SAMPLE), name.as_ptr()) as i32 };
+    let _ = within_3s(|| key() != 0);
+    key()
 }
 
 /// Whether the sample shows a scroll bar.

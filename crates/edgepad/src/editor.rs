@@ -30,6 +30,7 @@ use std::ptr::{null, null_mut};
 
 use edgepad_core::config::{self, Accent, Theme};
 use edgepad_core::document::Document;
+use edgepad_core::placement::Placement;
 use edgepad_core::theme::Rgb;
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, FreeLibrary, GetLastError, HANDLE, HMODULE, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, POINT, RECT,
@@ -85,8 +86,10 @@ const DISCARD: usize = 303;
 const CANCEL: usize = 304;
 
 /// Sizes in logical pixels (96 DPI).
-const CLIENT_W: i32 = 900;
-const CLIENT_H: i32 = 660;
+/// Room for a keyboard of a KLE file in キーマッピング's sample, a key
+/// 40 across, above the keyboard to choose from (Issue #137).
+const CLIENT_W: i32 = 1100;
+const CLIENT_H: i32 = 860;
 /// The least the client area may be: the sidebar, and room beside it for
 /// the rows of the pages, a label, a name and a field each.
 const MIN_W: i32 = 900;
@@ -707,9 +710,14 @@ unsafe fn open() -> bool {
         // The focus shows from the start, not only once a key is pressed.
         SendMessageW(hwnd, WM_CHANGEUISTATE, (UIS_CLEAR | UISF_HIDEFOCUS << 16) as usize, 0);
         debug_log!("設定画面を開く");
-        size_for(hwnd, dpi, true);
+        // Where it was when it last closed, if the running EdgePad says so
+        // and it is on a monitor still; else in the middle.
+        let placed = placement().filter(|p| place(hwnd, p));
+        if placed.is_none() {
+            size_for(hwnd, dpi, true);
+        }
         show_page(0);
-        ShowWindow(hwnd, SW_SHOW);
+        ShowWindow(hwnd, if placed.is_some_and(|p| p.maximized) { SW_SHOWMAXIMIZED } else { SW_SHOW });
         SetForegroundWindow(hwnd);
         SetFocus(sidebar);
     }
@@ -748,6 +756,43 @@ unsafe fn size_for(hwnd: HWND, dpi: u32, centre: bool) {
             (now.left.min(a.right - w).max(a.left), now.top.min(a.bottom - h).max(a.top))
         };
         SetWindowPos(hwnd, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+/// The argument that says where the window was (Issue #137), as
+/// `Placement` writes it.
+pub const PLACE_ARG: &str = "--place=";
+
+/// Where the window was, from the command line, if it reads.
+fn placement() -> Option<Placement> {
+    std::env::args_os().skip(1).find_map(|a| a.to_str()?.strip_prefix(PLACE_ARG).and_then(Placement::read))
+}
+
+/// Put the window, not shown yet, where `p` has it when not maximized,
+/// moved only as far as keeps it on its monitor's work area. False if no
+/// monitor has any of it.
+unsafe fn place(hwnd: HWND, p: &Placement) -> bool {
+    unsafe {
+        let r = RECT { left: p.x, top: p.y, right: p.x + p.w, bottom: p.y + p.h };
+        if MonitorFromRect(&r, MONITOR_DEFAULTTONULL).is_null() {
+            return false;
+        }
+        let mut wp: WINDOWPLACEMENT = zeroed();
+        wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+        wp.showCmd = SW_HIDE as u32;
+        wp.rcNormalPosition = r;
+        if SetWindowPlacement(hwnd, &wp) == 0 {
+            return false;
+        }
+        let a = work_area(hwnd);
+        let mut now: RECT = zeroed();
+        GetWindowRect(hwnd, &mut now);
+        let (w, h) = ((now.right - now.left).min(a.right - a.left), (now.bottom - now.top).min(a.bottom - a.top));
+        let (x, y) = (now.left.min(a.right - w).max(a.left), now.top.min(a.bottom - h).max(a.top));
+        if (x, y, w, h) != (now.left, now.top, now.right - now.left, now.bottom - now.top) {
+            SetWindowPos(hwnd, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        true
     }
 }
 

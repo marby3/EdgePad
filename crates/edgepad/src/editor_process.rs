@@ -7,6 +7,10 @@
 //! It runs in a job that ends it when the running EdgePad ends, however
 //! that happens: there is no settings window without an EdgePad to take up
 //! what it saves.
+//!
+//! Where its window is, the running EdgePad follows as it moves, and hands
+//! to the next one it starts (Issue #137): the window opens again where it
+//! closed, until EdgePad ends. Nothing is written for it.
 
 use std::cell::{Cell, RefCell};
 use std::mem::{size_of, zeroed};
@@ -14,12 +18,14 @@ use std::os::windows::io::AsRawHandle;
 use std::process::{Child, Command};
 use std::ptr::{null, null_mut};
 
+use edgepad_core::placement::Placement;
 use windows_sys::Win32::Foundation::{HANDLE, HWND, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectExtendedLimitInformation, SetInformationJobObject,
 };
+use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::log::{self, debug_log};
@@ -31,6 +37,9 @@ pub const ARG: &str = "--settings";
 thread_local! {
     static CHILD: RefCell<Option<Child>> = const { RefCell::new(None) };
     static JOB: Cell<HANDLE> = const { Cell::new(null_mut()) };
+    /// Where the window last was, and the hook that follows it.
+    static PLACE: Cell<Option<Placement>> = const { Cell::new(None) };
+    static FOLLOW: Cell<HWINEVENTHOOK> = const { Cell::new(null_mut()) };
 }
 
 /// The job the settings window's process runs in, made the first time: its
@@ -125,8 +134,12 @@ pub unsafe fn open() {
         if log::enabled() {
             command.arg("--debug");
         }
+        if let Some(p) = PLACE.get() {
+            command.arg(format!("{}{p}", editor::PLACE_ARG));
+        }
         match command.spawn() {
             Ok(child) => {
+                follow(child.id());
                 let job = job();
                 if job.is_null() || AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
                     debug_log!("設定画面のプロセスをジョブに入れられない");
@@ -141,6 +154,42 @@ pub unsafe fn open() {
                 tray::notify("設定画面を開けませんでした");
             }
         }
+    }
+}
+
+/// Follow where the window of process `pid` goes, in place of the last
+/// one's: its moves, sizes, maximizing and minimizing.
+unsafe fn follow(pid: u32) {
+    unsafe {
+        let last = FOLLOW.replace(null_mut());
+        if !last.is_null() {
+            UnhookWinEvent(last);
+        }
+        let flags = WINEVENT_OUTOFCONTEXT;
+        FOLLOW.set(SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, null_mut(), Some(moved), pid, 0, flags));
+    }
+}
+
+/// A window of the settings window's process moved: if it is the settings
+/// window itself, where it is now, as Windows keeps it.
+unsafe extern "system" fn moved(_: HWINEVENTHOOK, _: u32, hwnd: HWND, object: i32, _: i32, _: u32, _: u32) {
+    if object != OBJID_WINDOW || hwnd.is_null() || running().and_then(window) != Some(hwnd) {
+        return;
+    }
+    unsafe {
+        let mut wp: WINDOWPLACEMENT = zeroed();
+        wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+        if GetWindowPlacement(hwnd, &mut wp) == 0 {
+            return;
+        }
+        // Minimized, it opens again as it was before.
+        let maximized = match wp.showCmd as i32 {
+            SW_SHOWMAXIMIZED => true,
+            SW_SHOWMINIMIZED => wp.flags & WPF_RESTORETOMAXIMIZED != 0,
+            _ => false,
+        };
+        let r = wp.rcNormalPosition;
+        PLACE.set(Some(Placement { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top, maximized }));
     }
 }
 
