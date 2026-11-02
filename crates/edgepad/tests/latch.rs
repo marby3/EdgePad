@@ -189,7 +189,7 @@ fn every_way_of_letting_go_releases_a_latched_modifier() {
     let _desktop = desktop();
     let release_by: [(&str, fn(&Running)); 3] = [
         ("全キー解放", |app| choose(app, "全キー解放")),
-        ("パネルを隠す", |app| choose(app, "左辺")),
+        ("パネルを隠す", |app| choose(app, "左エッジ")),
         ("画面ロック", |app| {
             let tray: HWND = find_window(app, TRAY_CLASS, false);
             unsafe { SendMessageW(tray, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK as usize, 0) };
@@ -208,7 +208,7 @@ fn every_way_of_letting_go_releases_a_latched_modifier() {
 
         // The latch is forgotten: the next tap latches anew.
         if panels_now(&app).is_empty() {
-            choose(&app, "左辺");
+            choose(&app, "左エッジ");
         }
         let panel = left_panel(&app);
         tap(&mut touch, at(panel, CTRL_KEY));

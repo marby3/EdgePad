@@ -116,7 +116,7 @@ fn a_short_swipe_shows_the_panel_normally_and_an_inward_flick_lets_no_key_go() {
     let backdrops = backdrops();
     let app = launch_with(Some(&settings(DIMMING)), None);
     find_panel(&app);
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     assert!(panels_now(&app).iter().all(|r| r.left != primary_monitor().left), "precondition: hidden");
     // Half a key in from the handle, with the mouse (on CI a touch from the
     // screen edge never reaches the handle), and let go there.

@@ -43,7 +43,7 @@ fn a_quick_flick_from_a_keys_centre_to_the_edge_hides_a_one_column_panel() {
     drop(touch);
 
     // The mouse, the same way from B.
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let panel = left_panel(&app);
     let b = key_centre(panel, 1);
     let before = log.keys().len();

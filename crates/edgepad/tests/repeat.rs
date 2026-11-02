@@ -147,7 +147,7 @@ fn hiding_the_panel_stops_a_repeat_under_a_finger() {
 
     touch.down(1, at(panel, 0));
     touch.hold(400);
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let hidden = taps(&log, BRACKET);
     pump(500);
     assert_eq!(taps(&log, BRACKET), hidden, "no repeat once the panel is hidden");

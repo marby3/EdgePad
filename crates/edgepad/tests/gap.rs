@@ -76,7 +76,7 @@ fn the_bottom_panel_and_handle_keep_off_the_screens_edge_and_the_others_do_not()
     let gap = taskbar() + 16;
     let app = launch_with(Some(&pads(&format!("[edge.bottom]\ngap = {gap}\n"))), None);
     find_panel(&app);
-    choose(&app, "下辺");
+    choose(&app, "下エッジ");
     assert!(within_3s(|| bottom_panel(&app).is_none()), "precondition: the bottom panel hidden");
     let x = (m.left + m.right) / 2;
     tap(POINT { x, y: m.bottom - px(gap) + px(8) });
@@ -117,7 +117,7 @@ fn the_mouse_at_the_screens_edge_still_shows_a_panel_kept_off_it() {
     let text = pads(&format!("[general]\nhover_ms = 400\n[edge.bottom]\ngap = {gap}\n"));
     let app = launch_with_args(Some(&text), None, &["--debug"]);
     find_panel(&app);
-    choose(&app, "下辺");
+    choose(&app, "下エッジ");
     assert!(within_3s(|| bottom_panel(&app).is_none()), "precondition: the bottom panel hidden");
     let at = POINT { x: away.x, y: work_area().bottom.min(m.bottom) - 1 };
     // Moved on to it, then along it, as a mouse goes: on CI's runners, one

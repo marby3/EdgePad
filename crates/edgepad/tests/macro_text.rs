@@ -75,7 +75,7 @@ fn the_panel_works_while_a_macro_waits_and_hiding_it_drops_the_rest() {
 
     let before = log.keys().len();
     tap(&mut touch, at(panel, 2));
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     pump(2200);
     assert_eq!(log.keys()[before..].len(), 4, "only Ctrl+S: the rest went with the panel: {:?}", log.keys());
 }

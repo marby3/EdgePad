@@ -80,7 +80,7 @@ fn gone_whole(app: &Running) -> bool {
     }
 }
 
-/// The tray's 左辺 command, posted without waiting for it.
+/// The tray's 左エッジ command, posted without waiting for it.
 struct LeftToggle {
     tray: windows_sys::Win32::Foundation::HWND,
     id: u32,
@@ -88,7 +88,7 @@ struct LeftToggle {
 
 impl LeftToggle {
     fn of(app: &Running) -> LeftToggle {
-        let id = menu_item(app, "左辺").id;
+        let id = menu_item(app, "左エッジ").id;
         LeftToggle { tray: find_window(app, TRAY_CLASS, false), id }
     }
 

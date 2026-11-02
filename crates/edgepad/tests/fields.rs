@@ -2,7 +2,7 @@
 //! field for every setting of [general] and [edge.*] (辺と表示 and 操作
 //! then), and the figure of the screen's four edges (spec 7.1).
 //!
-//! Since Issue #107 the rows are on the pages 辺ごとの設定 (the figure and
+//! Since Issue #107 the rows are on the pages エッジごとの設定 (the figure and
 //! the edge's rows), 見た目, タッチと修飾キー and 表示と非表示.
 //!
 //! A row of a page is a label, the setting's name, its field (an Edit, a
@@ -625,7 +625,7 @@ fn a_save_that_fails_leads_to_the_line_at_fault() {
     save(editor);
     assert!(within_3s(|| status(editor).contains("行目")), "the line and reason: {:?}", status(editor));
     click_link(editor, part(editor, STATUS));
-    assert!(within_3s(|| heading(editor) == "辺ごとの設定"), "its page");
+    assert!(within_3s(|| heading(editor) == "エッジごとの設定"), "its page");
     assert!(within_3s(|| focus_of(editor) == field(editor, "enabled")), "the top edge's enabled has the focus");
     assert!(test_events(&app).iter().any(|e| e == "settings: edge top"), "the top edge chosen");
     assert!(status(editor).contains("行目"), "the line stays: {:?}", status(editor));
@@ -722,7 +722,7 @@ fn the_new_fields_and_figure_follow_the_theme_the_dpi_and_the_keyboard() {
     drop(dark);
 
     // The keyboard: from the sidebar, Tab reaches the first field, and on
-    // 辺ごとの設定 through the figure to the edge's fields.
+    // エッジごとの設定 through the figure to the edge's fields.
     wait_in_front(editor);
     click(centre(sidebar_item(editor, LOOK_PAGE)));
     settle(editor);
@@ -768,7 +768,7 @@ fn an_edge_field_not_written_shows_the_common_value_marked() {
 }
 
 // Issue #117, AC3: how far the edge keeps off the screen's edge, `gap`, on
-// 辺ごとの設定 (and 辺（共通）): a number of logical pixels.
+// エッジごとの設定 (and エッジ（共通）): a number of logical pixels.
 #[test]
 fn the_gap_from_the_screens_edge_is_a_field_of_each_edge() {
     let _desktop = desktop();
@@ -794,7 +794,7 @@ gap = 24"), "the bottom's section added with it: {saved}");
 }
 
 // Issue #127, AC4: an edge started hidden shows its handle only, at the
-// start and when the file is read again; 辺ごとの設定 sets it.
+// start and when the file is read again; エッジごとの設定 sets it.
 #[test]
 fn an_edge_set_to_start_hidden_is_hidden_at_the_start_and_on_a_reload() {
     let _desktop = desktop();
@@ -808,13 +808,13 @@ fn an_edge_set_to_start_hidden_is_hidden_at_the_start_and_on_a_reload() {
     assert!(bottom_handle(&app), "its handle is there to show it");
 
     // Shown, then the file read again: hidden again.
-    choose(&app, "下辺");
+    choose(&app, "下エッジ");
     assert!(within_3s(|| bottom_shown(&app)), "precondition: shown from the tray");
     std::fs::write(exe_dir(&app).join("edgepad.ini"), format!("{text}; read again\n")).expect("save edgepad.ini");
     assert!(within_3s(|| !bottom_shown(&app)), "hidden again on a reload");
     left_panel(&app);
 
-    // 辺ごとの設定: 起動した時, shown or hidden.
+    // エッジごとの設定: 起動した時, shown or hidden.
     let editor = open_page(&app, EDGES_PAGE);
     select_edge(&app, editor, "bottom");
     assert_eq!(options(editor, "start"), ["出す", "隠す"]);

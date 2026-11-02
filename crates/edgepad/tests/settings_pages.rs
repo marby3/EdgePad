@@ -176,7 +176,7 @@ fn the_sidebar_has_eight_pages_by_use_and_every_setting_is_on_one() {
     assert_eq!(n, 8, "eight pages");
     assert_eq!(
         PAGES,
-        ["キー配置", "キーマッピング", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"]
+        ["キー配置", "キーマッピング", "アプリ別", "エッジ（共通）", "エッジごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"]
     );
     for (page, names) in ON_PAGES {
         show_page(editor, page);

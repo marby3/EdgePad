@@ -99,15 +99,15 @@ fn the_tray_menu_lists_every_item_and_greys_edges_without_a_panel() {
     find_panel(&app);
 
     let items = tray_menu(&app);
-    let wanted = ["左辺", "右辺", "上辺", "下辺", "プロファイル「default」を固定", "設定…", "設定ファイルを開く", "設定を再読込", "一時停止", "全キー解放", "自動起動", "終了"];
+    let wanted = ["左エッジ", "右エッジ", "上エッジ", "下エッジ", "プロファイル「default」を固定", "設定…", "設定ファイルを開く", "設定を再読込", "一時停止", "全キー解放", "自動起動", "終了"];
     let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
     assert_eq!(items.len(), wanted.len(), "items: {texts:?}");
     for (item, want) in items.iter().zip(wanted) {
         assert!(item.text.contains(want), "{want} expected, found {texts:?}");
     }
     let edge = |name: &str| items.iter().find(|i| i.text.contains(name)).unwrap().clone();
-    assert!(edge("左辺").checked && !edge("左辺").grayed, "the left edge is shown and can be chosen");
-    for name in ["右辺", "上辺", "下辺"] {
+    assert!(edge("左エッジ").checked && !edge("左エッジ").grayed, "the left edge is shown and can be chosen");
+    for name in ["右エッジ", "上エッジ", "下エッジ"] {
         assert!(edge(name).grayed && !edge(name).checked, "{name} has no panel: greyed");
     }
 }
@@ -125,10 +125,10 @@ fn an_edge_item_hides_and_shows_its_panel_and_survives_a_reload_but_not_a_restar
     let mut touch = Touch::new();
     touch.down(1, key_centre(panel_on(&app, "left"), 0));
     touch.hold(150);
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     assert_eq!(shown(&app), ["right"], "the left panel is hidden");
     assert_eq!(log.keys(), [d(A), u(A)], "the key held on it is released");
-    assert!(!menu_item(&app, "左辺").checked, "no check while hidden");
+    assert!(!menu_item(&app, "左エッジ").checked, "no check while hidden");
     touch.up(1);
 
     save(&app, &keys_on(&["left", "right"], 3));
@@ -136,11 +136,11 @@ fn an_edge_item_hides_and_shows_its_panel_and_survives_a_reload_but_not_a_restar
     pump(300);
     assert_eq!(shown(&app), ["right"], "still hidden after the reload");
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     assert_eq!(shown(&app), ["left", "right"], "shown again");
-    assert!(menu_item(&app, "左辺").checked);
+    assert!(menu_item(&app, "左エッジ").checked);
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     drop(app);
     let app = launch_with(Some(&text), None);
     find_panel(&app);
@@ -198,7 +198,7 @@ fn pausing_hides_every_panel_until_it_is_chosen_again() {
     let _desktop = desktop();
     let app = launch_with(Some(&keys_on(&["left", "right"], 2)), None);
     find_panel(&app);
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     assert_eq!(shown(&app), ["right"]);
 
     let log = KeyLog::start();
@@ -321,7 +321,7 @@ fn a_second_launch_toggles_every_edge_of_the_running_one_and_exits_zero() {
     let _desktop = desktop();
     let app = launch_with(Some(&keys_on(&["left", "right"], 2)), None);
     find_panel(&app);
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     assert_eq!(shown(&app), ["right"]);
 
     assert_eq!(launch_again(&app).code(), Some(0), "the second launch exits 0");

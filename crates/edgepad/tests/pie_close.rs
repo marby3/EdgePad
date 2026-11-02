@@ -191,7 +191,7 @@ fn shown(app: &Running) -> bool {
 fn hiding_the_panel_closes_the_menu() {
     let _desktop = desktop();
     let app = launch_with(Some(&settings()), None);
-    for (how, toggle) in [("the tray's edge item", "左辺"), ("pause", "一時停止")] {
+    for (how, toggle) in [("the tray's edge item", "左エッジ"), ("pause", "一時停止")] {
         let id = menu_item(&app, toggle).id;
         closes_on(&app, how, || command(&app, id));
         command(&app, id);

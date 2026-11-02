@@ -74,7 +74,7 @@ fn resting_the_mouse_on_the_handle_for_hover_ms_shows_the_panel() {
     let _desktop = desktop();
     let _cursor = Cursor::save();
     let app = launch_pad(&format!("hover_ms = {HOVER_MS}"));
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
 
     // 150 ms on the handle, then away: too short.
     mouse_move_to(centre(left_handle(&app)));
@@ -89,7 +89,7 @@ fn resting_the_mouse_on_the_handle_for_hover_ms_shows_the_panel() {
     drop(app);
 
     let app = launch_pad("");
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     mouse_move_to(centre(left_handle(&app)));
     pump(1000);
     assert!(!shown(&app), "with hover_ms off, resting on the handle shows nothing");
@@ -101,7 +101,7 @@ fn a_panel_shown_by_hovering_hides_hover_ms_after_the_mouse_leaves_it() {
     let _desktop = desktop();
     let _cursor = Cursor::save();
     let app = launch_pad(&format!("hover_ms = {HOVER_MS}"));
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
 
     // Straight off the panel, which came up under the resting mouse and
     // never saw it move.
@@ -145,10 +145,10 @@ fn a_panel_shown_by_hovering_hides_hover_ms_after_the_mouse_leaves_it() {
     assert!(shown(&app), "back on the panel before hover_ms: it stays");
 
     // Shown from the tray, not by hovering: leaving it hides nothing.
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     assert!(!shown(&app), "precondition: hidden from the tray");
     mouse_move_to(away());
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let panel = left_panel(&app);
     mouse_move_to(key_centre(panel, 0));
     mouse_move_to(away());
@@ -181,7 +181,7 @@ fn auto_hide_ms_after_it_was_shown_or_last_pressed_the_panel_hides() {
     pump(900);
     assert!(!shown(&app), "auto_hide_ms after A was let go it is hidden");
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     assert!(shown(&app), "precondition: shown from the tray");
     pump(1000);
     assert!(shown(&app), "1000 ms after it was shown again it is still there");
@@ -210,7 +210,7 @@ fn neither_counts_while_a_key_is_held_or_a_modifier_latched() {
     assert!(!shown(&app), "auto_hide_ms after the release: hidden");
 
     // And for a latched modifier.
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let ctrl = key_centre(left_panel(&app), 1);
     touch.down(1, ctrl);
     touch.up(1);

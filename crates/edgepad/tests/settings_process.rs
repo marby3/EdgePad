@@ -184,16 +184,16 @@ fn opening_and_closing_the_window_leaves_the_running_edgepad_as_it_was() {
     touch.up(1);
     touch.down(2, key_centre(left, 0));
     choose(&app, "固定");
-    choose(&app, "右辺");
+    choose(&app, "右エッジ");
     let before = log.keys();
     assert_eq!(before, [(VK_LCONTROL, false), (b'A' as u16, false)], "precondition: Ctrl latched, A held");
     let item = |text: &str| menu_item(&app, text);
-    assert!(item("固定").checked && !item("右辺").checked, "precondition: pinned, right hidden");
+    assert!(item("固定").checked && !item("右エッジ").checked, "precondition: pinned, right hidden");
 
     open_and_close(&app, id);
     assert_eq!(log.keys(), before, "nothing let go: Ctrl still latched, A still held");
     assert!(item("固定").checked, "still pinned");
-    assert!(!item("右辺").checked, "the right edge still hidden");
+    assert!(!item("右エッジ").checked, "the right edge still hidden");
     touch.up(2);
     touch.down(1, key_centre(left, 1));
     touch.up(1);
