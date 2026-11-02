@@ -5,6 +5,7 @@
 //! the line. Names of sections, settings, keys and kinds ignore case. Every
 //! mistake is collected with its line number, so one read reports them all.
 
+use crate::flick::Dir;
 use crate::keys::{Combo, Key};
 use crate::kle::{self, KleKey};
 use crate::layout::Place;
@@ -246,6 +247,20 @@ pub struct KeyDef {
     /// Room left after it along the edge, in quarter keys: the `space`
     /// lines after its key line (Issue #139). 0 for none.
     pub space: u8,
+    /// Its flicks, by `flick::Dir` (Issue #157): the `flick` lines after
+    /// its key line.
+    pub flicks: Flicks,
+}
+
+/// A key's flicks, up, down, left and right (`flick::Dir as usize`).
+pub type Flicks = [Option<Flick>; 4];
+
+/// What a key does flicked one way: a pie item's kind of action, and the
+/// label its guide shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Flick {
+    pub label: String,
+    pub action: Action,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -410,6 +425,8 @@ struct Parser<'a> {
     layouts: Vec<SetLayout>,
     key_lines: Vec<Vec<usize>>,
     space_lines: Vec<Vec<usize>>,
+    /// Each set's flick lines (Issue #157).
+    flick_lines: Vec<Vec<usize>>,
     section: Section,
     /// Section names seen so far (lower case).
     seen: Vec<String>,
@@ -443,6 +460,7 @@ impl Default for Parser<'_> {
             layouts: Vec::new(),
             key_lines: Vec::new(),
             space_lines: Vec::new(),
+            flick_lines: Vec::new(),
             config: Config {
                 general: General::default(),
                 edges: [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom].map(EdgeConfig::of),
@@ -489,7 +507,7 @@ impl Parser<'_> {
             return;
         }
         let is_key = matches!(self.section, Section::Set(_));
-        if !(is_key && matches!(name.as_str(), "key" | "space")) {
+        if !(is_key && matches!(name.as_str(), "key" | "space" | "flick")) {
             if self.given.contains(&name) {
                 return self.error(n, format!("設定「{name}」が2回ある"));
             }
@@ -535,6 +553,7 @@ impl Parser<'_> {
                 self.layouts.push(SetLayout::Edge);
                 self.key_lines.push(Vec::new());
                 self.space_lines.push(Vec::new());
+                self.flick_lines.push(Vec::new());
                 Section::Set(self.config.sets.len() - 1)
             }
             Some(("profile", profile)) if valid_name(profile) => {
@@ -650,8 +669,11 @@ impl Parser<'_> {
         if name == "space" {
             return self.space(n, set, value);
         }
+        if name == "flick" {
+            return self.flick(n, set, value);
+        }
         if name != "key" {
-            return Err(format!("[set.*] に書けるのは key・space・layout だけ（「{name}」）"));
+            return Err(format!("[set.*] に書けるのは key・space・flick・layout だけ（「{name}」）"));
         }
         self.set_lines[set].1 = true;
         let key = key_def(value)?;
@@ -683,6 +705,41 @@ impl Parser<'_> {
         };
         key.space = key.space.saturating_add(q as u8);
         self.space_lines[set].push(n);
+        Ok(())
+    }
+
+    /// A `flick` line (Issue #157): `direction | label | kind | content`, a
+    /// way the set's last key so far is flicked, to a pie item's kind of
+    /// action.
+    fn flick(&mut self, n: usize, set: usize, value: &str) -> Result<(), String> {
+        const FORM: &str = "flick は「方向 | ラベル | 種類 | 内容」の形で書く（オプションは書けない）";
+        let (way, rest) = value.split_once('|').ok_or(FORM)?;
+        let way = way.trim();
+        let dir = Dir::parse(way).ok_or_else(|| format!("flick の方向は up / down / left / right のどれか（「{way}」）"))?;
+        if rest.split('|').count() != 3 {
+            return Err(FORM.into());
+        }
+        let def = key_def(rest)?;
+        if !def.action.is_pie_item() {
+            return Err(format!("flick に置けるのは shortcut / macro / text / run / page / none（「{}」）", def.action.kind()));
+        }
+        let Some(key) = self.config.sets[set].keys.last_mut() else {
+            return Err("flick はキーの後ろに書く（前に key 行がない）".into());
+        };
+        match &key.action {
+            Action::Trans => return Err("trans のキーには flick を書けない（元のキーセットのキーのフリックになる）".into()),
+            action if !action.is_pie_item() => return Err(format!("{} のキーにはフリックを付けられない", action.kind())),
+            _ => {}
+        }
+        if key.flicks[dir as usize].is_some() {
+            return Err(format!("同じキーに flick = {} が2つある", dir.name()));
+        }
+        if let Action::Page(Page::Set(to)) = &def.action {
+            self.refs.push((n, to.clone()));
+            self.not_layers.push((n, to.clone(), "page キー"));
+        }
+        key.flicks[dir as usize] = Some(Flick { label: def.label, action: def.action });
+        self.flick_lines[set].push(n);
         Ok(())
     }
 
@@ -765,6 +822,11 @@ impl Parser<'_> {
         for (line, name) in std::mem::take(&mut self.pies) {
             // A layer is told above.
             let Some(set) = self.config.set(&name).filter(|_| layer_name(&name).is_none()) else { continue };
+            // An item runs as it lifts: it is not flicked (Issue #157).
+            let at = self.config.sets.iter().position(|s| s.name == name).unwrap_or_default();
+            for &flick in &self.flick_lines[at] {
+                self.errors.push(Error { line: flick, reason: format!("パイの項目（{name}）のキーには flick を書けない") });
+            }
             for reason in pie_problems(set) {
                 self.errors.push(Error { line, reason });
             }
@@ -833,7 +895,7 @@ impl Parser<'_> {
                     for (k, (place, label)) in kle.into_iter().enumerate() {
                         match set.keys.get_mut(k) {
                             Some(key) => key.place = Some(place),
-                            None => set.keys.push(KeyDef { label, action: Action::None, width: 1, place: Some(place), space: 0 }),
+                            None => set.keys.push(KeyDef { label, action: Action::None, width: 1, place: Some(place), space: 0, flicks: Default::default() }),
                         }
                     }
                     self.kle_sets.push(i);
@@ -1005,7 +1067,7 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
     if let Some((k, _)) = options.first() {
         return Err(format!("{kind} キーに知らないオプション「{k}」がある"));
     }
-    Ok(KeyDef { label: label.into(), action, width, place, space: 0 })
+    Ok(KeyDef { label: label.into(), action, width, place, space: 0, flicks: Default::default() })
 }
 
 /// Furthest a free layout's key sits from its top left, and largest a key
@@ -1299,6 +1361,6 @@ pub fn fallback_keys() -> Vec<KeyDef> {
     crate::keys::M0_LABELS
         .iter()
         .zip(actions)
-        .map(|(label, action)| KeyDef { label: (*label).into(), action, width: 1, place: None, space: 0 })
+        .map(|(label, action)| KeyDef { label: (*label).into(), action, width: 1, place: None, space: 0, flicks: Default::default() })
         .collect()
 }

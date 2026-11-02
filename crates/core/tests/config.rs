@@ -64,7 +64,7 @@ fn combo(mods: Mods, key: Key) -> Combo {
 }
 
 fn key(label: &str, action: Action) -> KeyDef {
-    KeyDef { label: label.into(), action, width: 1, place: None, space: 0 }
+    KeyDef { label: label.into(), action, width: 1, place: None, space: 0, flicks: Default::default() }
 }
 
 // AC1
@@ -152,7 +152,7 @@ top = more
             key("電卓", Action::Run("calc.exe".into())),
             key("戻る", Action::Page(Page::Prev)),
             key("切替", Action::Page(Page::Set("more".into()))),
-            KeyDef { label: "広い".into(), action: Action::Hold(Key::Shift), width: 2, place: None, space: 0 },
+            KeyDef { label: "広い".into(), action: Action::Hold(Key::Shift), width: 2, place: None, space: 0, flicks: Default::default() },
             key("既定", Action::Repeat { combo: combo(Mods::NONE, Key::Left), interval_ms: 50 }),
         ]
     );
