@@ -1,5 +1,5 @@
-//! The rows of the pages of [general] and the edges (spec 7.1): 辺（共通）
-//! ([edge]), 辺ごとの設定 ([edge.*], with a figure of the screen whose edges
+//! The rows of the pages of [general] and the edges (spec 7.1): エッジ（共通）
+//! ([edge]), エッジごとの設定 ([edge.*], with a figure of the screen whose edges
 //! choose the edge its rows edit), 見た目, タッチと修飾キー and 表示と非表示.
 //! The edges' rows are the same on both edge pages, editing [edge] on one
 //! and the chosen edge on the other (Issue #107).
@@ -8,7 +8,7 @@
 //! field (an edit control, a drop-down list, or a check box), a note of
 //! what it takes, shown only while the field has the focus or the mouse,
 //! and 既定に戻す when the setting is written in the file, or 既定値 when it
-//! is not (共通 and 共通に戻す, for an edge's setting, on 辺ごとの設定). The
+//! is not (共通 and 共通に戻す, for an edge's setting, on エッジごとの設定). The
 //! parts have control ids by row (FIELD, RESET, LABEL, NOTE, MARK, NAME +
 //! the row's index), which the tests go by too. hotkey has 押して取り込む
 //! (CAPTURE) beside it too, to press the keys rather than write them
@@ -86,7 +86,7 @@ pub(super) const EM_SETREADONLY: u32 = 0x00CF;
 enum Group {
     /// [general]'s settings of the look, on 見た目.
     Look,
-    /// [edge] on 辺（共通）, the edge chosen in the figure on 辺ごとの設定.
+    /// [edge] on エッジ（共通）, the edge chosen in the figure on エッジごとの設定.
     Edge,
     /// [general]'s settings of what touches do, on タッチと修飾キー.
     Touch,
@@ -151,8 +151,8 @@ const ROWS: [Spec; 23] = [
     spec(E, "gap", "画面の端からの距離", "", Number, 1),
     spec(E, "start", "起動した時", "", Choice(&[("shown", "出す"), ("hidden", "隠す")]), 0),
     spec(E, "monitor", "モニター", "", Monitor, 0),
-    spec(E, "columns", "列数（左右の辺）", "", Columns, 1),
-    spec(E, "rows", "行数（上下の辺）", "", Rows, 1),
+    spec(E, "columns", "列数（左右のエッジ）", "", Columns, 1),
+    spec(E, "rows", "行数（上下のエッジ）", "", Rows, 1),
     spec(E, "handle", "ハンドル", "", Handle, 0),
     spec(E, "handle の幅", "ハンドルの幅", "", HandlePart(0), 1),
     spec(E, "handle の長さ", "ハンドルの長さ", "", HandlePart(1), 1),
@@ -273,7 +273,7 @@ pub(super) fn is_reset(id: usize) -> bool {
     (RESET..RESET + ROWS.len()).contains(&id)
 }
 
-/// The section row `spec` edits: [edge] on 辺（共通）.
+/// The section row `spec` edits: [edge] on エッジ（共通）.
 fn section_of(e: &Editor, spec: &Spec) -> String {
     match spec.group {
         E if e.page == COMMON_PAGE => "edge".into(),
@@ -443,7 +443,7 @@ pub(super) fn themed(e: &Editor) -> (Vec<HWND>, Vec<HWND>) {
 }
 
 /// Whether row `i` is on the page shown: the edges' rows on both edge
-/// pages, columns on 辺ごとの設定 for the left and right edges only, and
+/// pages, columns on エッジごとの設定 for the left and right edges only, and
 /// rows for the top and bottom.
 fn on_page(e: &Editor, i: usize) -> bool {
     let spec = &ROWS[i];
@@ -462,7 +462,7 @@ fn on_page(e: &Editor, i: usize) -> bool {
 }
 
 /// Place the rows of the page shown in `left`, `top` to `bottom`, one
-/// under another: on 辺ごとの設定, under the figure. Rows come closer where
+/// under another: on エッジごとの設定, under the figure. Rows come closer where
 /// the window has less room than they ask for. Kept, to place them again as
 /// the page shown changes.
 pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, bottom: i32) {

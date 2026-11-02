@@ -511,7 +511,7 @@ impl Parser<'_> {
             None if name == "edge" => Section::Edges,
             Some(("edge", edge)) => match Edge::parse(edge) {
                 Some(edge) => Section::Edge(edge),
-                None => return self.error(n, format!("知らないセクション [{name}]（辺は left / right / top / bottom）")),
+                None => return self.error(n, format!("知らないセクション [{name}]（エッジは left / right / top / bottom）")),
             },
             Some(("set", set)) if valid_name(set) => {
                 self.config.sets.push(KeySet { name: set.into(), keys: Vec::new() });
@@ -611,7 +611,7 @@ impl Parser<'_> {
             }
             "columns" | "rows" if (name == "columns") != edge.is_side() => {
                 let want = if edge.is_side() { "columns" } else { "rows" };
-                return Err(format!("この辺では「{name}」ではなく「{want}」を使う"));
+                return Err(format!("このエッジでは「{name}」ではなく「{want}」を使う"));
             }
             "columns" | "rows" => e.lines = ranged(name, name, value)? as u8,
             "handle" => e.handle = handle(value)?,

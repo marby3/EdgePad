@@ -54,10 +54,10 @@ const HOTKEY_ID: i32 = 1;
 const CMD_EDGE: usize = 1010;
 
 const EDGES: [(Edge, *const u16); 4] = [
-    (Edge::Left, w!("左辺を表示(&L)")),
-    (Edge::Right, w!("右辺を表示(&R)")),
-    (Edge::Top, w!("上辺を表示(&T)")),
-    (Edge::Bottom, w!("下辺を表示(&B)")),
+    (Edge::Left, w!("左エッジを表示(&L)")),
+    (Edge::Right, w!("右エッジを表示(&R)")),
+    (Edge::Top, w!("上エッジを表示(&T)")),
+    (Edge::Bottom, w!("下エッジを表示(&B)")),
 ];
 
 static TRAY: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
