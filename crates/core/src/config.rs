@@ -243,6 +243,9 @@ pub struct KeyDef {
     pub width: u8,
     /// Where it sits in a free layout (x, y, w, h).
     pub place: Option<Place>,
+    /// Room left after it along the edge, in quarter keys: the `space`
+    /// lines after its key line (Issue #139). 0 for none.
+    pub space: u8,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -398,9 +401,11 @@ struct Parser<'a> {
     config: Config,
     /// Gives the files KLE layouts name.
     read: Option<&'a mut dyn FnMut(&str) -> Result<Vec<u8>, String>>,
-    /// Each set's layout, and the line of each of its keys.
+    /// Each set's layout, and the line of each of its keys and of its
+    /// space lines.
     layouts: Vec<SetLayout>,
     key_lines: Vec<Vec<usize>>,
+    space_lines: Vec<Vec<usize>>,
     section: Section,
     /// Section names seen so far (lower case).
     seen: Vec<String>,
@@ -429,6 +434,7 @@ impl Default for Parser<'_> {
             read: None,
             layouts: Vec::new(),
             key_lines: Vec::new(),
+            space_lines: Vec::new(),
             config: Config {
                 general: General::default(),
                 edges: [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom].map(EdgeConfig::of),
@@ -473,7 +479,7 @@ impl Parser<'_> {
             return;
         }
         let is_key = matches!(self.section, Section::Set(_));
-        if !(is_key && name == "key") {
+        if !(is_key && matches!(name.as_str(), "key" | "space")) {
             if self.given.contains(&name) {
                 return self.error(n, format!("設定「{name}」が2回ある"));
             }
@@ -518,6 +524,7 @@ impl Parser<'_> {
                 self.set_lines.push((n, false));
                 self.layouts.push(SetLayout::Edge);
                 self.key_lines.push(Vec::new());
+                self.space_lines.push(Vec::new());
                 Section::Set(self.config.sets.len() - 1)
             }
             Some(("profile", profile)) if valid_name(profile) => {
@@ -624,8 +631,11 @@ impl Parser<'_> {
         if name == "layout" {
             return self.layout(n, set, value);
         }
+        if name == "space" {
+            return self.space(n, set, value);
+        }
         if name != "key" {
-            return Err(format!("[set.*] に書けるのは key と layout だけ（「{name}」）"));
+            return Err(format!("[set.*] に書けるのは key・space・layout だけ（「{name}」）"));
         }
         self.set_lines[set].1 = true;
         let key = key_def(value)?;
@@ -641,6 +651,18 @@ impl Parser<'_> {
             _ => {}
         }
         self.config.sets[set].keys.push(key);
+        Ok(())
+    }
+
+    /// A `space` line: room after the set's last key so far, added to any
+    /// space line before it.
+    fn space(&mut self, n: usize, set: usize, value: &str) -> Result<(), String> {
+        let q = quarters("space", value, 1, 4 * MAX_SPACE)?;
+        let Some(key) = self.config.sets[set].keys.last_mut() else {
+            return Err("space はキーの後ろに書く（前に key 行がない）".into());
+        };
+        key.space = key.space.saturating_add(q as u8);
+        self.space_lines[set].push(n);
         Ok(())
     }
 
@@ -744,6 +766,11 @@ impl Parser<'_> {
     fn lay_out_sets(&mut self) {
         for (i, layout) in std::mem::take(&mut self.layouts).into_iter().enumerate() {
             let lines = std::mem::take(&mut self.key_lines[i]);
+            if !matches!(layout, SetLayout::Edge) {
+                for &line in &self.space_lines[i] {
+                    self.errors.push(Error { line, reason: "space はエッジに沿って並べるキーセットで書く（自由配列と KLE はキーの位置で空ける）".into() });
+                }
+            }
             let set = &mut self.config.sets[i];
             let placed: Vec<bool> = set.keys.iter().map(|k| k.place.is_some()).collect();
             let lines_where = |want: bool| lines.iter().zip(&placed).filter(move |(_, p)| **p == want).map(|(l, _)| *l);
@@ -769,7 +796,7 @@ impl Parser<'_> {
                     for (k, (place, label)) in kle.into_iter().enumerate() {
                         match set.keys.get_mut(k) {
                             Some(key) => key.place = Some(place),
-                            None => set.keys.push(KeyDef { label, action: Action::None, width: 1, place: Some(place) }),
+                            None => set.keys.push(KeyDef { label, action: Action::None, width: 1, place: Some(place), space: 0 }),
                         }
                     }
                 }
@@ -900,13 +927,15 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
     if let Some((k, _)) = options.first() {
         return Err(format!("{kind} キーに知らないオプション「{k}」がある"));
     }
-    Ok(KeyDef { label: label.into(), action, width, place })
+    Ok(KeyDef { label: label.into(), action, width, place, space: 0 })
 }
 
 /// Furthest a free layout's key sits from its top left, and largest a key
 /// is, in keys.
 pub const MAX_PLACE: i32 = 40;
 pub const MAX_SIZE: i32 = 8;
+/// Most room a space line leaves, in keys (Issue #139).
+pub const MAX_SPACE: i32 = 2;
 
 /// `value` in quarters of a key: a number of keys in steps of 0.25 (1,
 /// 1.5, 0.25, 2.75), from `min` to `max` quarters.
@@ -926,6 +955,11 @@ fn quarters(name: &str, value: &str, min: i32, max: i32) -> Result<i32, String> 
     };
     q.filter(|q| (min..=max).contains(q))
         .ok_or_else(|| format!("{name} は {}〜{} の 0.25 刻みの数（「{value}」）", show_quarters(min), show_quarters(max)))
+}
+
+/// The room a `space` line's `value` leaves, in quarter keys, if it reads.
+pub fn space_quarters(value: &str) -> Option<u8> {
+    quarters("space", value.trim(), 1, 4 * MAX_SPACE).ok().map(|q| q as u8)
 }
 
 /// The place key line `value` writes, as `key_def` reads it, whatever the
@@ -1181,6 +1215,6 @@ pub fn fallback_keys() -> Vec<KeyDef> {
     crate::keys::M0_LABELS
         .iter()
         .zip(actions)
-        .map(|(label, action)| KeyDef { label: (*label).into(), action, width: 1, place: None })
+        .map(|(label, action)| KeyDef { label: (*label).into(), action, width: 1, place: None, space: 0 })
         .collect()
 }

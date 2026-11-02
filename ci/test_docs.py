@@ -158,6 +158,21 @@ class DocsTest(unittest.TestCase):
         self.assertNotIn("辺", rest, "the reference past its glossary")
         self.assertIn("エッジ（共通）", text(READMES["en"]), "the English README's Japanese page names")
 
+    # Issue #139, AC6: the shipped settings leave room with space, and the
+    # spec and both references say how.
+    def test_space_is_shipped_and_written_up(self):
+        preset = text(ROOT / "presets" / "edgepad.ini")
+        csp = section(preset.replace("[set.", "## [set."), "## [set.csp]")
+        self.assertRegex(csp, r"(?m)^space\s*=\s*1\b", "the room after Esc")
+        self.assertNotIn("| none", csp, "no unseen none key for room")
+        self.assertNotIn("​", csp, "no unseen label")
+        for lang, path in REFERENCES.items():
+            self.assertIn("`space`", text(path), lang)
+            self.assertIn("0.25", text(path), lang)
+        spec = text(SPEC)
+        self.assertIn("space =", section(spec, "## 7."), "chapter 7")
+        self.assertIn("空き", section(spec, "### 7.1"), "7.1")
+
     # AC2
     def test_the_reference_in_english_and_japanese_covers_every_section(self):
         en, ja = text(REFERENCES["en"]), text(REFERENCES["ja"])

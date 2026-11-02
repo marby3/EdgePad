@@ -95,6 +95,7 @@ const LABEL: usize = 1011;
 const CUT: usize = 1012;
 const ABOUT: usize = 1013;
 const WIDTH: usize = 1014;
+const SPACE: usize = 1015;
 const KINDS: usize = 1020;
 const MODS: usize = 1030;
 const GROUPS: usize = 1040;
@@ -159,6 +160,11 @@ const TITLE_LAYER: usize = 1113;
 const TITLE_ARRANGE: usize = 1114;
 const TITLE_PLACE: usize = 1115;
 const PLACE_NOTE: usize = 1119;
+const TITLE_SPACE: usize = 1120;
+
+/// The room after a key along the edge (Issue #139): none, then 0.25 to 2
+/// keys, as the space line writes them.
+const SPACES: [&str; 9] = ["なし", "0.25", "0.5", "0.75", "1", "1.25", "1.5", "1.75", "2"];
 
 /// The sample's window class.
 pub(super) const SAMPLE_CLASS: *const u16 = w!("EdgePadSettingsSample");
@@ -427,6 +433,8 @@ const PARTS: &[(usize, Class, &str)] = &[
     (TITLE_WIDTH, Text, "キーの幅"),
     (WIDTH, Edit, ""),
     (WIDTH_NOTE, Text, "1〜3"),
+    (TITLE_SPACE, Text, "後ろの空き"),
+    (SPACE, Combo, ""),
     (TITLE_PLACE, Text, "x"),
     (PLACE, Edit, ""),
     (TITLE_PLACE + 1, Text, "y"),
@@ -553,6 +561,8 @@ struct Sample {
     /// Every key drawn: a KLE layout's past the key lines too.
     labels: Vec<Vec<u16>>,
     widths: Vec<usize>,
+    /// The room after each key along the edge, in quarter keys.
+    spaces: Vec<u8>,
     /// A free or KLE layout's places, in quarters, as the file has them.
     places: Option<Vec<Place>>,
     /// How many keys are written, and so can be chosen.
@@ -622,7 +632,7 @@ impl Sample {
                 layout::free_panel_in(screen, edge, UNIT, places, Place { x, y, w, h, tilt: None })
             }
             Some(places) => layout::free_panel(screen, edge, UNIT, places),
-            None => layout::edge_panel(screen, edge, UNIT, self.lines.max(1), &self.widths),
+            None => layout::edge_panel(screen, edge, UNIT, self.lines.max(1), &self.widths, &self.spaces),
         };
         let inset = scale(INSET, dpi);
         let room = (client.right - 2 * inset, client.bottom - 2 * inset);
@@ -750,14 +760,21 @@ fn set_place(line: &mut Line, p: Place) {
     }
 }
 
-/// The places keys `widths` long have along the edge that first shows key
-/// set `set`, as a free layout writes them: as the sample draws them.
-fn edge_places(doc: &Document, set: &str, widths: &[usize]) -> Vec<Place> {
+/// The places keys `widths` long, with room `spaces` after them, have
+/// along the edge that first shows key set `set`, as a free layout writes
+/// them: as the sample draws them.
+fn edge_places(doc: &Document, set: &str, widths: &[usize], spaces: &[u8]) -> Vec<Place> {
     let (edge, lines) = first_edge(doc, set).unwrap_or((Edge::Left, 1));
     let screen = layout::Rect { x: 0, y: 0, w: 4 * 4096, h: 4 * 4096 };
-    let (panel, keys) = layout::edge_panel(screen, edge, 4, lines, widths);
+    let (panel, keys) = layout::edge_panel(screen, edge, 4, lines, widths, spaces);
     let (wide, tall) = if edge.is_side() { (panel.h, panel.w) } else { (panel.w, panel.h) };
     keys.iter().map(|k| layout::unturn(edge, wide, tall, Place { x: k.x, y: k.y, w: k.w, h: k.h, tilt: None })).collect()
+}
+
+/// The room after each of the first `count` keys of `section`, in quarter
+/// keys, as its space lines write it.
+fn spaces_of(doc: &Document, section: &str, count: usize) -> Vec<u8> {
+    (0..count).map(|i| doc.space_after(section, i).and_then(config::space_quarters).unwrap_or(0)).collect()
 }
 
 thread_local! {
@@ -1253,7 +1270,7 @@ fn shows_shape(e: &Editor, id: usize, key: bool, way: &Arrangement) -> bool {
         NAME => k.naming,
         TITLE_SET | ADD_SET | RENAME | REMOVE_SET | KLE | USED | SAMPLE | ADD_KEY | REMOVE_KEY | KEY_UP | KEY_DOWN => true,
         TITLE_ARRANGE | ARRANGE => k.set.is_some(),
-        TITLE_WIDTH | WIDTH | WIDTH_NOTE => key && *way == Arrangement::Edge,
+        TITLE_WIDTH | WIDTH | WIDTH_NOTE | TITLE_SPACE | SPACE => key && *way == Arrangement::Edge,
         _ if (PLACE..PLACE + 4).contains(&id) || (TITLE_PLACE..TITLE_PLACE + 4).contains(&id) => key && *way != Arrangement::Edge,
         PLACE_NOTE => key && *way == Arrangement::Free,
         KLE_NOTE => key && matches!(way, Arrangement::Kle(_)),
@@ -1519,6 +1536,8 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     at(TITLE_WIDTH, shape_x, y, title, h);
     at(WIDTH, shape_x + title + gap, y, s(60), h);
     at(WIDTH_NOTE, shape_x + title + s(60) + 2 * gap, y, s(60), h);
+    at(TITLE_SPACE, shape_x, y + pitch, title, h);
+    at(SPACE, shape_x + title + gap, y + pitch, s(80), s(LIST_H));
     for i in 0..4 {
         let (x, y) = (shape_x + (i % 2) as i32 * fw / 2, y + (i / 2) as i32 * pitch);
         at(TITLE_PLACE + i, x, y, s(20), h);
@@ -1662,6 +1681,7 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
         }
         let arrange = part_of(e, ARRANGE);
         fill(arrange, &ways, false);
+        fill(part_of(e, SPACE), &SPACES.map(String::from), false);
         choose_item(arrange, Some(match way {
             Arrangement::Edge => 0,
             Arrangement::Free => 1,
@@ -1692,6 +1712,9 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
         let width = part_of(e, WIDTH);
         set_text(width, line.option("width").unwrap_or("1"));
         SendMessageW(width, EM_SETMODIFY, 0, 0);
+        let section = format!("set.{}", k.set.as_deref().unwrap_or(""));
+        let room = e.doc.space_after(&section, k.key).and_then(config::space_quarters).unwrap_or(0) as usize;
+        choose_item(part_of(e, SPACE), Some(room.min(SPACES.len() - 1)), false);
         // A KLE layout's place is its file's, read only.
         let way = arrangement(&e.doc, &format!("set.{}", k.set.as_deref().unwrap_or("")));
         let place = match &way {
@@ -1808,6 +1831,7 @@ fn update_sample(e: &Editor) {
     SAMPLE_VIEW.with_borrow_mut(|v| {
         v.labels = labels.iter().map(|l| l.encode_utf16().collect()).collect();
         v.widths = lines.iter().map(|l| l.option("width").and_then(|w| w.parse().ok()).filter(|w| (1..=3).contains(w)).unwrap_or(1)).collect();
+        v.spaces = spaces_of(&e.doc, &format!("set.{set}"), lines.len());
         v.places = places;
         v.count = lines.len();
         v.edge = edge;
@@ -1976,8 +2000,10 @@ unsafe fn import_kle() {
     }
     with_editor(|e| unsafe {
         let section = format!("set.{set}");
-        // The file has the places now: the key lines' go (Issue #109).
+        // The file has the places now: the key lines' go (Issue #109), and
+        // the room between them (Issue #139).
         for (i, raw) in e.doc.keys(&section).iter().enumerate() {
+            e.doc.set_space(&section, i, None);
             let mut line = Line::of(raw);
             if PLACE_NAMES.iter().any(|name| line.option(name).is_some()) {
                 for name in PLACE_NAMES {
@@ -2107,7 +2133,7 @@ pub(super) unsafe fn command(id: usize, code: u32) {
                 let pie = chosen_line(e).filter(|(_, l)| l.kind() == Some(PIE_KIND)).map(|(_, l)| l.content);
                 if count <= 1 {
                     tell(e, "キーセットにはキーが 1 つ以上要ります（キーセットごと消すには上の「削除」）");
-                } else if e.doc.remove_key(&section, k) {
+                } else if e.doc.set_space(&section, k, None) && e.doc.remove_key(&section, k) {
                     if let Some(items) = pie.filter(|p| is_items(&e.doc, p) || !used_by(&e.doc, p).is_empty()) {
                         drop_items(e, &items);
                     }
@@ -2118,6 +2144,15 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             KEY_UP | KEY_DOWN if clicked => {
                 move_by(e, if id == KEY_UP { -1 } else { 1 });
+                None
+            }
+            SPACE if code == CBN_SELENDOK || (code == CBN_SELCHANGE && SendMessageW(part_of(e, SPACE), CB_GETDROPPEDSTATE, 0, 0) == 0) => {
+                let at = SendMessageW(part_of(e, SPACE), CB_GETCURSEL, 0, 0);
+                let value = usize::try_from(at).ok().filter(|&a| a > 0).and_then(|a| SPACES.get(a)).copied();
+                if value != e.doc.space_after(&section, k).map(str::trim) && e.doc.set_space(&section, k, value) {
+                    refresh(e);
+                    mark_unsaved(e);
+                }
                 None
             }
             // With the list open, once one is chosen: going over the items
@@ -2481,7 +2516,8 @@ pub(super) fn fault(e: &Editor, line: usize) -> Option<(usize, usize)> {
     let (section, name) = doc.place(line);
     let section = section.filter(|s| s.starts_with("set."))?;
     let Some((_, key)) = doc.key_at(line).filter(|_| name.as_deref() == Some("key")) else {
-        let page = if name.as_deref() == Some("layout") { PAGE } else { MAP_PAGE };
+        // The shape's lines, layout and space, are キー配置's.
+        let page = if matches!(name.as_deref(), Some("layout" | "space")) { PAGE } else { MAP_PAGE };
         return Some((page, 0));
     };
     let raw = doc.keys(&section).into_iter().nth(key)?;
@@ -2540,7 +2576,7 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
     let places: Vec<Place> = match &way {
         Arrangement::Edge => {
             let widths: Vec<usize> = lines.iter().map(|l| l.option("width").and_then(|w| w.parse().ok()).filter(|w| (1..=3).contains(w)).unwrap_or(1)).collect();
-            edge_places(&e.doc, &set, &widths)
+            edge_places(&e.doc, &set, &widths, &spaces_of(&e.doc, &section, lines.len()))
         }
         Arrangement::Free => lines.iter().map(line_place).collect(),
         Arrangement::Kle(_) => (0..lines.len()).map(|i| kle.get(i).map_or(Place { x: 0, y: 0, w: 4, h: 4, tilt: None }, |(p, _)| *p)).collect(),
@@ -2576,6 +2612,12 @@ unsafe fn arrange(e: &mut Editor, free: bool) {
         return unsafe { refresh(e) };
     }
     let mut written = lines.iter().zip(&raws).enumerate().all(|(i, (line, raw))| e.doc.set_key(&section, i, &rewrite(raw, line)));
+    // Placed freely, the keys keep their room in their places.
+    if free {
+        for i in 0..lines.len() {
+            written &= e.doc.set_space(&section, i, None);
+        }
+    }
     if free {
         written &= e.doc.set_first(&section, "layout", "free");
         for (i, extra) in extras.iter().enumerate() {
