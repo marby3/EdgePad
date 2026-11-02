@@ -89,6 +89,20 @@ class DocsTest(unittest.TestCase):
             for must in musts[lang]:
                 self.assertIn(must, section, f"{lang}: {must}")
 
+    # Issue #149, AC5: monitor numbers are Windows's, and v1.0's may point
+    # elsewhere now.
+    def test_both_references_number_monitors_as_windows_does(self):
+        musts = {"en": ("Windows", "Settings", "Display", "v1.1", "left to right"),
+                 "ja": ("Windows", "設定", "ディスプレイ", "v1.1", "左から")}
+        for lang, path in REFERENCES.items():
+            doc = text(path)
+            row = next(l for l in doc.splitlines() if l.startswith("| `monitor`"))
+            self.assertIn("Windows", row, f"{lang}: the row itself says whose numbers")
+            at = doc.index("| `monitor`")
+            near = doc[at:at + 1500]
+            for must in musts[lang]:
+                self.assertIn(must, near, f"{lang}: {must}")
+
     # AC2
     def test_the_reference_in_english_and_japanese_covers_every_section(self):
         en, ja = text(REFERENCES["en"]), text(REFERENCES["ja"])

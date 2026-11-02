@@ -19,21 +19,22 @@ unsafe extern "system" fn collect(monitor: HMONITOR, _: HDC, _: *mut RECT, out: 
     1
 }
 
-/// Every monitor with its rectangle, in screen order: left to right, then
-/// top to bottom.
-fn monitors_in_order() -> Vec<(HMONITOR, RECT)> {
+/// Every monitor with its rectangle and GDI device name, in screen order:
+/// left to right, then top to bottom.
+fn monitors_in_order() -> Vec<(HMONITOR, RECT, String)> {
     let mut found: Vec<HMONITOR> = Vec::new();
     unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(collect), &mut found as *mut _ as LPARAM) };
-    let mut all: Vec<(HMONITOR, RECT)> = found
+    let mut all: Vec<(HMONITOR, RECT, String)> = found
         .into_iter()
         .map(|m| {
-            let mut info: MONITORINFO = unsafe { zeroed() };
-            info.cbSize = size_of::<MONITORINFO>() as u32;
-            unsafe { GetMonitorInfoW(m, &mut info) };
-            (m, info.rcMonitor)
+            let mut info: MONITORINFOEXW = unsafe { zeroed() };
+            info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+            unsafe { GetMonitorInfoW(m, &mut info as *mut _ as *mut MONITORINFO) };
+            let len = info.szDevice.iter().position(|&c| c == 0).unwrap_or(info.szDevice.len());
+            (m, info.monitorInfo.rcMonitor, String::from_utf16_lossy(&info.szDevice[..len]))
         })
         .collect();
-    all.sort_by_key(|(_, r)| (r.left, r.top));
+    all.sort_by_key(|(_, r, _)| (r.left, r.top));
     all
 }
 
@@ -76,12 +77,15 @@ fn each_panel_sits_on_its_chosen_monitor_sized_by_that_monitors_dpi() {
     let _desktop = desktop();
     let monitors = monitors_in_order();
     let primary = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
-    let primary_rect = monitors.iter().find(|(h, _)| *h == primary).unwrap().1;
+    let primary_rect = monitors.iter().find(|(h, _, _)| *h == primary).unwrap().1;
 
-    // Monitor 1 is the leftmost; a number past the last one means primary.
-    let app = launch_with(Some(&settings("1", &(monitors.len() + 1).to_string())), None);
+    // Issue #149, AC1: monitor 1 is the one Windows calls 1, \\.\DISPLAY1
+    // (primary when there is none); a number no monitor has means primary.
+    let app = launch_with(Some(&settings("1", "16")), None);
     let all = panels(&app);
-    let (first, first_rect) = monitors[0];
+    let one = monitors.iter().find(|(_, _, name)| name == r"\\.\DISPLAY1");
+    let (first, first_rect) = one.map_or((primary, primary_rect), |&(h, r, _)| (h, r));
+    assert!(!monitors.iter().any(|(_, _, name)| name == r"\\.\DISPLAY16"), "no monitor 16 here");
     let left = panel_against(&all, first_rect, true);
     let key = key_on(first);
     assert_eq!((left.right - left.left, left.bottom - left.top), (key, 5 * key), "sized by monitor 1's DPI");
@@ -94,7 +98,7 @@ fn each_panel_sits_on_its_chosen_monitor_sized_by_that_monitors_dpi() {
     // cursor: the monitor under the mouse when the panel is placed. The
     // cursor is put on the last monitor (the primary one when there is only
     // one) so nothing else decides where it is.
-    let (under, under_rect) = *monitors.last().unwrap();
+    let (under, under_rect, _) = monitors.last().unwrap().clone();
     let mut saved = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut saved) };
     unsafe { SetCursorPos((under_rect.left + under_rect.right) / 2, (under_rect.top + under_rect.bottom) / 2) };
