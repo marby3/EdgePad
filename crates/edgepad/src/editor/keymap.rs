@@ -1269,7 +1269,8 @@ pub(super) fn themed(e: &Editor) -> (Vec<HWND>, Vec<HWND>) {
     for (id, class, _) in every_part() {
         match class {
             Edit | Combo => typed.push(part_of(e, id)),
-            Button | Toggle | List | Keys => buttons.push(part_of(e, id)),
+            // The sample's own scroll bars are themed as a button is.
+            Button | Toggle | List | Keys | Sample => buttons.push(part_of(e, id)),
             _ => {}
         }
     }
