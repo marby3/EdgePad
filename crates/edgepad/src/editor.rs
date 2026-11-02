@@ -62,7 +62,7 @@ mod keymap;
 pub const CLASS: *const u16 = w!("EdgePadSettings");
 
 /// The pages, by use (Issue #107; キーマッピング since Issue #109).
-const PAGES: [&str; 8] = ["キー配置", "キーマッピング", "アプリ別", "辺（共通）", "辺ごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"];
+const PAGES: [&str; 8] = ["キー配置", "キーマッピング", "アプリ別", "エッジ（共通）", "エッジごとの設定", "見た目", "タッチと修飾キー", "表示と非表示"];
 
 /// Control ids: the sidebar, the page's heading, the status line, the
 /// file's path, テキストで開く, 保存, and the answers to questions. Clear of

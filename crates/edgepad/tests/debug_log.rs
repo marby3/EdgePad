@@ -138,8 +138,8 @@ fn with_debug_settings_panels_hotkey_keys_and_releases_are_logged() {
     assert!(logged(&app, "全キー解放: 画面ロック"), "the release on lock: {:?}", log_lines(&app));
     touch.up(1);
 
-    choose(&app, "左辺");
-    assert!(logged(&app, "パネル 左辺: 非表示"), "the panel hidden: {:?}", log_lines(&app));
+    choose(&app, "左エッジ");
+    assert!(logged(&app, "パネル 左エッジ: 非表示"), "the panel hidden: {:?}", log_lines(&app));
 
     std::fs::write(exe_dir(&app).join("edgepad.ini"), "[set.pad]\nkey = A | nosuchkind | A\n[profile.default]\nleft = pad\n").unwrap();
     assert!(logged(&app, "2 行目"), "the reload error with its line: {:?}", log_lines(&app));

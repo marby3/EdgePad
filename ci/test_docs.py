@@ -13,10 +13,20 @@ READMES = {"en": ROOT / "README.md", "ja": ROOT / "README.ja.md"}
 REFERENCES = {"en": ROOT / "docs" / "reference.md", "ja": ROOT / "docs" / "reference.ja.md"}
 CONFIG = ROOT / "crates" / "core" / "src" / "config.rs"
 KEYS = ROOT / "crates" / "core" / "src" / "keys.rs"
+SPEC = ROOT / "docs" / "spec.md"
 
 
 def text(path):
     return path.read_text(encoding="utf-8")
+
+
+def section(doc, head):
+    """`doc` from the heading `head` up to the next heading of its level or
+    above."""
+    at = doc.index(head)
+    level = len(head) - len(head.lstrip("#"))
+    found = re.compile(rf"^#{{1,{level}}} ", re.M).search(doc, at + len(head))
+    return doc[at:found.start() if found else len(doc)]
 
 
 def function(source, name):
@@ -102,6 +112,51 @@ class DocsTest(unittest.TestCase):
             near = doc[at:at + 1500]
             for must in musts[lang]:
                 self.assertIn(must, near, f"{lang}: {must}")
+
+    # Issue #136, AC1: the words the screens use, first in the Japanese
+    # reference, and the spec pointing there.
+    def test_the_japanese_reference_opens_with_the_glossary(self):
+        doc = text(REFERENCES["ja"])
+        heads = re.findall(r"^## (.+)$", doc, re.M)
+        self.assertEqual(heads[0], "用語", heads[:3])
+        glossary = section(doc, "## 用語")
+        for word in ("エッジ", "左エッジ", "パネル", "ハンドル", "キーセット", "エッジに沿って並べる", "自由配列",
+                     "キー配置", "キーマッピング", "プロファイル", "修飾キー", "ラッチ", "レイヤー", "ページ",
+                     "パイメニュー", "スワイプ", "フリック"):
+            self.assertRegex(glossary, rf"(?m)^\| [^|]*{word}", word)
+        for name in ("`[edge]`", "`[set.", "`[profile.", "`handle`", "`layout`"):
+            self.assertIn(name, glossary, name)
+        self.assertIn("辺 → エッジ", glossary, "old to new")
+        self.assertIn("フリック → スワイプ", glossary, "old to new")
+        self.assertIn("(reference.ja.md#用語)", text(SPEC))
+
+    # Issue #136, AC2: no 辺 in what the exe puts on the screen, the tray,
+    # notifications or errors: its string literals.
+    def test_no_string_the_exe_shows_says_hen(self):
+        literal = re.compile(r'"(?:[^"\\]|\\.)*"')
+        for path in sorted((ROOT / "crates").glob("*/src/**/*.rs")):
+            for n, line in enumerate(text(path).splitlines(), 1):
+                if line.lstrip().startswith("//"):
+                    continue
+                for s in literal.findall(line):
+                    self.assertNotIn("辺", s, f"{path.relative_to(ROOT)}:{n}: {s}")
+
+    # Issue #136, AC3: hiding a panel is a swipe; a flick is a key's.
+    def test_the_spec_calls_hiding_a_panel_a_swipe(self):
+        spec = text(SPEC)
+        for head in ("### 4.5", "### 4.6", "### 5.1"):
+            self.assertNotIn("フリック", section(spec, head), head)
+        self.assertIn("スワイプ", section(spec, "### 4.5"))
+
+    # Issue #136, AC5: the documents and the shipped settings say エッジ.
+    def test_the_documents_and_shipped_settings_say_edge_not_hen(self):
+        for path in (READMES["ja"], READMES["en"], SPEC, ROOT / "presets" / "edgepad.ini"):
+            for n, line in enumerate(text(path).splitlines(), 1):
+                self.assertNotIn("辺", line, f"{path.relative_to(ROOT)}:{n}")
+        ja = text(REFERENCES["ja"])
+        rest = ja.replace(section(ja, "## 用語"), "")
+        self.assertNotIn("辺", rest, "the reference past its glossary")
+        self.assertIn("エッジ（共通）", text(READMES["en"]), "the English README's Japanese page names")
 
     # AC2
     def test_the_reference_in_english_and_japanese_covers_every_section(self):

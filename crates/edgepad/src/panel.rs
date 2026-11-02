@@ -406,10 +406,10 @@ thread_local! {
 /// The edge as the tray and the log name it.
 fn edge_name(edge: Edge) -> &'static str {
     match edge {
-        Edge::Left => "左辺",
-        Edge::Right => "右辺",
-        Edge::Top => "上辺",
-        Edge::Bottom => "下辺",
+        Edge::Left => "左エッジ",
+        Edge::Right => "右エッジ",
+        Edge::Top => "上エッジ",
+        Edge::Bottom => "下エッジ",
     }
 }
 

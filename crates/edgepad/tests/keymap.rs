@@ -424,9 +424,9 @@ fn key_sets_are_chosen_named_added_and_removed_only_where_unused() {
         assert!(shown(editor, id) && text(editor, id) == name, "{name} beside the list");
     }
     let used = text(editor, USED);
-    assert!(used.contains("default の左辺") && used.contains("csp の左辺"), "where mods is used: {used:?}");
+    assert!(used.contains("default の左エッジ") && used.contains("csp の左エッジ"), "where mods is used: {used:?}");
     choose(editor, SET, "tools");
-    assert!(within_3s(|| text(editor, USED).contains("csp の右辺")), "{:?}", text(editor, USED));
+    assert!(within_3s(|| text(editor, USED).contains("csp の右エッジ")), "{:?}", text(editor, USED));
 
     // Renamed, the edge, page and pie keys that name it follow. A page key
     // names it too: it is listed.
@@ -449,7 +449,7 @@ fn key_sets_are_chosen_named_added_and_removed_only_where_unused() {
     // Used, it is not removed: where it is used is said.
     choose(editor, SET, "tools");
     click_id(editor, REMOVE_SET);
-    assert!(within_3s(|| status(editor).contains("csp の右辺")), "where it is used: {:?}", status(editor));
+    assert!(within_3s(|| status(editor).contains("csp の右エッジ")), "where it is used: {:?}", status(editor));
     assert!(items(part(editor, SET)).contains(&"tools".to_string()), "kept");
     // Not used, it is.
     choose(editor, SET, "spare");
@@ -963,7 +963,7 @@ const PLACE_X: i32 = 1071;
 const PLACE_W: i32 = 1073;
 const PLACE_H: i32 = 1074;
 const KLE_NOTE: i32 = 1075;
-const ARRANGEMENTS: [&str; 2] = ["辺に沿って並べる", "自由配列"];
+const ARRANGEMENTS: [&str; 2] = ["エッジに沿って並べる", "自由配列"];
 
 /// Show page `page`, from the sidebar.
 fn to_page(editor: HWND, page: usize) {

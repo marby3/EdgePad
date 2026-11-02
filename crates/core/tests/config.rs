@@ -308,3 +308,41 @@ slide_ms = {value}
         assert!(reason.contains("slide_ms") && reason.contains(value), "{value}: {reason:?}");
     }
 }
+
+// Issue #136, AC4: the screens say エッジ now, but the file is written as
+// before: [edge] for every edge, [edge.left] and the rest for one.
+#[test]
+fn the_edge_sections_and_names_are_read_as_before() {
+    let text = "\
+[edge]
+monitor = cursor
+gap = 4
+[edge.left]
+columns = 2
+start = hidden
+[edge.right]
+enabled = false
+[edge.top]
+rows = 3
+[edge.bottom]
+dock = true
+handle = none
+[set.a]
+key = A | hold | A
+[profile.default]
+left = a
+right = a
+top = a
+bottom = a
+";
+    let config = parse(text.as_bytes()).expect("the edges as written before");
+    let [left, right, top, bottom] = &config.edges;
+    assert_eq!((left.lines, left.hidden_at_start, left.monitor, left.gap), (2, true, Monitor::Cursor, 4));
+    assert!(!right.enabled);
+    assert_eq!((top.lines, top.monitor), (3, Monitor::Cursor));
+    assert_eq!((bottom.dock, bottom.handle), (true, None));
+    let mistakes = parse(b"[edge.middle]\n[edge.top]\ncolumns = 2\n[profile.default]\n").expect_err("as before");
+    assert_eq!(mistakes.iter().map(|e| e.line).collect::<Vec<_>>(), [1, 3], "{mistakes:#?}");
+    assert!(mistakes[0].reason.contains("left / right / top / bottom"), "{:?}", mistakes[0].reason);
+    assert!(mistakes[1].reason.contains("rows"), "{:?}", mistakes[1].reason);
+}

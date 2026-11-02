@@ -128,9 +128,9 @@ fn hiding_pausing_or_quitting_gives_the_room_back_and_showing_takes_it_again() {
     let mut docked = Docked::launch(&pad("[edge.left]\ndock = true\n"));
     assert!(work_area_becomes(narrowed(base, key)), "precondition: docked");
 
-    choose(&docked.app, "左辺");
+    choose(&docked.app, "左エッジ");
     assert!(work_area_becomes(base), "hidden: the room is given back, work area {:?}", rect(work_area()));
-    choose(&docked.app, "左辺");
+    choose(&docked.app, "左エッジ");
     assert!(work_area_becomes(narrowed(base, key)), "shown again: taken again");
 
     choose(&docked.app, "一時停止");
@@ -339,9 +339,9 @@ fn the_fill_goes_with_the_room_and_overlay_edges_have_none() {
     let docked = Docked::launch(&pad("[edge.left]\ndock = true\n"));
     assert!(within_2s(|| !fills(&docked.app).is_empty()), "precondition: filled while docked");
 
-    choose(&docked.app, "左辺");
+    choose(&docked.app, "左エッジ");
     assert!(within_2s(|| fills(&docked.app).is_empty()), "hidden: no fill");
-    choose(&docked.app, "左辺");
+    choose(&docked.app, "左エッジ");
     assert!(within_2s(|| !fills(&docked.app).is_empty()), "shown again: filled");
     choose(&docked.app, "一時停止");
     assert!(within_2s(|| fills(&docked.app).is_empty()), "paused: no fill");

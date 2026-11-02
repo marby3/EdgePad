@@ -95,7 +95,7 @@ right = pad
     find_panel(&app);
     assert!(handles(&app).is_empty(), "no handle while every panel is shown");
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let m = primary_monitor();
     let h = m.bottom - m.top;
     let left = handle_on(&app, "left").expect("a handle on the hidden left edge");
@@ -119,7 +119,7 @@ right = pad
     choose(&app, "一時停止");
     assert_eq!(handles(&app).len(), 2, "back after the pause");
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     assert_eq!(shown(&app), ["left"], "the left panel is shown");
     assert!(handle_on(&app, "left").is_none(), "and its handle is gone");
 }
@@ -130,7 +130,7 @@ fn swiping_inward_from_the_handle_shows_the_panel() {
     let _desktop = desktop();
     let app = launch_with(Some("[set.pad]\nkey = A | hold | A\n[profile.default]\nleft = pad\n"), None);
     find_panel(&app);
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let handle = touchable_handle(&app, "left");
 
     // Dragged with the mouse: on CI, a touch moving inward from the screen
@@ -157,7 +157,7 @@ fn tapping_or_clicking_the_handle_shows_the_panel() {
     let app = launch_with(Some("[set.pad]\nkey = A | hold | A\n[profile.default]\nleft = pad\n"), None);
     find_panel(&app);
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let mut touch = Touch::new();
     touch.down(1, centre(touchable_handle(&app, "left")));
     touch.up(1);
@@ -165,7 +165,7 @@ fn tapping_or_clicking_the_handle_shows_the_panel() {
     assert_eq!(shown(&app), ["left"], "a tap shows the panel");
     drop(touch);
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let mut saved = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut saved) };
     click(centre(touchable_handle(&app, "left")));
@@ -221,7 +221,7 @@ left = pad
     pump(200);
     assert_eq!(log.keys().len(), 4, "lifting afterwards sends nothing");
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let panel = left_panel(&app);
     let start = cell(panel, key, 1, 1);
     touch.down(1, start);

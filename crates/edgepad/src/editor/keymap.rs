@@ -196,7 +196,7 @@ const MOD_KEYS: [(Key, &str); 4] = [(Key::Ctrl, "Ctrl"), (Key::Shift, "Shift"), 
 const GROUP_NAMES: [&str; 5] = ["英数字", "F1〜F24", "移動・編集", "記号", "テンキー"];
 /// The page key's targets before the key sets.
 const PAGE_TURNS: [(&str, &str); 2] = [("next", "次のページ"), ("prev", "前のページ")];
-const EDGE_NAMES: [(&str, &str); 4] = [("left", "左辺"), ("right", "右辺"), ("top", "上辺"), ("bottom", "下辺")];
+const EDGE_NAMES: [(&str, &str); 4] = [("left", "左エッジ"), ("right", "右エッジ"), ("top", "上エッジ"), ("bottom", "下エッジ")];
 /// The motions a key pressed below goes with, and the groups.
 const MOTION_NAMES: [&str; 3] = ["押した時に送る", "押している間", "連打"];
 const GROUP_TAB_NAMES: [&str; 6] = ["基本", "JIS", "レイヤー", "マクロ", "文字・起動", "ページ・パイ"];
@@ -360,7 +360,7 @@ fn every_part() -> Vec<(usize, Class, String)> {
 }
 
 /// The ways a set is laid out, as 並べ方 names them, before a KLE file's.
-const ARRANGEMENTS: [&str; 2] = ["辺に沿って並べる", "自由配列"];
+const ARRANGEMENTS: [&str; 2] = ["エッジに沿って並べる", "自由配列"];
 /// A key's place, as the file writes it.
 const PLACE_NAMES: [&str; 4] = ["x", "y", "w", "h"];
 

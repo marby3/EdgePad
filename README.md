@@ -52,8 +52,8 @@ Choose 設定… (Settings) in the tray menu. Its pages are on the sidebar.
 | キー配置 (key layout) | Key sets and the shape of their panels (how many keys, their order, widths and places); KLE files read in |
 | キーマッピング (key mapping) | What each key sends: chosen from a keyboard, or layers, macros, text and programs, pages and pies |
 | アプリ別 (per app) | Profiles: which key set goes on which edge for which app |
-| 辺（共通） (all edges) | Settings for every edge |
-| 辺ごとの設定 (each edge) | Each edge's showing, docking, gap from the screen's edge, shown or hidden at the start, monitor, columns or rows, and handle |
+| エッジ（共通） (all edges) | Settings for every edge |
+| エッジごとの設定 (each edge) | Each edge's showing, docking, gap from the screen's edge, shown or hidden at the start, monitor, columns or rows, and handle |
 | 見た目 (look) | Key size, opacity, theme and accent colour |
 | タッチと修飾キー (touch and modifiers) | How short a tap latches, how a latch ends, and whether a pen presses keys |
 | 表示と非表示 (showing and hiding) | The hotkey, how long the mouse rests on a handle to show a panel, and how long until the panels hide |

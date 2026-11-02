@@ -252,7 +252,7 @@ fn the_accent_colours_held_and_latched_keys_and_the_handle_and_auto_follows_wind
     touch.down(1, key_centre(panel, 1));
     touch.up(1);
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let handle = handle_colour(&app);
     assert!(near(handle, on_black(red)), "the handle is the accent at 30%, not {handle:?}");
     drop(touch);
@@ -269,7 +269,7 @@ fn the_accent_colours_held_and_latched_keys_and_the_handle_and_auto_follows_wind
     touch.up(1);
     assert!(near(held, green), "auto: a held key is Windows' accent, #40C020, not {held:?}");
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let handle = handle_colour(&app);
     assert!(near(handle, on_black(green)), "and so is the handle, not {handle:?}");
 
@@ -282,7 +282,7 @@ fn the_accent_colours_held_and_latched_keys_and_the_handle_and_auto_follows_wind
     let handle = handle_colour(&app);
     assert!(near(handle, on_black(blue)), "Windows' accent changed: the handle follows, not {handle:?}");
 
-    choose(&app, "左辺");
+    choose(&app, "左エッジ");
     let panel = left_panel(&app);
     touch.down(1, key_centre(panel, 0));
     touch.hold(100);
