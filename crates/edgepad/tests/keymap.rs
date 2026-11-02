@@ -34,7 +34,8 @@
 //! - on 操作, 押して取り込む beside hotkey: 21.
 //!
 //! The sample draws the panel 8 logical pixels in from its top left corner,
-//! keys 44 logical pixels across (as long as the set fits), in the panel's
+//! keys as large as the window lets them be (since Issue #137, from 40 to 64
+//! logical pixels, read from the sample), in the panel's
 //! colours: the chosen key as a held one. Around the panel, it is the
 //! sidebar's colour. A key's colour is read clear of its label, 10 logical
 //! pixels in from its cell's corner. Values are typed as characters,
@@ -88,9 +89,8 @@ const HOTKEY_CAPTURE: i32 = 21;
 const CTRL_ON: i32 = 0;
 const ALT_ON: i32 = 2;
 
-/// Logical pixels: the sample's inset, and its keys.
+/// Logical pixels: the sample's inset.
 const INSET: i32 = 8;
-const KEY: i32 = 44;
 
 /// Key sets used on edges, by a pie key and a page key, and one used
 /// nowhere; written by hand, with comments.
@@ -360,12 +360,14 @@ fn s(editor: HWND, v: i32) -> i32 {
 /// in its key's face, clear of the label.
 fn sample_cell(editor: HWND, column: i32, row: i32) -> POINT {
     let r = window_rect(part(editor, SAMPLE));
-    POINT { x: r.left + s(editor, INSET + KEY * column + 10), y: r.top + s(editor, INSET + KEY * row + 10) }
+    let key = sample_key(editor);
+    POINT { x: r.left + s(editor, INSET + 10) + key * column, y: r.top + s(editor, INSET + 10) + key * row }
 }
 
-/// Give the sample the focus, clicking its corner, clear of its keys.
+/// Give the sample the focus, clicking its corner, clear of its keys and
+/// of its scroll bars (Issue #137).
 fn focus_sample(editor: HWND) {
-    let r = window_rect(part(editor, SAMPLE));
+    let r = client_rect(part(editor, SAMPLE));
     for _ in 0..3 {
         wait_in_front(editor);
         click(POINT { x: r.right - 3, y: r.bottom - 3 });
@@ -804,7 +806,7 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     };
     let _ = within_3s(|| brightness(inside()) < 90);
     assert!(brightness(inside()) < 90, "the label's field dark: {:?}", inside());
-    let sample = window_rect(part(editor, SAMPLE));
+    let sample = client_rect(part(editor, SAMPLE));
     let corner = colour_at(POINT { x: sample.right - 2, y: sample.bottom - 2 });
     assert!(brightness(corner) < 90, "around the sample dark: {corner:?}");
 
@@ -981,8 +983,9 @@ fn to_page(editor: HWND, page: usize) {
 /// the sample's right side with `right` and from its bottom with `bottom`.
 fn cell_from(editor: HWND, column: i32, row: i32, right: bool, bottom: bool) -> POINT {
     let r = window_rect(part(editor, SAMPLE));
-    let x = if right { r.right - s(editor, INSET + KEY * (column + 1) - 10) } else { r.left + s(editor, INSET + KEY * column + 10) };
-    let y = if bottom { r.bottom - s(editor, INSET + KEY * (row + 1) - 10) } else { r.top + s(editor, INSET + KEY * row + 10) };
+    let key = sample_key(editor);
+    let x = if right { r.right - s(editor, INSET - 10) - key * (column + 1) } else { r.left + s(editor, INSET + 10) + key * column };
+    let y = if bottom { r.bottom - s(editor, INSET - 10) - key * (row + 1) } else { r.top + s(editor, INSET + 10) + key * row };
     POINT { x, y }
 }
 
@@ -1251,7 +1254,7 @@ fn a_free_key_is_placed_by_its_fields_and_by_dragging() {
     assert_eq!(options_of(&saved, "flat", "A"), ["x=0", "y=0", "w=1.25", "h=1"]);
 
     // Dragged on the top edge, as laid out: a key to the right.
-    let key = s(editor, KEY);
+    let key = sample_key(editor);
     let from = cell_from(editor, 0, 0, false, false);
     drag(editor, from, POINT { x: from.x + key, y: from.y });
     assert!(within_3s(|| text(editor, PLACE_X) == "1"), "x follows at once: {:?}", text(editor, PLACE_X));
@@ -1891,7 +1894,7 @@ fn turned_settings() -> String {
 /// R's square.
 fn turned_middle(editor: HWND) -> POINT {
     let r = window_rect(part(editor, SAMPLE));
-    let key = s(editor, KEY);
+    let key = sample_key(editor);
     POINT { x: r.left + s(editor, INSET) + key * 3 / 4, y: r.top + s(editor, INSET) + key * 3 / 4 }
 }
 
@@ -1901,7 +1904,7 @@ fn the_sample_draws_a_turned_key_turned_and_picks_it_by_its_shape() {
     let _desktop = desktop();
     let app = launch_with(Some(&turned_settings()), None);
     let editor = open_turned(&app);
-    let key = s(editor, KEY);
+    let key = sample_key(editor);
     let c = turned_middle(editor);
     let (tip, corner) = (POINT { x: c.x + key * 55 / 100, y: c.y }, POINT { x: c.x + key * 42 / 100, y: c.y + key * 42 / 100 });
     let r = window_rect(part(editor, SAMPLE));
@@ -1949,11 +1952,12 @@ const SPACED: &str = "[general]\ntheme = light\naccent = #C00000\n\n\
     key = Z | shortcut | Z\n\n\
     [profile.default]\nleft = col\n";
 
-/// Where down the sample's first column its keys are read: near their
-/// left side, clear of their labels, which the smaller keys of
-/// キーマッピング run into.
+/// Where down the sample's first column its keys are read: a quarter in
+/// from their left side, clear of their labels, which the smaller keys of
+/// キーマッピング run into, and of their rounded corners, larger on larger
+/// keys.
 fn down_x(editor: HWND) -> i32 {
-    window_rect(part(editor, SAMPLE)).left + s(editor, INSET + 4)
+    window_rect(part(editor, SAMPLE)).left + s(editor, INSET) + sample_key(editor) / 4
 }
 
 /// Down the sample's first column, the runs of the panel's keys (its face,
@@ -2048,4 +2052,170 @@ fn the_room_is_drawn_on_key_mapping_and_cannot_be_chosen() {
     wait_in_front(editor);
     click(POINT { x, y: top + keys[0] + gaps[0] + keys[1] + gaps[1] + keys[2] / 2 });
     assert!(within_3s(|| text(editor, LABEL) == "Z"), "Z, past the room: {:?}", text(editor, LABEL));
+}
+
+// Issue #137: the sample as large as the window lets it be, a key no
+// smaller than 40 logical pixels across, scrolled where that does not fit;
+// the window opened at 1100 by 860, and where it was when it opens again.
+// The sample says how large it draws a key, in pixels, by its property
+// "key"; it scrolls by its own scroll bars.
+const LEAST_KEY: i32 = 40;
+const MOST_KEY: i32 = 64;
+
+/// The shipped 64 keys, and their Fn layer, along the bottom.
+fn alice_settings() -> String {
+    let preset = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets/edgepad.ini"))
+        .expect("the shipped settings");
+    let set = |name: &str| {
+        let at = preset.find(&format!("[set.{name}]")).unwrap_or_else(|| panic!("{name} shipped"));
+        let end = preset[at + 1..].find("\n[").map_or(preset.len(), |n| at + 2 + n);
+        preset[at..end].to_string()
+    };
+    format!("[general]\ntheme = light\n\n{}\n{}\n[profile.default]\nbottom = kb-alice64\n", set("kb-alice64"), set("kb-alice64-fn"))
+}
+
+/// `count` keys along the top edge, K1 on, the last LAST.
+fn row_settings(count: usize) -> String {
+    let mut text = String::from("[general]\ntheme = light\naccent = #C00000\n\n[set.row]\n");
+    for i in 1..count {
+        text += &format!("key = K{i} | shortcut | A\n");
+    }
+    text + "key = LAST | shortcut | B\n\n[profile.default]\ntop = row\n"
+}
+
+/// How large the sample draws a key, in pixels, once it has drawn.
+fn sample_key(editor: HWND) -> i32 {
+    let name = wide("key");
+    let key = || unsafe { GetPropW(part(editor, SAMPLE), name.as_ptr()) as i32 };
+    let _ = within_3s(|| key() != 0);
+    key()
+}
+
+/// Whether the sample shows a scroll bar.
+fn scrolls(editor: HWND) -> bool {
+    let style = unsafe { GetWindowLongW(part(editor, SAMPLE), GWL_STYLE) } as u32;
+    style & (WS_HSCROLL | WS_VSCROLL) != 0
+}
+
+/// Size the window `w` by `h` pixels where it is: no smaller than it lets
+/// it be.
+fn resize(editor: HWND, w: i32, h: i32) {
+    unsafe { SetWindowPos(editor, null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) };
+    pump(300);
+    settle(editor);
+}
+
+/// The work area of the monitor `editor` is on.
+fn work_area(editor: HWND) -> RECT {
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+    let mut info: MONITORINFO = unsafe { zeroed() };
+    info.cbSize = size_of::<MONITORINFO>() as u32;
+    unsafe { GetMonitorInfoW(MonitorFromWindow(editor, MONITOR_DEFAULTTONEAREST), &mut info) };
+    info.rcWork
+}
+
+/// The point of the sample `from_end` keys in from the right end of its
+/// one row, as scrolled to that end: in the key's face.
+fn from_right_end(editor: HWND, from_end: i32) -> POINT {
+    let sample = part(editor, SAMPLE);
+    let r = client_rect(sample);
+    let key = sample_key(editor);
+    POINT { x: r.right - s(editor, INSET) - key * from_end - key / 2, y: r.top + s(editor, INSET) + key / 2 }
+}
+
+/// Close the window, with nothing to save, and open it again.
+fn reopen(app: &Running, editor: HWND) -> HWND {
+    unsafe { PostMessageW(editor, WM_CLOSE, 0, 0) };
+    assert!(within_3s(|| editors(app).is_empty()), "closed");
+    let editor = open(app, open_id(app));
+    settle(editor);
+    editor
+}
+
+// Issue #137, AC1
+#[test]
+fn the_window_opens_large_enough_for_the_64_keys_to_read() {
+    let _desktop = desktop();
+    let app = launch_with(Some(&alice_settings()), None);
+    let json = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets/kb-alice64.json");
+    std::fs::copy(json, exe_dir(&app).join("kb-alice64.json")).expect("the KLE file");
+    let editor = open_set(&app, "kb-alice64");
+
+    // 1100 by 860, or as much as the work area has.
+    let (c, w, a) = (client_rect(editor), window_rect(editor), work_area(editor));
+    let full_w = (c.right - c.left - s(editor, 1100)).abs() <= 1;
+    let full_h = (c.bottom - c.top - s(editor, 860)).abs() <= 1;
+    let wide_enough = full_w || w.right - w.left >= a.right - a.left - 1;
+    let tall_enough = full_h || w.bottom - w.top >= a.bottom - a.top - 1;
+    assert!(wide_enough && tall_enough, "client {}x{}, work area {}x{}", c.right - c.left, c.bottom - c.top, a.right - a.left, a.bottom - a.top);
+
+    // Opened as large as that, all of it unscrolled; on a smaller screen
+    // (CI's is 1024 x 768), scrolled, its keys no smaller.
+    to_page(editor, MAP_PAGE);
+    assert!(within_3s(|| sample_key(editor) >= s(editor, LEAST_KEY)), "a key {} px, at least {}", sample_key(editor), s(editor, LEAST_KEY));
+    if full_w && full_h {
+        assert!(!scrolls(editor), "all of it, unscrolled");
+    }
+}
+
+// Issue #137, AC2
+#[test]
+fn a_sample_too_large_for_the_window_scrolls_to_every_key() {
+    let _desktop = desktop();
+    let app = launch_with(Some(&row_settings(30)), None);
+    let editor = open_set(&app, "row");
+    resize(editor, 120, 90);
+
+    // On キー配置, then on キーマッピング: scrolled to the end, its keys
+    // there are chosen.
+    for (page, from_end, label) in [(0, 0, "LAST"), (MAP_PAGE, 1, "K29")] {
+        to_page(editor, page);
+        assert!(within_3s(|| scrolls(editor)), "{}: scrolls", PAGES[page]);
+        assert!(sample_key(editor) >= s(editor, LEAST_KEY), "{}: a key {} px", PAGES[page], sample_key(editor));
+        unsafe { SendMessageW(part(editor, SAMPLE), WM_HSCROLL, SB_RIGHT as usize, 0) };
+        settle(editor);
+        let at = from_right_end(editor, from_end);
+        wait_in_front(editor);
+        click(at);
+        assert!(within_3s(|| text(editor, LABEL) == label), "{}: {label} chosen at its end, not {:?}", PAGES[page], text(editor, LABEL));
+    }
+}
+
+// Issue #137, AC3
+#[test]
+fn the_sample_follows_the_window_which_opens_again_as_it_closed() {
+    let _desktop = desktop();
+    let app = launch_with(Some(&row_settings(11)), None);
+    let mut editor = open_map(&app, "row");
+    assert!(within_3s(|| sample_key(editor) == s(editor, MOST_KEY)), "as large as it goes: {}", sample_key(editor));
+
+    // Smaller, the sample with it; larger, back.
+    resize(editor, 120, 90);
+    assert!(within_3s(|| sample_key(editor) < s(editor, MOST_KEY)), "smaller: {}", sample_key(editor));
+    assert!(sample_key(editor) >= s(editor, LEAST_KEY) && !scrolls(editor), "{} px, all of it", sample_key(editor));
+    unsafe { ShowWindow(editor, SW_MAXIMIZE) };
+    settle(editor);
+    assert!(within_3s(|| sample_key(editor) == s(editor, MOST_KEY)), "larger: {}", sample_key(editor));
+
+    // Maximized, it opens maximized again.
+    editor = reopen(&app, editor);
+    assert!(unsafe { IsZoomed(editor) } != 0, "opens maximized");
+
+    // Where it was and as large, not maximized.
+    unsafe { ShowWindow(editor, SW_RESTORE) };
+    settle(editor);
+    let a = work_area(editor);
+    let (w, h) = (s(editor, 960).min(a.right - a.left), s(editor, 700).min(a.bottom - a.top));
+    let (x, y) = (a.right - w - s(editor, 10), a.bottom - h);
+    unsafe { SetWindowPos(editor, null_mut(), x.max(a.left), y.max(a.top), w, h, SWP_NOZORDER | SWP_NOACTIVATE) };
+    settle(editor);
+    let before = window_rect(editor);
+    editor = reopen(&app, editor);
+    assert!(unsafe { IsZoomed(editor) } == 0, "not maximized");
+    let after = window_rect(editor);
+    assert_eq!(
+        (after.left, after.top, after.right, after.bottom),
+        (before.left, before.top, before.right, before.bottom),
+        "where it closed"
+    );
 }
