@@ -68,7 +68,7 @@ class DocsTest(unittest.TestCase):
             image = re.search(r"!\[[^\]]*\]\(([^)]+)\)", doc)
             self.assertTrue(image and (ROOT / image.group(1)).is_file(), f"{lang}: a picture that is there")
             for must in ("21H2", "Windows 11", "x64", "%APPDATA%\\EdgePad", "edgepad.ini", "F13", "F24",
-                         "(docs/code-signing-policy.md)", "(LICENSE)", "releases"):
+                         "(LICENSE)", "releases"):
                 self.assertIn(must, doc, f"{lang}: {must}")
         self.assertIn("(docs/reference.md)", en)
         self.assertIn("(docs/reference.ja.md)", ja)
@@ -77,13 +77,17 @@ class DocsTest(unittest.TestCase):
         self.assertRegex(en, r"(?i)Windows 11 only")
         self.assertIn("Windows 11 だけ", ja)
 
-    # Issue #145, AC1: the download's front page says who signs, in
-    # SignPath's own words, beside the policy.
-    def test_both_readmes_carry_signpaths_attribution_beside_the_policy(self):
+    # Issue #147, AC3: the exe is unsigned, and how to get past SmartScreen.
+    def test_both_readmes_say_how_to_open_the_unsigned_exe(self):
+        musts = {"en": ("unsigned", "SmartScreen", "Windows protected your PC", "More info", "Run anyway"),
+                 "ja": ("署名", "SmartScreen", "Windows によって PC が保護されました", "詳細情報", "実行")}
+        heads = {"en": "## Installing", "ja": "## 入れ方"}
         for lang, path in READMES.items():
-            line = next((l for l in text(path).splitlines() if "Free code signing provided by SignPath.io, certificate by SignPath Foundation" in l), None)
-            self.assertIsNotNone(line, f"{lang}: the attribution")
-            self.assertIn("(docs/code-signing-policy.md)", line, f"{lang}: beside the policy's link")
+            doc = text(path)
+            at = doc.index(heads[lang])
+            section = doc[at:doc.find("\n## ", at + 1)]
+            for must in musts[lang]:
+                self.assertIn(must, section, f"{lang}: {must}")
 
     # AC2
     def test_the_reference_in_english_and_japanese_covers_every_section(self):
