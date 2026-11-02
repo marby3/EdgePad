@@ -3,7 +3,7 @@
 
 mod common;
 
-use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use common::*;
 
@@ -204,4 +204,80 @@ left = base
     let panel = left_panel(&app);
     assert_eq!((panel.right - panel.left, panel.bottom - panel.top), (2 * key_px(), 2 * key_px()), "pad: 2 by 2");
     touch.up(1);
+}
+
+// Issue #138: a KLE set's own layer, kb.fn, over a row of four keys on the
+// top edge: Fn held, Tg toggled. fn writes its first key; Fn, C and Tg are
+// kb's, through it.
+const ROW_KLE: &str = r#"["A","B","C","D"]"#;
+
+fn kle_settings() -> String {
+    "[set.kb]\nlayout = kle:row.json\nkey = A | shortcut | A\nkey = Fn | layer | kb.fn\nkey = C | shortcut | C\n\
+     key = Tg | layer | kb.fn | mode=toggle\n[set.kb.fn]\nkey = 1 | shortcut | 1\nkey = - | trans | -\n\
+     [profile.default]\ntop = kb\n"
+        .into()
+}
+
+/// EdgePad running the settings, the KLE file beside them.
+fn launch_row() -> Running {
+    let app = launch_with(Some(&kle_settings()), None);
+    let dir = exe_dir(&app);
+    std::fs::write(dir.join("row.json"), ROW_KLE).expect("write the KLE file");
+    std::fs::write(dir.join("edgepad.ini"), kle_settings() + "\n").expect("save edgepad.ini");
+    app
+}
+
+/// The panel on the top edge of the primary monitor, once there is one.
+fn top_panel(app: &Running) -> RECT {
+    let m = primary_monitor();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Some(r) = panels_now(app).into_iter().find(|r| r.top == m.top) {
+            return r;
+        }
+        assert!(std::time::Instant::now() < end, "a panel on the top edge: {} panels", panels_now(app).len());
+        pump(50);
+    }
+}
+
+/// Key `i` of the row on the top edge.
+fn on_row(app: &Running, i: i32) -> POINT {
+    let (r, key) = (top_panel(app), key_px());
+    POINT { x: r.left + key * i + key / 2, y: r.top + key / 2 }
+}
+
+/// Tap `p` with finger `id`, and what is sent for it.
+fn tapped(touch: &mut Touch, log: &KeyLog, id: u32, p: POINT) -> Vec<(u16, bool)> {
+    let before = log.keys().len();
+    tap(touch, id, p);
+    touch.hold(100);
+    since(log, before)
+}
+
+// Issue #138, AC2
+#[test]
+fn a_kle_sets_own_layer_is_held_and_toggled_as_another_set_is() {
+    let _desktop = desktop();
+    let app = launch_row();
+    let log = KeyLog::start();
+    let mut touch = Touch::new();
+    let (a, one, c) = (b'A' as u16, b'1' as u16, b'C' as u16);
+    assert_eq!(tapped(&mut touch, &log, 2, on_row(&app, 0)), [d(a), u(a)], "kb");
+
+    // Held: fn while Fn is down, C through it; kb once Fn is let go.
+    touch.down(1, on_row(&app, 1));
+    touch.hold(100);
+    assert_eq!(tapped(&mut touch, &log, 2, on_row(&app, 0)), [d(one), u(one)], "fn's own key");
+    assert_eq!(tapped(&mut touch, &log, 2, on_row(&app, 2)), [d(c), u(c)], "kb's C, through fn");
+    touch.up(1);
+    touch.hold(100);
+    assert_eq!(tapped(&mut touch, &log, 2, on_row(&app, 0)), [d(a), u(a)], "kb again");
+
+    // Toggled: fn from Tg to Tg, kb's Tg through it.
+    tap(&mut touch, 1, on_row(&app, 3));
+    touch.hold(100);
+    assert_eq!(tapped(&mut touch, &log, 2, on_row(&app, 0)), [d(one), u(one)], "fn, toggled");
+    tap(&mut touch, 1, on_row(&app, 3));
+    touch.hold(100);
+    assert_eq!(tapped(&mut touch, &log, 2, on_row(&app, 0)), [d(a), u(a)], "kb, toggled back");
 }
