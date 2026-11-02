@@ -36,6 +36,180 @@ windows-sys = { version = "0.61", features = [
 # Test-only hooks (messages that panic, fail a send, or change the settings
 # window's copy of the file). Never enabled in release builds.
 fault-injection = []
+# The tests that launch edgepad.exe and drive the desktop with it: real
+# mouse moves, clicks and keys, and windows brought to the front. They
+# take the machine over while they run, so only CI turns this on
+# (--all-features, ci/retry.py); a local `cargo test --workspace` leaves
+# them out (Issue #153). ci/test_desktop.py fails on one left ungated.
+desktop-tests = []
 
 [dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Graphics_Dwm", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Controls"] }
+
+[[test]]
+name = "apps"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "config"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "debug_log"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "dim"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "dock"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "dpi"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "edges"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "editor"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "elevated"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "fields"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "flick"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "gap"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "handle"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "hotkey"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "hover"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "icon"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "keymap"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "kle_turn"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "latch"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "layer"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "macro_text"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "menu"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "monitors"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "panel"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "pie"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "pie_close"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "pie_menu"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "pie_ops"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "pin"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "press"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "profile"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "reload"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "repeat"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "run_page"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "session"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "settings_pages"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "settings_process"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "settings_window"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "shortcut"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "slide"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "theme"
+required-features = ["desktop-tests"]
+
+[[test]]
+name = "tray"
+required-features = ["desktop-tests"]
