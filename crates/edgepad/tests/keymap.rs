@@ -2052,7 +2052,7 @@ fn the_room_is_drawn_on_key_mapping_and_cannot_be_chosen() {
 
 // Issue #137: the sample as large as the window lets it be, a key no
 // smaller than 40 logical pixels across, scrolled where that does not fit;
-// the window opened at 1100 by 760, and where it was when it opens again.
+// the window opened at 1100 by 860, and where it was when it opens again.
 // The sample says how large it draws a key, in pixels, by its property
 // "key"; it scrolls by its own scroll bars.
 const LEAST_KEY: i32 = 40;
@@ -2135,16 +2135,21 @@ fn the_window_opens_large_enough_for_the_64_keys_to_read() {
     std::fs::copy(json, exe_dir(&app).join("kb-alice64.json")).expect("the KLE file");
     let editor = open_set(&app, "kb-alice64");
 
-    // 1100 by 760, or as much as the work area has.
+    // 1100 by 860, or as much as the work area has.
     let (c, w, a) = (client_rect(editor), window_rect(editor), work_area(editor));
-    let wide_enough = (c.right - c.left - s(editor, 1100)).abs() <= 1 || w.right - w.left >= a.right - a.left - 1;
-    let tall_enough = (c.bottom - c.top - s(editor, 760)).abs() <= 1 || w.bottom - w.top >= a.bottom - a.top - 1;
+    let full_w = (c.right - c.left - s(editor, 1100)).abs() <= 1;
+    let full_h = (c.bottom - c.top - s(editor, 860)).abs() <= 1;
+    let wide_enough = full_w || w.right - w.left >= a.right - a.left - 1;
+    let tall_enough = full_h || w.bottom - w.top >= a.bottom - a.top - 1;
     assert!(wide_enough && tall_enough, "client {}x{}, work area {}x{}", c.right - c.left, c.bottom - c.top, a.right - a.left, a.bottom - a.top);
-    assert!(a.right - a.left >= s(editor, 1024) && a.bottom - a.top >= s(editor, 728), "a work area this holds for");
 
+    // Opened as large as that, all of it unscrolled; on a smaller screen
+    // (CI's is 1024 x 768), scrolled, its keys no smaller.
     to_page(editor, MAP_PAGE);
     assert!(within_3s(|| sample_key(editor) >= s(editor, LEAST_KEY)), "a key {} px, at least {}", sample_key(editor), s(editor, LEAST_KEY));
-    assert!(!scrolls(editor), "all of it, unscrolled");
+    if full_w && full_h {
+        assert!(!scrolls(editor), "all of it, unscrolled");
+    }
 }
 
 // Issue #137, AC2
