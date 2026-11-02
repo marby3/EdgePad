@@ -1949,12 +1949,19 @@ const SPACED: &str = "[general]\ntheme = light\naccent = #C00000\n\n\
     key = Z | shortcut | Z\n\n\
     [profile.default]\nleft = col\n";
 
+/// Where down the sample's first column its keys are read: near their
+/// left side, clear of their labels, which the smaller keys of
+/// キーマッピング run into.
+fn down_x(editor: HWND) -> i32 {
+    window_rect(part(editor, SAMPLE)).left + s(editor, INSET + 4)
+}
+
 /// Down the sample's first column, the runs of the panel's keys (its face,
 /// or held for the chosen key) and of what is between them, in pixels:
 /// (key or not, length), from the panel's top.
 fn runs_down(editor: HWND) -> Vec<(bool, i32)> {
     let r = window_rect(part(editor, SAMPLE));
-    let x = r.left + s(editor, INSET + 10);
+    let x = down_x(editor);
     let (face, held) = ([0xFA, 0xFA, 0xFA], [0xC0, 0x00, 0x00]);
     let mut runs: Vec<(bool, i32)> = Vec::new();
     for y in r.top + s(editor, INSET)..r.bottom {
@@ -1968,8 +1975,8 @@ fn runs_down(editor: HWND) -> Vec<(bool, i32)> {
     runs
 }
 
-/// The keys down the sample, and the gaps between them, longer than the
-/// line drawn between two keys side by side: (key lengths, gap lengths).
+/// The keys down the sample, and the gaps between them: (key lengths, gap
+/// lengths). Two keys side by side have the panel's narrow gap between.
 fn keys_and_gaps(editor: HWND) -> (Vec<i32>, Vec<i32>) {
     let runs = runs_down(editor);
     let keys: Vec<i32> = runs.iter().filter(|(k, _)| *k).map(|&(_, n)| n).collect();
@@ -1995,8 +2002,10 @@ fn the_room_after_a_key_is_added_changed_and_removed_on_key_layout() {
     choose(editor, SPACE, "1");
     assert!(within_3s(|| keys_and_gaps(editor).0.len() == 3), "{:?}", runs_down(editor));
     let (keys, gaps) = keys_and_gaps(editor);
-    assert!((gaps[0] - keys[1]).abs() <= keys[1] / 8, "a key's room between X and Y: {keys:?} {gaps:?}");
+    // A key's room is a key's pitch: its face and the narrow gap.
+    let pitch = keys[1] + gaps[1];
     assert!(gaps[1] < keys[1] / 4, "none between Y and Z: {keys:?} {gaps:?}");
+    assert!((gaps[0] - gaps[1] - pitch).abs() <= pitch / 8, "a key's room between X and Y: {keys:?} {gaps:?}");
     let saved = save_until(&app, editor, "space = 1");
     let mut expect: Vec<&str> = before.lines().collect();
     let x = expect.iter().position(|l| l.contains("一つ目")).unwrap();
@@ -2021,13 +2030,15 @@ fn the_room_is_drawn_on_key_mapping_and_cannot_be_chosen() {
     let editor = open_map(&app, "col");
     assert!(within_3s(|| keys_and_gaps(editor).0.len() == 3), "{:?}", runs_down(editor));
     let (keys, gaps) = keys_and_gaps(editor);
-    assert!((gaps[0] - keys[1]).abs() <= keys[1] / 8, "a key's room between X and Y: {keys:?} {gaps:?}");
+    let pitch = keys[1] + gaps[1];
+    assert!((gaps[0] - gaps[1] - pitch).abs() <= pitch / 8, "a key's room between X and Y: {keys:?} {gaps:?}");
 
     // Clicked, the room chooses nothing: X stays chosen.
     choose_key(editor, 0, "X");
     let r = window_rect(part(editor, SAMPLE));
-    let top = r.top + s(editor, INSET);
-    let x = r.left + s(editor, INSET + 10);
+    let start = runs_down(editor).first().map_or(0, |&(key, n)| if key { 0 } else { n });
+    let top = r.top + s(editor, INSET) + start;
+    let x = down_x(editor);
     wait_in_front(editor);
     click(POINT { x, y: top + keys[0] + gaps[0] / 2 });
     pump(300);
@@ -2035,6 +2046,6 @@ fn the_room_is_drawn_on_key_mapping_and_cannot_be_chosen() {
     // From X, the next key down is Y.
     choose_key(editor, 1, "Y");
     wait_in_front(editor);
-    click(POINT { x, y: top + keys[0] + gaps[0] + keys[1] + keys[2] / 2 });
+    click(POINT { x, y: top + keys[0] + gaps[0] + keys[1] + gaps[1] + keys[2] / 2 });
     assert!(within_3s(|| text(editor, LABEL) == "Z"), "Z, past the room: {:?}", text(editor, LABEL));
 }
