@@ -227,12 +227,13 @@ fn launch_row() -> Running {
     app
 }
 
-/// The panel on the top edge of the primary monitor, once there is one.
+/// The row's panel on the top edge of the primary monitor, four keys
+/// long, once there is one: the settings read again with the KLE file.
 fn top_panel(app: &Running) -> RECT {
-    let m = primary_monitor();
+    let (m, key) = (primary_monitor(), key_px());
     let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
-        if let Some(r) = panels_now(app).into_iter().find(|r| r.top == m.top) {
+        if let Some(r) = panels_now(app).into_iter().find(|r| r.top == m.top && r.right - r.left == 4 * key) {
             return r;
         }
         assert!(std::time::Instant::now() < end, "a panel on the top edge: {} panels", panels_now(app).len());
@@ -246,10 +247,15 @@ fn on_row(app: &Running, i: i32) -> POINT {
     POINT { x: r.left + key * i + key / 2, y: r.top + key / 2 }
 }
 
-/// Tap `p` with finger `id`, and what is sent for it.
+/// Tap `p` with finger `id`, and what is sent for it: a key down and up,
+/// waited for, as long as a slow build takes.
 fn tapped(touch: &mut Touch, log: &KeyLog, id: u32, p: POINT) -> Vec<(u16, bool)> {
     let before = log.keys().len();
     tap(touch, id, p);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while log.keys().len() < before + 2 && std::time::Instant::now() < end {
+        touch.hold(50);
+    }
     touch.hold(100);
     since(log, before)
 }
@@ -259,6 +265,8 @@ fn tapped(touch: &mut Touch, log: &KeyLog, id: u32, p: POINT) -> Vec<(u16, bool)
 fn a_kle_sets_own_layer_is_held_and_toggled_as_another_set_is() {
     let _desktop = desktop();
     let app = launch_row();
+    top_panel(&app);
+    pump(300);
     let log = KeyLog::start();
     let mut touch = Touch::new();
     let (a, one, c) = (b'A' as u16, b'1' as u16, b'C' as u16);
