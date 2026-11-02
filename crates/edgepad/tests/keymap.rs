@@ -364,9 +364,10 @@ fn sample_cell(editor: HWND, column: i32, row: i32) -> POINT {
     POINT { x: r.left + s(editor, INSET + 10) + key * column, y: r.top + s(editor, INSET + 10) + key * row }
 }
 
-/// Give the sample the focus, clicking its corner, clear of its keys.
+/// Give the sample the focus, clicking its corner, clear of its keys and
+/// of its scroll bars (Issue #137).
 fn focus_sample(editor: HWND) {
-    let r = window_rect(part(editor, SAMPLE));
+    let r = client_rect(part(editor, SAMPLE));
     for _ in 0..3 {
         wait_in_front(editor);
         click(POINT { x: r.right - 3, y: r.bottom - 3 });
@@ -805,7 +806,7 @@ fn the_page_follows_the_theme_the_dpi_and_the_keyboard() {
     };
     let _ = within_3s(|| brightness(inside()) < 90);
     assert!(brightness(inside()) < 90, "the label's field dark: {:?}", inside());
-    let sample = window_rect(part(editor, SAMPLE));
+    let sample = client_rect(part(editor, SAMPLE));
     let corner = colour_at(POINT { x: sample.right - 2, y: sample.bottom - 2 });
     assert!(brightness(corner) < 90, "around the sample dark: {corner:?}");
 
