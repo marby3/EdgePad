@@ -280,17 +280,13 @@ fn place(widths: &[usize], lines: usize, length: usize) -> Vec<(usize, usize, us
 }
 
 /// Which of `monitors` an edge set to `choice` goes on, as an index into
-/// `monitors`. Numbers count the monitors left to right, and top to bottom
-/// where their left edges match; a number past the last one, or a cursor
-/// outside every monitor, means the primary one.
-pub fn pick_monitor(monitors: &[Rect], primary: usize, cursor: (i32, i32), choice: Monitor) -> usize {
+/// `monitors`. `numbers` holds each one's number as Windows gives it (see
+/// `monitor::display_number`); a number no monitor has, or a cursor outside
+/// every monitor, means the primary one.
+pub fn pick_monitor(monitors: &[Rect], numbers: &[u8], primary: usize, cursor: (i32, i32), choice: Monitor) -> usize {
     match choice {
         Monitor::Primary => primary,
-        Monitor::Number(n) => {
-            let mut order: Vec<usize> = (0..monitors.len()).collect();
-            order.sort_by_key(|&i| (monitors[i].x, monitors[i].y));
-            (n as usize).checked_sub(1).and_then(|i| order.get(i)).copied().unwrap_or(primary)
-        }
+        Monitor::Number(n) => numbers.iter().position(|&k| k == n).unwrap_or(primary),
         Monitor::Cursor => monitors.iter().position(|m| m.contains(cursor.0, cursor.1)).unwrap_or(primary),
     }
 }

@@ -237,7 +237,10 @@ fn values_to_choose_are_chosen_by_japanese_names() {
     let app = launch_with(Some(SETTINGS), None);
     let editor = open_page(&app, EDGE_PAGE);
     let monitor = items(field(editor, "monitor"));
-    assert_eq!(monitor[..3], ["主モニター", "マウスのあるモニター", "モニター 1"], "{monitor:?}");
+    // Issue #149: which is primary, and the monitors by Windows's numbers.
+    assert!(monitor[0].starts_with("主モニター（今はモニター "), "{monitor:?}");
+    assert_eq!(monitor[1], "マウスのあるモニター");
+    assert!(monitor[2].starts_with("モニター "), "{monitor:?}");
     choose(editor, field(editor, "monitor"), "マウスのあるモニター");
     show_page(editor, LOOK_PAGE);
     assert_eq!(items(field(editor, "theme")), ["ライト", "ダーク", "Windows に合わせる"]);

@@ -169,8 +169,23 @@ const ROWS: [Spec; 23] = [
 const HOTKEY: usize = 20;
 const ACCENT: usize = 4;
 
-/// The names of the monitor's first choices, then the monitors by number.
-const MONITOR_NAMES: [(&str, &str); 2] = [("primary", "主モニター"), ("cursor", "マウスのあるモニター")];
+/// A monitor choice as the list's item data, and back: the number, or
+/// below 1 for primary and cursor.
+fn monitor_data(m: config::Monitor) -> isize {
+    match m {
+        config::Monitor::Primary => -1,
+        config::Monitor::Cursor => -2,
+        config::Monitor::Number(n) => n as isize,
+    }
+}
+
+fn monitor_value(data: isize) -> String {
+    match data {
+        -1 => "primary".into(),
+        -2 => "cursor".into(),
+        n => n.to_string(),
+    }
+}
 const ACCENT_NAMES: [&str; 2] = ["Windows に合わせる", "色を指定"];
 
 /// The range of row `spec`'s number, if it has one.
@@ -621,20 +636,24 @@ unsafe fn refresh_row(e: &mut Editor, i: usize) -> bool {
                 let at = options.iter().position(|(o, _)| o.eq_ignore_ascii_case(value.trim()));
                 SendMessageW(row.field, CB_SETCURSEL, at.map_or(usize::MAX, |a| a), 0);
             }
-            // primary, cursor, then the monitors by number: as many as
-            // there are, or as the file names.
+            // primary, cursor, then the monitors by Windows's numbers, with
+            // the file's number kept when no monitor has it (Issue #149).
             Monitor => {
                 let value = value.trim().to_ascii_lowercase();
-                let named = value.parse::<usize>().unwrap_or(0);
-                let count = (GetSystemMetrics(SM_CMONITORS).max(1) as usize).max(named);
-                let names: Vec<String> =
-                    MONITOR_NAMES.iter().map(|(_, n)| n.to_string()).chain((1..=count).map(|k| format!("モニター {k}"))).collect();
+                let chosen = match value.as_str() {
+                    "primary" => Some(config::Monitor::Primary),
+                    "cursor" => Some(config::Monitor::Cursor),
+                    v => v.parse().ok().map(config::Monitor::Number),
+                };
+                let (displays, primary) = crate::display::displays();
+                let list = edgepad_core::monitor::choices(&displays, primary, chosen.unwrap_or(config::Monitor::Primary));
                 SendMessageW(row.field, CB_RESETCONTENT, 0, 0);
-                for n in &names {
-                    let text = wide(n);
-                    SendMessageW(row.field, CB_ADDSTRING, 0, text.as_ptr() as LPARAM);
+                for (m, label) in &list {
+                    let text = wide(label);
+                    let at = SendMessageW(row.field, CB_ADDSTRING, 0, text.as_ptr() as LPARAM);
+                    SendMessageW(row.field, CB_SETITEMDATA, at as usize, monitor_data(*m));
                 }
-                let at = MONITOR_NAMES.iter().position(|(v, _)| *v == value).or((named > 0).then(|| MONITOR_NAMES.len() + named - 1));
+                let at = list.iter().position(|(m, _)| Some(*m) == chosen);
                 SendMessageW(row.field, CB_SETCURSEL, at.map_or(usize::MAX, |a| a), 0);
             }
             Accent => {
@@ -759,10 +778,7 @@ pub(super) unsafe fn commit(id: usize, always: bool) -> bool {
             }
             Monitor => {
                 let Ok(at) = usize::try_from(SendMessageW(row.field, CB_GETCURSEL, 0, 0)) else { return };
-                match MONITOR_NAMES.get(at) {
-                    Some((value, _)) => value.to_string(),
-                    None => (at - MONITOR_NAMES.len() + 1).to_string(),
-                }
+                monitor_value(SendMessageW(row.field, CB_GETITEMDATA, at, 0))
             }
             // 色を指定 with no colour yet: its field to give one in.
             Accent if !accent_given(e) => "auto".into(),

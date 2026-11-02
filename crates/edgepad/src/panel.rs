@@ -31,7 +31,7 @@ use windows_sys::w;
 
 use crate::colors::{self, colorref};
 use crate::log::debug_log;
-use crate::{launch, pie_menu, send};
+use crate::{display, launch, pie_menu, send};
 use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
@@ -943,7 +943,7 @@ pub unsafe fn release_all() {
 /// stays held.
 unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
     unsafe {
-        let (monitors, primary) = monitors();
+        let (monitors, primary) = display::monitors();
         if monitors.is_empty() {
             return;
         }
@@ -951,8 +951,9 @@ unsafe fn lay_out(panel: &mut Panel, dpi: Option<u32>) {
         if panel.monitor == Monitor::Cursor {
             GetCursorPos(&mut cursor);
         }
-        let rects: Vec<Rect> = monitors.iter().map(|&(_, r)| r).collect();
-        let (handle, screen) = monitors[layout::pick_monitor(&rects, primary, (cursor.x, cursor.y), panel.monitor)];
+        let rects: Vec<Rect> = monitors.iter().map(|&(_, r, _)| r).collect();
+        let numbers: Vec<u8> = monitors.iter().map(|&(_, _, n)| n).collect();
+        let (handle, screen, _) = monitors[layout::pick_monitor(&rects, &numbers, primary, (cursor.x, cursor.y), panel.monitor)];
         let dpi = dpi.unwrap_or_else(|| {
             let (mut x, mut y) = (0, 0);
             match GetDpiForMonitor(handle, MDT_EFFECTIVE_DPI, &mut x, &mut y) {
@@ -1098,34 +1099,6 @@ unsafe fn show_keys(panel: &mut Panel, defs: &[KeyDef], page: usize) {
             dock(panel);
         }
         draw(panel);
-    }
-}
-
-unsafe extern "system" fn gather(monitor: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> i32 {
-    unsafe { (*(out as *mut Vec<HMONITOR>)).push(monitor) };
-    1
-}
-
-/// Every monitor with its rectangle, and the index of the primary one.
-unsafe fn monitors() -> (Vec<(HMONITOR, Rect)>, usize) {
-    unsafe {
-        let mut handles: Vec<HMONITOR> = Vec::new();
-        EnumDisplayMonitors(null_mut(), null(), Some(gather), &mut handles as *mut _ as LPARAM);
-        let mut primary = 0;
-        let mut found = Vec::new();
-        for handle in handles {
-            let mut info: MONITORINFO = zeroed();
-            info.cbSize = size_of::<MONITORINFO>() as u32;
-            if GetMonitorInfoW(handle, &mut info) == 0 {
-                continue;
-            }
-            if info.dwFlags & MONITORINFOF_PRIMARY != 0 {
-                primary = found.len();
-            }
-            let m = info.rcMonitor;
-            found.push((handle, Rect { x: m.left, y: m.top, w: m.right - m.left, h: m.bottom - m.top }));
-        }
-        (found, primary)
     }
 }
 

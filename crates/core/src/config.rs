@@ -210,7 +210,7 @@ impl EdgeConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Monitor {
     Primary,
-    /// 1 is the first monitor.
+    /// The number Windows gives the monitor (see `monitor::display_number`).
     Number(u8),
     /// Wherever the cursor is when the panel shows.
     Cursor,

@@ -39,10 +39,14 @@ What `[edge]` says goes for every edge; what `[edge.left]` and the like say goes
 | `dock` | Keeps a strip of the screen as thick as the panel free: maximised windows stay out of it | `false` | `true` / `false` |
 | `gap` | How far the panel and its handle keep off the screen's edge (logical pixels) | `16` on the bottom, `0` elsewhere | 0 to 64 |
 | `start` | Whether the edge is shown or hidden when EdgePad starts and when the file is read again | `shown` | `shown` / `hidden` |
-| `monitor` | The monitor the panel is on | `primary` | `primary` / `1` to `16` / `cursor` (where the mouse is when the panel shows) |
+| `monitor` | The monitor the panel is on | `primary` | `primary` (Windows's main display) / `1` to `16` (Windows's numbers) / `cursor` (where the mouse is when the panel shows) |
 | `columns` | Columns on the left and right edges | `1` | 1 to 3 |
 | `rows` | Rows on the top and bottom edges | `1` | 1 to 3 |
 | `handle` | The strip left on the edge while the panel is hidden: width (pixels), length (%), position (%) | `6, 40%, 50%` | `width, length%[, position%]` (width 4 to 8, length 1 to 100, position 0 to 100), or `none` |
+
+A `monitor` number is the one Windows gives the monitor in Settings (System > Display): the 2 of its device name, `\\.\DISPLAY2`. It matches the number Settings shows on most computers, but may not on every one; when unsure, choose by the monitor's name in the settings window's monitor list. A number no monitor has puts the panel on the primary monitor.
+
+Up to v1.0, numbers counted the monitors from left to right by where they are. From v1.1 they are Windows's, so a setting such as `monitor = 1` may now point at another monitor.
 
 ## [set.name]: key sets
 
