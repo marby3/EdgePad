@@ -1,5 +1,5 @@
-"""Release checks for Issue #79: the licence, the zip a tag publishes, and
-the signing the release workflow does once SignPath is set up.
+"""Release checks for Issue #79: the licence and the zip a tag publishes.
+The exe goes out unsigned (Issue #147).
 
 Run from the repo root: python -m unittest ci/test_release.py
 The exe's version resource is checked by crates/edgepad/tests/version.rs.
@@ -17,6 +17,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 POLICY = ROOT / "docs" / "code-signing-policy.md"
+SIGNING = re.compile(r"sign\s*path", re.I)
 
 
 def version():
@@ -82,38 +83,24 @@ class ReleaseTest(unittest.TestCase):
         self.assertNotEqual(package("--check", "v99.0.0").returncode, 0)
         self.assertEqual(package("--check", f"v{version()}").returncode, 0)
 
-    # AC5
-    def test_the_exe_is_signed_through_signpath_when_set_up_and_noted_unsigned_when_not(self):
-        signed = "vars.SIGNPATH_ORGANIZATION_ID != ''"
-        sign = step("Sign with SignPath")
-        self.assertIn(f"if: {signed}", sign)
-        self.assertIn("uses: signpath/github-action-submit-signing-request@v1", sign)
-        self.assertIn("organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}", sign)
-        self.assertIn("wait-for-completion: true", sign)
-        self.assertIn(f"if: {signed}", step("Unsigned exe for SignPath"))
-        unsigned = step("Note an unsigned release")
-        self.assertIn("if: vars.SIGNPATH_ORGANIZATION_ID == ''", unsigned)
-        self.assertIn("::notice", unsigned)
-        # The zip takes the signed exe when there is one.
-        self.assertIn("signed/edgepad.exe", step("Zip"))
+    # Issue #147, AC1
+    def test_the_exe_built_goes_in_the_zip_with_no_signing_step(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIsNone(SIGNING.search(text), "no signing step or variable")
+        self.assertIn("--exe target/release/edgepad.exe", step("Zip"))
+        self.assertNotIn("gh release edit", step("Attach to the Release"), "the notes are left as made")
 
-    # AC6
-    def test_the_code_signing_policy_is_written_and_linked_from_the_release(self):
-        policy = POLICY.read_text(encoding="utf-8")
-        self.assertIn("Free code signing provided by SignPath.io, certificate by SignPath Foundation", policy)
-        for role in ("Authors", "Reviewers", "Approvers"):
-            self.assertRegex(policy, rf"{role}[^\n]*\[[^\]]+\]\(https://github\.com/[^)]+\)", role)
-        self.assertRegex(policy, r"(?i)privacy")
-        self.assertRegex(policy, r"(?i)network")
-        self.assertIn("[Code signing policy](", step("Attach to the Release"))
-        # Issue #145, AC2: the attribution beside the link, added to a
-        # Release that has the link alone.
-        attach = step("Attach to the Release")
-        self.assertIn("Free code signing provided by SignPath.io, certificate by SignPath Foundation", attach)
-        self.assertNotIn('*"Code signing policy"*) ;;', attach, "a link alone is not enough")
-        self.assertIn('*"Free code signing provided by SignPath.io, certificate by SignPath Foundation"*) ;;', attach)
-        self.assertIn("docs/code-signing-policy.md", step("Attach to the Release"))
-
+    # Issue #147, AC2
+    def test_the_signing_policy_and_every_mention_of_signing_are_gone(self):
+        self.assertFalse(POLICY.exists())
+        here = pathlib.Path(__file__).resolve()
+        places = [*ROOT.glob("README*.md"), *(ROOT / "docs").rglob("*.md"), *(ROOT / ".github").rglob("*"), *(ROOT / "ci").rglob("*.py")]
+        for path in places:
+            if path.is_file() and path.name != "roadmap.md" and path.resolve() != here:
+                self.assertIsNone(SIGNING.search(path.read_text(encoding="utf-8")), path.relative_to(ROOT))
+        # What the policy said of the network, kept in the READMEs.
+        self.assertRegex((ROOT / "README.md").read_text(encoding="utf-8"), r"(?i)network")
+        self.assertIn("ネットワーク", (ROOT / "README.ja.md").read_text(encoding="utf-8"))
 
 if __name__ == "__main__":
     unittest.main()
