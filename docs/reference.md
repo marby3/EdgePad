@@ -73,6 +73,7 @@ Keys in a row. A name is letters, digits, `-` and `_`.
 | `pie` | Opens a pie menu of the keys of the key set named (2 to 8) | a key set's name |
 | `layer` | Switches the panel to another key set | a key set's name |
 | `none` | Sends nothing | `-` |
+| `trans` | Through: in a layer, acts and shows as the key in the same place on the set below (layers only) | `-` |
 
 ### Options of a key
 
@@ -85,6 +86,15 @@ Keys in a row. A name is letters, digits, `-` and `_`.
 | `w` `h` | `layout = free` | The key's width and height, in keys, in quarters | 0.25 to 8 (default 1) |
 
 A `layout = kle:file` key set takes its places from the KLE file. Its keys go to the key lines one by one, from the top row down (left to right at the same height). Turned keys show at KLE's angle.
+
+### Layers of a KLE key set: [set.name.layer]
+
+A key set laid out by a KLE file can have layers on the same layout. Layer fn of `[set.kb]` is the section `[set.kb.fn]`, with no `layout` (it takes kb's). Its key lines go to the layout's keys in the same order as kb's.
+
+- A key of kind `trans`, and a key with no key line, is through: it acts as kb's key in the same place, and shows its label
+- A layer key turns to it with `kb.fn` as its content
+- An edge, a pie key or a page key cannot name a layer (put kb there, and turn with a layer key)
+- Only KLE key sets have layers. Others make layers of other key sets, with layer keys naming them
 
 ## [profile.name]: profiles
 

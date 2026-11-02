@@ -2071,7 +2071,7 @@ fn alice_settings() -> String {
         let end = preset[at + 1..].find("\n[").map_or(preset.len(), |n| at + 2 + n);
         preset[at..end].to_string()
     };
-    format!("[general]\ntheme = light\n\n{}\n{}\n[profile.default]\nbottom = kb-alice64\n", set("kb-alice64"), set("kb-alice64-fn"))
+    format!("[general]\ntheme = light\n\n{}\n{}\n[profile.default]\nbottom = kb-alice64\n", set("kb-alice64"), set("kb-alice64.fn"))
 }
 
 /// `count` keys along the top edge, K1 on, the last LAST.

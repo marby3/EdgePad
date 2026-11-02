@@ -98,6 +98,8 @@ const CUT: usize = 1012;
 const ABOUT: usize = 1013;
 const WIDTH: usize = 1014;
 const SPACE: usize = 1015;
+/// In the group レイヤー, a layer's key left to the set below (Issue #138).
+const TRANS: usize = 1016;
 const KINDS: usize = 1020;
 const MODS: usize = 1030;
 const GROUPS: usize = 1040;
@@ -136,6 +138,10 @@ const MOTIONS: usize = 1080;
 const PIE_BACK: usize = 1083;
 const PIE_ADD: usize = 1084;
 const PIE_REMOVE: usize = 1085;
+/// Beside the layers' tabs of a KLE set: its own layers (Issue #138).
+const ADD_LAYER: usize = 1086;
+const RENAME_LAYER: usize = 1087;
+const REMOVE_LAYER: usize = 1088;
 const GROUP_TABS: usize = 1090;
 const LAYER_TABS: usize = 1200;
 const KEYBOARD: usize = 1300;
@@ -380,6 +386,8 @@ const NEW_KEY: &str = "新しいキー | shortcut | A";
 const NEW_ITEM: &str = "新しい項目 | none | -";
 const NEW_STEP: &str = "A";
 const NEW_WAIT: &str = "wait 100";
+/// A layer's key left to the set below.
+const TRANS_KEY: &str = "- | trans | -";
 
 /// Sizes in logical pixels (96 DPI).
 const ROW_H: i32 = 26;
@@ -430,6 +438,9 @@ const PARTS: &[(usize, Class, &str)] = &[
     (PIE_ADD, Button, "＋"),
     (PIE_REMOVE, Button, "削除"),
     (PIE_NOTE, Text, "パイの項目には、押している間・連打・修飾キー・レイヤー・パイは使えません"),
+    (ADD_LAYER, Button, "レイヤーを追加"),
+    (RENAME_LAYER, Button, "名前の変更"),
+    (REMOVE_LAYER, Button, "削除"),
     (SAMPLE, Sample, ""),
     (ADD_KEY, Button, "追加"),
     (REMOVE_KEY, Button, "削除"),
@@ -513,6 +524,7 @@ const PARTS: &[(usize, Class, &str)] = &[
     (LAYER_SET, Combo, ""),
     (LAYER_HOLD, Toggle, "押している間"),
     (LAYER_TOGGLE, Toggle, "押すたびに切り替える"),
+    (TRANS, Button, "透過（下のレイヤーのまま）"),
 ];
 
 /// Where the keys captured go: the chosen key (or its macro's step), or
@@ -551,8 +563,10 @@ pub(super) struct Keymap {
     /// While a pie key's fan shows: the set and the key it is of, `set`
     /// and `key` being its items' set and the item chosen (Issue #113).
     pie: Option<(String, usize)>,
-    /// Whether the name field is out, naming the set.
+    /// Whether the name field is out, naming the set; or, with
+    /// `naming_layer`, the layer shown (Issue #138).
     naming: bool,
+    naming_layer: bool,
     capture: Option<Capture>,
     /// The field whose value was turned away, and why, while it stands.
     wrong: Option<(usize, String)>,
@@ -784,6 +798,10 @@ enum Arrangement {
 
 /// How key set `section` of `doc` is laid out, as its `layout` says.
 fn arrangement(doc: &Document, section: &str) -> Arrangement {
+    // A layer's is its set's (Issue #138).
+    if let Some(below) = section.strip_prefix("set.").and_then(below) {
+        return arrangement(doc, &format!("set.{below}"));
+    }
     let Some(value) = doc.get(section, "layout").map(str::trim) else { return Arrangement::Edge };
     match value.get(..4) {
         _ if value.eq_ignore_ascii_case("free") => Arrangement::Free,
@@ -1075,9 +1093,60 @@ fn set_names(doc: &Document) -> Vec<String> {
     doc.sections().into_iter().filter_map(|s| s.strip_prefix("set.").map(String::from)).collect()
 }
 
-/// The key sets the lists show: a pie's items not (Issue #113).
+/// The key sets the lists show: a pie's items not (Issue #113), nor a
+/// set's layers (Issue #138).
 pub(super) fn listed_sets(doc: &Document) -> Vec<String> {
-    set_names(doc).into_iter().filter(|s| !is_items(doc, s)).collect()
+    set_names(doc).into_iter().filter(|s| below(s).is_none() && !is_items(doc, s)).collect()
+}
+
+/// The set layer `set` is of, if it is a layer (Issue #138).
+fn below(set: &str) -> Option<&str> {
+    config::layer_name(set).map(|(below, _)| below)
+}
+
+/// The layers of key set `set`, by their names, in the order written.
+fn own_layers(doc: &Document, set: &str) -> Vec<String> {
+    set_names(doc).into_iter().filter(|s| below(s) == Some(set)).collect()
+}
+
+/// Whether key set `set` is laid out by a KLE file, and so can have layers.
+fn is_kle(doc: &Document, set: &str) -> bool {
+    below(set).is_none() && matches!(arrangement(doc, &format!("set.{set}")), Arrangement::Kle(_))
+}
+
+/// The sets a layer key of set `own` may turn to: the sets listed, and
+/// the layers, but `own`.
+fn layer_targets(doc: &Document, own: &str) -> Vec<String> {
+    let mut sets = listed_sets(doc);
+    sets.extend(set_names(doc).into_iter().filter(|s| below(s).is_some()));
+    sets.retain(|s| s != own);
+    sets
+}
+
+/// What tab `set` says, of root `root`: a layer of it by its own name.
+fn tab_name<'a>(set: &'a str, root: &str) -> &'a str {
+    match config::layer_name(set) {
+        Some((below, layer)) if below == root => layer,
+        _ => set,
+    }
+}
+
+/// The label key `i` of the set below layer `set` has: its key line's, or
+/// past them, its KLE file's.
+fn below_label(e: &Editor, set: &str, i: usize) -> String {
+    let Some(below) = below(set) else { return String::new() };
+    if let Some(raw) = e.doc.keys(&format!("set.{below}")).get(i) {
+        return Line::of(raw).label;
+    }
+    match arrangement(&e.doc, &format!("set.{below}")) {
+        Arrangement::Kle(name) => kle_places(e, &name).and_then(|keys| keys.get(i).map(|(_, l)| l.clone())).unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// Whether `line` leaves its key to the set below.
+fn is_trans(line: &Line) -> bool {
+    line.kind.eq_ignore_ascii_case("trans")
 }
 
 /// Whether key set `set` is a pie's items: pie keys name it, and nothing
@@ -1212,7 +1281,16 @@ fn is_cut(label: &str, quarters: i32, key: i32) -> bool {
 
 /// The keys of the set, as written; and the chosen key, if there is one.
 fn keys_of(e: &Editor) -> Vec<String> {
-    e.keymap.set.as_deref().map_or(Vec::new(), |set| e.doc.keys(&format!("set.{set}")))
+    let Some(set) = e.keymap.set.as_deref() else { return Vec::new() };
+    let mut keys = e.doc.keys(&format!("set.{set}"));
+    // A layer has every key of its layout: those with no line through.
+    if let Some(Arrangement::Kle(name)) = below(set).map(|b| arrangement(&e.doc, &format!("set.{b}"))) {
+        let count = kle_places(e, &name).map_or(0, |k| k.len());
+        while keys.len() < count {
+            keys.push(TRANS_KEY.into());
+        }
+    }
+    keys
 }
 
 fn chosen_line(e: &Editor) -> Option<(String, Line)> {
@@ -1332,11 +1410,16 @@ fn shows_shape(e: &Editor, id: usize, key: bool, way: &Arrangement) -> bool {
 /// Whether part `id` shows now, on キーマッピング, for the chosen key of
 /// kind `kind`, its chosen step a wait or not, with `tabs` layers' tabs
 /// and group `tab` open; over a pie's fan, with `pie`.
-fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab: usize, pie: bool) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab: usize, pie: bool, layers: Layers) -> bool {
     let key = kind.is_some();
     let open = |t: usize| key && tab == t;
     match id {
-        TITLE_SET | SET | SAMPLE => true,
+        TITLE_SET | SAMPLE => true,
+        SET => !layers.naming,
+        NAME => layers.naming,
+        ADD_LAYER | RENAME_LAYER | REMOVE_LAYER => !pie && layers.own,
+        TRANS => open(LAYER_TAB) && layers.layer,
         _ if (LAYER_TABS..LAYER_TABS + TAB_COUNT).contains(&id) => !pie && id - LAYER_TABS < tabs,
         PIE_BACK | PIE_ADD | PIE_REMOVE | PIE_NOTE => pie,
         CUT => key && cut,
@@ -1357,11 +1440,24 @@ fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab
     }
 }
 
+/// What the layers' parts go by: whether the set chosen above has layers
+/// of its own, a layer of it is shown, and one is being named.
+#[derive(Clone, Copy)]
+struct Layers {
+    own: bool,
+    layer: bool,
+    naming: bool,
+}
+
 /// The key sets a layer tab shows, from key set `root`: it, then the sets
 /// its layer keys name, and theirs, as far as they go, each once.
 fn layers(doc: &Document, root: &str) -> Vec<String> {
     let sets = set_names(doc);
     let mut found = vec![root.to_string()];
+    // A KLE set's own layers next, as written (Issue #138).
+    if is_kle(doc, root) {
+        found.extend(own_layers(doc, root).into_iter().take(TAB_COUNT - 1));
+    }
     let mut at = 0;
     while at < found.len() && found.len() < TAB_COUNT {
         for raw in doc.keys(&format!("set.{}", found[at])) {
@@ -1445,10 +1541,13 @@ pub(super) unsafe fn show(e: &Editor) {
     let way = e.keymap.set.as_ref().map_or(Arrangement::Edge, |s| arrangement(&e.doc, &format!("set.{s}")));
     let tabs = e.keymap.root.as_deref().map_or(0, |r| layers(&e.doc, r).len());
     let pie = e.keymap.pie.is_some() && e.page == MAP_PAGE;
+    let layer = e.keymap.set.as_deref().is_some_and(|s| below(s).is_some());
+    let own = e.keymap.root.as_deref().is_some_and(|r| is_kle(&e.doc, r));
+    let layers_now = Layers { own, layer, naming: e.keymap.naming };
     for (id, ..) in every_part() {
         let on = match e.page {
             PAGE => shows_shape(e, id, kind.is_some(), &way),
-            MAP_PAGE => shows(id, kind, wait, cut, tabs, e.keymap.tab, pie),
+            MAP_PAGE => shows(id, kind, wait, cut, tabs, e.keymap.tab, pie, layers_now),
             _ => false,
         };
         unsafe { ShowWindow(part_of(e, id), if on { SW_SHOWNA } else { SW_HIDE }) };
@@ -1462,6 +1561,8 @@ pub(super) unsafe fn show(e: &Editor) {
         unsafe { EnableWindow(part_of(e, id), !pie as i32) };
     }
     unsafe {
+        EnableWindow(part_of(e, RENAME_LAYER), layer as i32);
+        EnableWindow(part_of(e, REMOVE_LAYER), layer as i32);
         EnableWindow(part_of(e, PIE_ADD), (count < *PIE_ITEMS.end()) as i32);
         EnableWindow(part_of(e, PIE_REMOVE), (count > *PIE_ITEMS.start()) as i32);
     }
@@ -1530,7 +1631,15 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     let tabs = layers(&e.doc, &set);
     let names: Vec<&str> = tabs.iter().map(String::as_str).collect();
     if !names.is_empty() {
-        unsafe { lay_row(e, LAYER_TABS, &names, left, top + pitch, width.min(s(120) * names.len() as i32), h) };
+        let room = (x - left).max(0);
+        unsafe { lay_row(e, LAYER_TABS, &names, left, top + pitch, room.min(s(120) * names.len() as i32), h) };
+    }
+    // A KLE set's own layers, at the right end of the tabs' row.
+    let mut x = left + width;
+    for (id, w) in [(REMOVE_LAYER, 56), (RENAME_LAYER, 96), (ADD_LAYER, 120)] {
+        x -= s(w);
+        at(id, x, top + pitch, s(w), h);
+        x -= gap;
     }
     // Over a pie's fan, in the tabs' place: its buttons, and what is said.
     let mut x = left;
@@ -1635,6 +1744,7 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     at(LAYER_SET, rx + s(100), y1, s(200), s(LIST_H));
     at(LAYER_HOLD, rx, y1 + pitch, s(120), h);
     at(LAYER_TOGGLE, rx + s(120) + gap, y1 + pitch, s(180), h);
+    at(TRANS, rx, y1 + 2 * pitch, s(200), h);
 }
 
 /// Lay buttons `first`.. side by side across `x`, `width`: each as wide as
@@ -1696,7 +1806,11 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
     }
     let sets = listed_sets(&e.doc);
     let k = &mut e.keymap;
-    let known = k.set.as_ref().is_some_and(|s| if k.pie.is_some() { all.contains(s) } else { sets.contains(s) });
+    let known = k.set.as_ref().is_some_and(|s| if k.pie.is_some() { all.contains(s) } else { sets.contains(s) || all.contains(s) && below(s).is_some() });
+    // キー配置 lays out the set, not a layer of it.
+    if e.page == PAGE && let Some(set) = k.set.as_deref().and_then(below).map(String::from) {
+        k.set = Some(set);
+    }
     if !known {
         k.set = sets.first().or(all.first()).cloned();
         (k.key, k.step) = (0, 0);
@@ -1719,7 +1833,7 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
         choose_item(combo, sets.iter().position(|s| s == listed), false);
         for i in 0..TAB_COUNT {
             let tab = part_of(e, LAYER_TABS + i);
-            set_text(tab, tabs.get(i).map_or("", String::as_str));
+            set_text(tab, tabs.get(i).map_or("", |t| tab_name(t, &root)));
             SendMessageW(tab, BM_SETCHECK, (tabs.get(i) == Some(&panel)) as WPARAM, 0);
         }
         let used = used_by(&e.doc, &set);
@@ -1727,8 +1841,7 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
         set_text(part_of(e, USED), &format!("使っている場所: {used}"));
         let targets: Vec<String> = PAGE_TURNS.iter().map(|(_, n)| n.to_string()).chain(sets.iter().cloned()).collect();
         fill(part_of(e, TARGET), &targets, false);
-        let others: Vec<String> = sets.iter().filter(|s| **s != panel).cloned().collect();
-        fill(part_of(e, LAYER_SET), &others, false);
+        fill(part_of(e, LAYER_SET), &layer_targets(&e.doc, &panel), false);
         let way = arrangement(&e.doc, &format!("set.{set}"));
         let mut ways: Vec<String> = ARRANGEMENTS.iter().map(|w| w.to_string()).collect();
         if let Arrangement::Kle(name) = &way {
@@ -1760,9 +1873,11 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
     let steps = line.steps();
     e.keymap.step = e.keymap.step.min(steps.len().saturating_sub(1));
     let k = &e.keymap;
+    let set = k.set.clone().unwrap_or_default();
+    let through = is_trans(&line).then(|| below_label(e, &set, k.key));
     unsafe {
         let label = part_of(e, LABEL);
-        set_text(label, &line.label);
+        set_text(label, through.as_deref().unwrap_or(&line.label));
         SendMessageW(label, EM_SETMODIFY, 0, 0);
         let width = part_of(e, WIDTH);
         set_text(width, line.option("width").unwrap_or("1"));
@@ -1794,7 +1909,11 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
 
         let combo = sent(&line, k.step);
         set_text(part_of(e, SENDS), &combo.map_or_else(String::new, combo_text));
-        set_text(part_of(e, SUMMARY), &summary(&line));
+        let said = match (&through, below(&set)) {
+            (Some(label), Some(below)) => format!("透過（{below} の {label} のまま）"),
+            _ => summary(&line),
+        };
+        set_text(part_of(e, SUMMARY), &said);
         for (i, (key, _)) in MOD_KEYS.iter().enumerate() {
             let on = key.modifier().is_some_and(|m| k.mods.contains(m));
             SendMessageW(part_of(e, MODS + i), BM_SETCHECK, on as WPARAM, 0);
@@ -1854,7 +1973,7 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
         choose_item(part_of(e, TARGET), turn.or_else(|| set_named(PAGE_KIND).map(|i| i + PAGE_TURNS.len())), false);
         set_text(part_of(e, PIE), if kind == Some(PIE_KIND) { "項目を編集" } else { "パイにする" });
         let own = k.pie.as_ref().map_or(k.set.as_deref(), |(p, _)| Some(p.as_str()));
-        let others: Vec<&String> = sets.iter().filter(|s| Some(s.as_str()) != own).collect();
+        let others = layer_targets(&e.doc, own.unwrap_or(""));
         let layer_at = others.iter().position(|s| s.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(LAYER_KIND));
         choose_item(part_of(e, LAYER_SET), layer_at, false);
         let layer = kind == Some(LAYER_KIND);
@@ -1868,10 +1987,12 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
 fn update_sample(e: &Editor) {
     let lines: Vec<Line> = keys_of(e).iter().map(|k| Line::of(k)).collect();
     let set = e.keymap.set.clone().unwrap_or_default();
-    let (edge, rows) = first_edge(&e.doc, &set).map_or((None, 1), |(edge, n)| (Some(edge), n));
+    let shown = below(&set).unwrap_or(&set);
+    let (edge, rows) = first_edge(&e.doc, shown).map_or((None, 1), |(edge, n)| (Some(edge), n));
     // A fan opens as the pie menu does, from the panel's edge.
     let fan = e.keymap.pie.as_ref().filter(|_| e.page == MAP_PAGE).map(|(panel, _)| first_edge(&e.doc, panel).map_or(Edge::Left, |(edge, _)| edge));
-    let mut labels: Vec<String> = lines.iter().map(|l| l.label.clone()).collect();
+    let mut labels: Vec<String> =
+        lines.iter().enumerate().map(|(i, l)| if is_trans(l) { below_label(e, &set, i) } else { l.label.clone() }).collect();
     let way = arrangement(&e.doc, &format!("set.{set}"));
     let places = match &way {
         Arrangement::Edge => None,
@@ -1913,7 +2034,19 @@ fn update_sample(e: &Editor) {
 /// key it makes: else mark `field` and say why. Whether it changed.
 unsafe fn change(e: &mut Editor, field: usize, edit: impl FnOnce(&mut Line) -> Result<(), String>) -> bool {
     let Some((raw, mut line)) = chosen_line(e) else { return false };
-    let set = format!("set.{}", e.keymap.set.clone().unwrap_or_default());
+    let name = e.keymap.set.clone().unwrap_or_default();
+    let set = format!("set.{name}");
+    // A key through, given its own: its label is the set below's.
+    if is_trans(&line) && below(&name).is_some() {
+        line.label = below_label(e, &name, e.keymap.key);
+    }
+    // A layer's key past its lines: lines through up to it first.
+    while e.doc.keys(&set).len() <= e.keymap.key && below(&name).is_some() {
+        let at = e.doc.keys(&set).len();
+        if !e.doc.insert_key(&set, at, TRANS_KEY) {
+            break;
+        }
+    }
     let items = line.content.clone().to_ascii_lowercase();
     let was_pie = line.kind() == Some(PIE_KIND) && is_items(&e.doc, &items);
     let changed = edit(&mut line).and_then(|()| {
@@ -2169,12 +2302,52 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             REMOVE_SET if clicked && e.keymap.set.is_some() => {
                 let used = used_by(&e.doc, &set);
                 if used.is_empty() {
+                    // Its layers go with it (Issue #138).
+                    for layer in own_layers(&e.doc, &set) {
+                        e.doc.remove_section(&format!("set.{layer}"));
+                    }
                     e.doc.remove_section(&section);
                     choose(e, None, 0);
                     mark_unsaved(e);
                 } else {
                     tell(e, &format!("「{set}」は {} で使っています。先に外してから削除してください", used.join("、")));
                 }
+                None
+            }
+            ADD_LAYER if clicked => {
+                let root = e.keymap.root.clone().unwrap_or_default();
+                let all = set_names(&e.doc);
+                let name = (1..).map(|n| format!("{root}.layer{n}")).find(|n| !all.contains(n)).unwrap_or_default();
+                if is_kle(&e.doc, &root) && e.doc.add_section(&format!("set.{name}")) {
+                    choose(e, Some(name), k);
+                    mark_unsaved(e);
+                } else {
+                    tell(e, "レイヤーを追加できません");
+                }
+                None
+            }
+            RENAME_LAYER if clicked && below(&set).is_some() => {
+                e.keymap.naming_layer = true;
+                Some(start_naming(e))
+            }
+            REMOVE_LAYER if clicked && below(&set).is_some() => {
+                let used = used_by(&e.doc, &set);
+                let root = below(&set).unwrap_or_default().to_string();
+                if used.is_empty() {
+                    e.doc.remove_section(&section);
+                    choose(e, Some(root), k);
+                    mark_unsaved(e);
+                } else {
+                    let layer = config::layer_name(&set).map_or("", |(_, l)| l);
+                    tell(e, &format!("レイヤー「{layer}」は {} で使っています。先に外してから削除してください", used.join("、")));
+                }
+                None
+            }
+            TRANS if clicked => {
+                change(e, TRANS, |line| {
+                    *line = Line::of(TRANS_KEY);
+                    Ok(())
+                });
                 None
             }
             ADD_KEY if clicked && e.keymap.set.is_some() => {
@@ -2371,7 +2544,7 @@ pub(super) unsafe fn command(id: usize, code: u32) {
             }
             LAYER_SET if code == CBN_SELCHANGE => {
                 let at = SendMessageW(part_of(e, LAYER_SET), CB_GETCURSEL, 0, 0);
-                let others: Vec<String> = listed_sets(&e.doc).into_iter().filter(|s| *s != set).collect();
+                let others = layer_targets(&e.doc, &set);
                 if let Some(target) = usize::try_from(at).ok().and_then(|i| others.get(i).cloned()) {
                     change(e, LAYER_SET, |line| {
                         set_kind(line, LAYER_KIND);
@@ -2441,6 +2614,7 @@ unsafe fn choose(e: &mut Editor, set: Option<String>, key: usize) {
     k.wrong = None;
     k.capture = None;
     k.naming = false;
+    k.naming_layer = false;
     follow_group(e);
     unsafe { refresh(e) };
 }
@@ -2787,7 +2961,14 @@ fn start_naming(e: &mut Editor) -> HWND {
     cancel_capture(e);
     e.keymap.naming = true;
     let name = part_of(e, NAME);
-    set_text(name, e.keymap.set.as_deref().unwrap_or(""));
+    let set = e.keymap.set.clone().unwrap_or_default();
+    // A layer by its own name; else the set, not a layer of it.
+    let shown = match config::layer_name(&set) {
+        Some((_, layer)) if e.keymap.naming_layer => layer,
+        Some((below, _)) => below,
+        None => &set,
+    };
+    set_text(name, shown);
     unsafe {
         SendMessageW(name, EM_SETMODIFY, 1, 0);
         SendMessageW(name, EM_SETSEL, 0, -1);
@@ -2798,7 +2979,11 @@ fn start_naming(e: &mut Editor) -> HWND {
 
 /// The set named in the name field, or why it cannot be.
 fn rename(e: &mut Editor, name: &str) -> Result<(), String> {
-    let old = e.keymap.set.clone().unwrap_or_default();
+    let shown = e.keymap.set.clone().unwrap_or_default();
+    if let Some((below, layer)) = config::layer_name(&shown).filter(|_| e.keymap.naming_layer) {
+        return rename_layer(e, below, layer, name);
+    }
+    let old = below(&shown).unwrap_or(&shown).to_string();
     if name.eq_ignore_ascii_case(&old) {
         return Ok(());
     }
@@ -2808,10 +2993,42 @@ fn rename(e: &mut Editor, name: &str) -> Result<(), String> {
     if set_names(&e.doc).iter().any(|s| s.eq_ignore_ascii_case(name)) {
         return Err(format!("「{name}」というキーセットはもうある"));
     }
+    let layers = own_layers(&e.doc, &old);
     if !e.doc.rename_section(&format!("set.{old}"), &format!("set.{name}")) {
         return Err(format!("「{name}」はキーセットの名前にできない（next / prev / none は使えない）"));
     }
-    e.keymap.set = Some(name.to_ascii_lowercase());
+    // Its layers, and what turns to them, with it (Issue #138).
+    let name = name.to_ascii_lowercase();
+    for layer in layers {
+        let own = config::layer_name(&layer).map_or("", |(_, l)| l);
+        e.doc.rename_section(&format!("set.{layer}"), &format!("set.{name}.{own}"));
+    }
+    e.keymap.set = Some(match config::layer_name(&shown) {
+        Some((_, layer)) => format!("{name}.{layer}"),
+        None => name.clone(),
+    });
+    if e.keymap.root.as_deref() == Some(old.as_str()) {
+        e.keymap.root = Some(name);
+    }
+    Ok(())
+}
+
+/// Layer `layer` of set `below` named `name`, or why it cannot be.
+fn rename_layer(e: &mut Editor, below: &str, layer: &str, name: &str) -> Result<(), String> {
+    if name.eq_ignore_ascii_case(layer) {
+        return Ok(());
+    }
+    if !config::valid_name(name) {
+        return Err("レイヤーの名前は英数字・-・_ で書く".into());
+    }
+    let new = format!("{below}.{}", name.to_ascii_lowercase());
+    if set_names(&e.doc).contains(&new) {
+        return Err(format!("「{name}」というレイヤーはもうある"));
+    }
+    if !e.doc.rename_section(&format!("set.{below}.{layer}"), &format!("set.{new}")) {
+        return Err(format!("「{name}」はレイヤーの名前にできない"));
+    }
+    e.keymap.set = Some(new);
     Ok(())
 }
 
@@ -2822,6 +3039,7 @@ pub(super) unsafe fn cancel_naming() -> bool {
             return None;
         }
         e.keymap.naming = false;
+        e.keymap.naming_layer = false;
         e.keymap.wrong = None;
         refresh(e);
         super::ask_reason(e);
@@ -2855,6 +3073,7 @@ pub(super) unsafe fn commit(id: usize) -> bool {
                 let renamed = rename(e, &typed);
                 if renamed.is_ok() {
                     e.keymap.naming = false;
+                    e.keymap.naming_layer = false;
                     focus = Some(part_of(e, SET));
                 }
                 taken(e, NAME, renamed);
@@ -2970,6 +3189,7 @@ pub(super) unsafe fn capture_hotkey() {
 /// Stop naming the set, the name typed left untaken: キー配置 left.
 pub(super) fn stop_naming(e: &mut Editor) {
     e.keymap.naming = false;
+    e.keymap.naming_layer = false;
 }
 
 /// Call off a capture under way: the page left, or the window.

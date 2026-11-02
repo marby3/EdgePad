@@ -126,7 +126,8 @@ impl Sends {
             Action::Page(page) => Sends::Page(page.clone()),
             Action::Pie(set) => Sends::Pie(set.clone()),
             Action::Layer { set, toggle } => Sends::Layer { set: set.clone(), toggle: *toggle },
-            Action::None => Sends::Nothing,
+            // A layer's trans is its set's key once read: none is left.
+            Action::None | Action::Trans => Sends::Nothing,
         }
     }
 }
