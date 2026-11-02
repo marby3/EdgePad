@@ -28,7 +28,7 @@ const SCREEN: Rect = Rect { x: 0, y: 0, w: 100, h: 100 };
 
 fn split(n: usize, sticky: &[usize]) -> Vec<Vec<usize>> {
     let flags: Vec<bool> = (0..n).map(|i| sticky.contains(&i)).collect();
-    pages(SCREEN, Edge::Left, 10, 1, &vec![1; n], &flags)
+    pages(SCREEN, Edge::Left, 10, 1, &vec![1; n], &[], &flags)
 }
 
 // AC3
@@ -61,9 +61,9 @@ fn pages_follow_the_layout_of_wide_keys_and_lines() {
     let widths = [3, 3, 3, 3, 1];
     let sticky = [false, false, false, false, true];
     // Two columns of 10 cells: 3+3+3 fits in a column, then 3+3+1 in the next.
-    let got = pages(SCREEN, Edge::Left, 10, 2, &widths, &sticky);
+    let got = pages(SCREEN, Edge::Left, 10, 2, &widths, &[], &sticky);
     assert_eq!(got, [vec![0, 1, 2, 3, 4]]);
-    let got = pages(SCREEN, Edge::Left, 10, 1, &widths, &sticky);
+    let got = pages(SCREEN, Edge::Left, 10, 1, &widths, &[], &sticky);
     assert_eq!(got, [vec![0, 1, 2, 4], vec![3, 4]]);
 }
 
@@ -71,6 +71,6 @@ fn pages_follow_the_layout_of_wide_keys_and_lines() {
 #[test]
 fn a_panel_too_short_for_its_page_keys_keeps_what_fits() {
     let tiny = Rect { x: 0, y: 0, w: 100, h: 20 };
-    let got = pages(tiny, Edge::Left, 10, 1, &[1, 1, 1, 1], &[false, false, true, true]);
+    let got = pages(tiny, Edge::Left, 10, 1, &[1, 1, 1, 1], &[], &[false, false, true, true]);
     assert_eq!(got, [vec![0, 1]]);
 }
