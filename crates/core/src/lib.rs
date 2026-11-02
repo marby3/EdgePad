@@ -11,6 +11,7 @@ pub mod keys;
 pub mod kle;
 pub mod layout;
 pub mod modifier;
+pub mod monitor;
 pub mod pie;
 pub mod press;
 pub mod theme;

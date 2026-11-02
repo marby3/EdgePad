@@ -4,6 +4,7 @@
 
 mod autostart;
 mod colors;
+mod display;
 mod editor;
 mod editor_process;
 mod icon;
