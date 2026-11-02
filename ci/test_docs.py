@@ -173,6 +173,19 @@ class DocsTest(unittest.TestCase):
         self.assertIn("space =", section(spec, "## 7."), "chapter 7")
         self.assertIn("空き", section(spec, "### 7.1"), "7.1")
 
+    # Issue #138, AC7: a KLE set's layers, trans and the keys left through,
+    # in the spec and both references.
+    def test_layers_of_a_kle_set_are_written_up(self):
+        spec = text(SPEC)
+        for must in ("[set.kb.fn]", "| trans", "透過"):
+            self.assertIn(must, spec, must)
+        self.assertIn("透過", section(spec, "### 7.1"), "7.1: 透過 on キーマッピング")
+        heads = {"en": "[set.name.layer]", "ja": "[set.名前.レイヤー名]"}
+        for lang, path in REFERENCES.items():
+            doc = text(path)
+            for must in ("`trans`", heads[lang], "kb.fn"):
+                self.assertIn(must, doc, f"{lang}: {must}")
+
     # AC2
     def test_the_reference_in_english_and_japanese_covers_every_section(self):
         en, ja = text(REFERENCES["en"]), text(REFERENCES["ja"])

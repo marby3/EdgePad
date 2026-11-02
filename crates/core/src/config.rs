@@ -271,6 +271,9 @@ pub enum Action {
     Layer { set: String, toggle: bool },
     /// Nothing: a key of a KLE layout no key line is given to (Issue #101).
     None,
+    /// The key below's, in a layer of a KLE set (Issue #138): read, it is
+    /// that key, and no key set keeps it.
+    Trans,
 }
 
 impl Action {
@@ -288,6 +291,7 @@ impl Action {
             Action::Pie(_) => "pie",
             Action::Layer { .. } => "layer",
             Action::None => "none",
+            Action::Trans => "trans",
         }
     }
 
@@ -298,7 +302,7 @@ impl Action {
     pub fn is_pie_item(&self) -> bool {
         match self {
             Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Run(_) | Action::Page(_) | Action::None => true,
-            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) | Action::Layer { .. } => false,
+            Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) | Action::Layer { .. } | Action::Trans => false,
         }
     }
 }
@@ -425,6 +429,10 @@ struct Parser<'a> {
     refs: Vec<(usize, String)>,
     /// The key sets pie keys open, to check once all sets are known.
     pies: Vec<(usize, String)>,
+    /// The sets laid out by a KLE file, which can have layers.
+    kle_sets: Vec<usize>,
+    /// Key sets named where a layer cannot go: (line, name, by what).
+    not_layers: Vec<(usize, String, &'static str)>,
     errors: Vec<Error>,
 }
 
@@ -450,6 +458,8 @@ impl Default for Parser<'_> {
             profile_lines: Vec::new(),
             refs: Vec::new(),
             pies: Vec::new(),
+            kle_sets: Vec::new(),
+            not_layers: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -519,7 +529,7 @@ impl Parser<'_> {
                 Some(edge) => Section::Edge(edge),
                 None => return self.error(n, format!("知らないセクション [{name}]（エッジは left / right / top / bottom）")),
             },
-            Some(("set", set)) if valid_name(set) => {
+            Some(("set", set)) if valid_name(set) || layer_name(set).is_some() => {
                 self.config.sets.push(KeySet { name: set.into(), keys: Vec::new() });
                 self.set_lines.push((n, false));
                 self.layouts.push(SetLayout::Edge);
@@ -532,7 +542,10 @@ impl Parser<'_> {
                 self.profile_lines.push(n);
                 Section::Profile(self.config.profiles.len() - 1)
             }
-            Some(("set" | "profile", _)) => {
+            Some(("set", _)) => {
+                return self.error(n, format!("[{name}] の名前は英数字・-・_ で書く（レイヤーは [set.名前.レイヤー名]）"));
+            }
+            Some(("profile", _)) => {
                 return self.error(n, format!("[{name}] の名前は英数字・-・_ で書く"));
             }
             _ => return self.error(n, format!("知らないセクション [{name}]")),
@@ -629,6 +642,9 @@ impl Parser<'_> {
 
     fn key(&mut self, n: usize, set: usize, name: &str, value: &str) -> Result<(), String> {
         if name == "layout" {
+            if layer_name(&self.config.sets[set].name).is_some() {
+                return Err("レイヤーの節には layout を書かない（元のキーセットの配列を使う）".into());
+            }
             return self.layout(n, set, value);
         }
         if name == "space" {
@@ -642,10 +658,14 @@ impl Parser<'_> {
         self.key_lines[set].push(n);
         // Only a key that is read checks the sets it names.
         match &key.action {
-            Action::Page(Page::Set(set)) => self.refs.push((n, set.clone())),
+            Action::Page(Page::Set(set)) => {
+                self.refs.push((n, set.clone()));
+                self.not_layers.push((n, set.clone(), "page キー"));
+            }
             Action::Pie(set) => {
                 self.refs.push((n, set.clone()));
                 self.pies.push((n, set.clone()));
+                self.not_layers.push((n, set.clone(), "pie キー"));
             }
             Action::Layer { set, .. } => self.refs.push((n, set.clone())),
             _ => {}
@@ -704,7 +724,8 @@ impl Parser<'_> {
         let set = value.to_ascii_lowercase();
         if set != "none" {
             p.edges[edge as usize] = Some(set.clone());
-            self.refs.push((n, set));
+            self.refs.push((n, set.clone()));
+            self.not_layers.push((n, set, "エッジ"));
         }
         Ok(())
     }
@@ -726,8 +747,8 @@ impl Parser<'_> {
         let kle: Vec<bool> = self.layouts.iter().map(|l| matches!(l, SetLayout::Kle(..))).collect();
         self.lay_out_sets();
         for (i, (set, &(line, had_keys))) in self.config.sets.iter().zip(&self.set_lines).enumerate() {
-            // A KLE layout has keys of its own.
-            if !had_keys && !kle[i] {
+            // A KLE layout has keys of its own, and a layer its set's.
+            if !had_keys && !kle[i] && layer_name(&set.name).is_none() {
                 self.errors.push(Error { line, reason: format!("[set.{}] にキーが1つもない", set.name) });
             }
         }
@@ -736,8 +757,14 @@ impl Parser<'_> {
                 self.error(line, format!("キーセット「{name}」が定義されていない"));
             }
         }
+        for (line, name, by) in std::mem::take(&mut self.not_layers) {
+            if let Some((set, _)) = layer_name(&name).filter(|_| self.config.set(&name).is_some()) {
+                self.error(line, format!("{by}にレイヤー「{name}」は置けない（キーセット {set} を置き、layer キーで切り替える）"));
+            }
+        }
         for (line, name) in std::mem::take(&mut self.pies) {
-            let Some(set) = self.config.set(&name) else { continue };
+            // A layer is told above.
+            let Some(set) = self.config.set(&name).filter(|_| layer_name(&name).is_none()) else { continue };
             for reason in pie_problems(set) {
                 self.errors.push(Error { line, reason });
             }
@@ -764,8 +791,18 @@ impl Parser<'_> {
     /// h only in a free layout, and there on every key; a KLE layout's
     /// keys to its key lines in order, the rest sending nothing.
     fn lay_out_sets(&mut self) {
+        let mut layers = Vec::new();
         for (i, layout) in std::mem::take(&mut self.layouts).into_iter().enumerate() {
             let lines = std::mem::take(&mut self.key_lines[i]);
+            for (key, &line) in self.config.sets[i].keys.iter().zip(&lines) {
+                if key.action == Action::Trans && layer_name(&self.config.sets[i].name).is_none() {
+                    self.errors.push(Error { line, reason: "trans はレイヤー（[set.名前.レイヤー名]）のキーで書く（下にキーがない）".into() });
+                }
+            }
+            if layer_name(&self.config.sets[i].name).is_some() {
+                layers.push((i, lines));
+                continue;
+            }
             if !matches!(layout, SetLayout::Edge) {
                 for &line in &self.space_lines[i] {
                     self.errors.push(Error { line, reason: "space はエッジに沿って並べるキーセットで書く（自由配列と KLE はキーの位置で空ける）".into() });
@@ -799,9 +836,49 @@ impl Parser<'_> {
                             None => set.keys.push(KeyDef { label, action: Action::None, width: 1, place: Some(place), space: 0 }),
                         }
                     }
+                    self.kle_sets.push(i);
                 }
             }
         }
+        for (i, lines) in layers {
+            self.lay_out_layer(i, &lines);
+        }
+    }
+
+    /// Lay out layer `i`, its key lines at `lines`, on its set's KLE
+    /// layout: each key in its place, `trans` or no line the set's key.
+    fn lay_out_layer(&mut self, i: usize, lines: &[usize]) {
+        let name = self.config.sets[i].name.clone();
+        let (header, _) = self.set_lines[i];
+        let Some((below, _)) = layer_name(&name) else { return };
+        let Some(base) = self.config.sets.iter().position(|s| s.name == below) else {
+            return self.error(header, format!("キーセット「{below}」がないので、[set.{name}] はレイヤーにならない"));
+        };
+        if !self.kle_sets.contains(&base) {
+            return self.error(header, format!("レイヤーを持てるのは KLE のキーセットだけ（{below} の layout が kle: でない）"));
+        }
+        for &line in &self.space_lines[i] {
+            self.errors.push(Error { line, reason: "space はエッジに沿って並べるキーセットで書く（レイヤーはキーの位置で空ける）".into() });
+        }
+        let below_keys = self.config.sets[base].keys.clone();
+        if let Some(&line) = lines.get(below_keys.len()) {
+            let reason = format!("{below} の配列のキーは {} 個で、key 行が多い", below_keys.len());
+            self.errors.push(Error { line, reason });
+        }
+        let own = std::mem::take(&mut self.config.sets[i].keys);
+        for (key, &line) in own.iter().zip(lines) {
+            if key.place.is_some() {
+                self.errors.push(Error { line, reason: "レイヤーのキーの位置は元のキーセットの配列から読む".into() });
+            }
+        }
+        let mut own = own.into_iter();
+        self.config.sets[i].keys = below_keys
+            .into_iter()
+            .map(|under| match own.next() {
+                Some(key) if key.action != Action::Trans => KeyDef { place: under.place, ..key },
+                _ => under,
+            })
+            .collect();
     }
 }
 
@@ -914,6 +991,7 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
         "pie" => Action::Pie(content.to_ascii_lowercase()),
         // A key of a KLE layout past the key lines, written out (Issue #109).
         "none" => Action::None,
+        "trans" => Action::Trans,
         "layer" => {
             let toggle = match take("mode").map(str::to_ascii_lowercase).as_deref() {
                 None | Some("hold") => false,
@@ -1037,6 +1115,12 @@ pub fn check(section: &str, name: &str, value: &str) -> Result<(), String> {
 }
 
 /// Whether `name` can name a key set or a profile: `[set.name]`.
+/// A layer's section name, `set.layer`, as (set, layer), both valid names
+/// (Issue #138); None for any other.
+pub fn layer_name(name: &str) -> Option<(&str, &str)> {
+    name.split_once('.').filter(|(set, layer)| valid_name(set) && valid_name(layer))
+}
+
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }

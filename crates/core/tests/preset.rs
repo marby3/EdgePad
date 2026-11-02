@@ -92,13 +92,13 @@ fn the_bottom_edge_has_the_us_keyboard_and_the_others_are_there_to_choose() {
     }
     // The layers' keys, by what they send.
     let sends = |set: &str, label: &str| config.set(set).unwrap().keys.iter().find(|k| k.label == label).map(|k| k.action.clone());
-    assert_eq!(sends("kb-us-fn", "F1"), Some(Action::Hold(Key::F(1))));
-    assert_eq!(sends("kb-us-fn", "F12"), Some(Action::Hold(Key::F(12))));
-    assert_eq!(sends("kb-split42-lower", "1"), Some(Action::Hold(Key::Char(b'1'))));
-    assert_eq!(sends("kb-split42-lower", "←"), Some(Action::Hold(Key::Left)));
+    assert_eq!(sends("kb-us.fn", "F1"), Some(Action::Hold(Key::F(1))));
+    assert_eq!(sends("kb-us.fn", "F12"), Some(Action::Hold(Key::F(12))));
+    assert_eq!(sends("kb-split42.lower", "1"), Some(Action::Hold(Key::Char(b'1'))));
+    assert_eq!(sends("kb-split42.lower", "←"), Some(Action::Hold(Key::Left)));
     let shifted = |c: u8| Some(Action::Shortcut(edgepad_core::keys::Combo { mods: Mods::SHIFT, key: Some(Key::Char(c)) }));
-    assert_eq!(sends("kb-corne-v4-upper", "!"), shifted(b'1'));
-    assert_eq!(sends("kb-corne-v4-upper", "~"), shifted(b'`'));
+    assert_eq!(sends("kb-corne-v4.upper", "!"), shifted(b'1'));
+    assert_eq!(sends("kb-corne-v4.upper", "~"), shifted(b'`'));
 }
 
 // AC5

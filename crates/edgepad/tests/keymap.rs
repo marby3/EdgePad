@@ -2071,7 +2071,7 @@ fn alice_settings() -> String {
         let end = preset[at + 1..].find("\n[").map_or(preset.len(), |n| at + 2 + n);
         preset[at..end].to_string()
     };
-    format!("[general]\ntheme = light\n\n{}\n{}\n[profile.default]\nbottom = kb-alice64\n", set("kb-alice64"), set("kb-alice64-fn"))
+    format!("[general]\ntheme = light\n\n{}\n{}\n[profile.default]\nbottom = kb-alice64\n", set("kb-alice64"), set("kb-alice64.fn"))
 }
 
 /// `count` keys along the top edge, K1 on, the last LAST.
@@ -2218,4 +2218,115 @@ fn the_sample_follows_the_window_which_opens_again_as_it_closed() {
         (before.left, before.top, before.right, before.bottom),
         "where it closed"
     );
+}
+
+// Issue #138: layers of a KLE set. Beside the layers' tabs, レイヤーを追加
+// 1086, 名前の変更 1087 and 削除 1088 (buttons, on a KLE set); in the group
+// レイヤー, 透過 1016 (a button). A layer is named in the name field 1001,
+// as a set is.
+const ADD_LAYER: i32 = 1086;
+const RENAME_LAYER: i32 = 1087;
+const REMOVE_LAYER: i32 = 1088;
+const TRANS: i32 = 1016;
+const ROW_KLE: &str = r#"["A","B","C","D"]"#;
+
+/// kb, a row of four keys from a KLE file, and its layer fn; other, along
+/// the left edge.
+const LAYERED: &str = "[general]\ntheme = light\n\n\
+    [set.kb]   ; KLE の 4 キー\n\
+    layout = kle:row.json\n\
+    key = A  | shortcut | A\n\
+    key = Fn | layer    | kb.fn\n\n\
+    [set.kb.fn]\n\
+    key = 1 | shortcut | 1\n\n\
+    [set.other]\n\
+    key = O | shortcut | O\n\n\
+    [profile.default]\nleft = other\ntop = kb\n";
+
+fn launch_layered() -> Running {
+    let app = launch_with(Some(LAYERED), None);
+    std::fs::write(exe_dir(&app).join("row.json"), ROW_KLE).expect("write the KLE file");
+    app
+}
+
+/// Type `name` in the name field, out for it, and press Enter.
+fn name_it(editor: HWND, name: &str) {
+    assert!(within_3s(|| shown(editor, NAME) && focus_of(editor) == part(editor, NAME)), "a name to type");
+    press_with(&[VK_CONTROL], b'A' as u16);
+    type_text(name);
+    press(VK_RETURN);
+    settle(editor);
+}
+
+// Issue #138, AC4
+#[test]
+fn a_kle_sets_layers_are_its_tabs_added_named_removed_and_left_through() {
+    let _desktop = desktop();
+    let app = launch_layered();
+    let editor = open_map(&app, "kb");
+    assert_eq!(items(part(editor, SET)), ["kb", "other"], "no layer in the drop-down list");
+    assert!(within_3s(|| layer_tabs(editor) == ["kb", "fn"]), "{:?}", layer_tabs(editor));
+    for id in [ADD_LAYER, RENAME_LAYER, REMOVE_LAYER] {
+        assert!(shown(editor, id), "{id} beside the tabs");
+    }
+
+    // Added: every key through to kb's, the new layer shown.
+    click_id(editor, ADD_LAYER);
+    assert!(within_3s(|| layer_tabs(editor) == ["kb", "fn", "layer1"]), "{:?}", layer_tabs(editor));
+    assert!(checked(part(editor, LAYER_TABS + 2)), "the new layer shown");
+    choose_key(editor, 2, "C");
+    assert!(text(editor, SUMMARY).contains("透過"), "{:?}", text(editor, SUMMARY));
+    press_key(editor, "Z");
+    let saved = save_until(&app, editor, "[set.kb.layer1]");
+    assert_eq!(keys_of(&saved, "kb.layer1"), [["-", "trans", "-"], ["-", "trans", "-"], ["C", "shortcut", "Z"]], "{saved}");
+    // 透過 gives it back to kb's.
+    click_id(editor, GROUP_TABS + 2);
+    click_id(editor, TRANS);
+    assert!(within_3s(|| text(editor, SUMMARY).contains("透過")), "{:?}", text(editor, SUMMARY));
+    save(editor);
+    assert!(within_3s(|| keys_of(&file(&app), "kb.layer1").get(2).is_some_and(|k| k[1] == "trans")), "{}", file(&app));
+
+    // Named, and taken away where nothing turns to it.
+    click_id(editor, RENAME_LAYER);
+    name_it(editor, "num");
+    assert!(within_3s(|| layer_tabs(editor) == ["kb", "fn", "num"]), "{:?}", layer_tabs(editor));
+    let saved = save_until(&app, editor, "[set.kb.num]");
+    assert!(!saved.contains("layer1"), "{saved}");
+    click_id(editor, LAYER_TABS + 1);
+    click_id(editor, REMOVE_LAYER);
+    assert!(within_3s(|| status(editor).contains("Fn")), "fn is Fn's: {:?}", status(editor));
+    assert_eq!(layer_tabs(editor), ["kb", "fn", "num"], "kept");
+    click_id(editor, LAYER_TABS + 2);
+    click_id(editor, REMOVE_LAYER);
+    assert!(within_3s(|| layer_tabs(editor) == ["kb", "fn"]), "{:?}", layer_tabs(editor));
+
+    // kb renamed, on キー配置: its layers and what turns to them follow.
+    to_page(editor, 0);
+    click_id(editor, RENAME);
+    name_it(editor, "board");
+    let saved = save_until(&app, editor, "[set.board.fn]");
+    assert!(saved.contains("[set.board]") && saved.contains("top = board") && !saved.contains("kb"), "{saved}");
+    assert_eq!(key_of(&saved, "board", "Fn"), ["Fn", "layer", "board.fn"]);
+
+    // A set not of a KLE file has no layers of its own.
+    choose(editor, SET, "other");
+    assert!(within_3s(|| !shown(editor, ADD_LAYER)), "no レイヤーを追加 on other");
+}
+
+// Issue #138, AC5
+#[test]
+fn a_kle_file_imported_again_keeps_each_layers_key_lines() {
+    let _desktop = desktop();
+    let app = launch_layered();
+    let dir = exe_dir(&app);
+    let from = dir.join("from");
+    std::fs::create_dir_all(&from).expect("a folder to import from");
+    std::fs::write(from.join("wide.json"), r#"["A","B","C","D","E"]"#).expect("write the KLE file");
+    let before = file(&app);
+    let editor = open_set(&app, "kb");
+    import(editor, &from.join("wide.json"));
+    let saved = save_until(&app, editor, "layout = kle:wide.json");
+    assert_eq!(key_lines(&saved, "kb"), key_lines(&before, "kb"), "kb's keys kept");
+    assert_eq!(key_lines(&saved, "kb.fn"), key_lines(&before, "kb.fn"), "fn's keys kept");
+    assert!(!section(&saved, "kb.fn").contains("layout"), "the layer has kb's layout: {saved}");
 }
