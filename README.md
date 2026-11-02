@@ -23,6 +23,8 @@ A Windows tray app that puts keys along the edges of the screen, to press by tou
 2. Start `edgepad.exe`. EdgePad's icon appears in the notification area (the tray).
 3. To quit, right-click the icon and choose 終了 (Exit).
 
+The exe is unsigned. The first time you start it, Microsoft Defender SmartScreen may show "Windows protected your PC". Click More info, then Run anyway.
+
 The settings file, `edgepad.ini`, is read from beside the exe first, and from `%APPDATA%\EdgePad\edgepad.ini` when there is none there. If the exe is somewhere it cannot write to (Program Files, for one), put the settings file in `%APPDATA%\EdgePad`.
 
 To start EdgePad with Windows, choose Windows起動時に自動起動 (start with Windows) in the tray menu.
@@ -70,7 +72,7 @@ EdgePad sends F13 to F24, which few keyboards have. Give F13 and the like to fea
 key = Flip | shortcut | F13   ; F13 given to Flip Horizontal in CLIP STUDIO PAINT
 ```
 
-## Licence and signing
+## Licence
 
 - [MIT License](LICENSE)
-- Free code signing provided by SignPath.io, certificate by SignPath Foundation. How the exe is signed: [Code signing policy](docs/code-signing-policy.md)
+- EdgePad makes no network connection and sends nothing anywhere. It reads its settings file, writes it when you save from the settings window, and with `--debug` writes a log beside the exe.

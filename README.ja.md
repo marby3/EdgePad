@@ -23,6 +23,8 @@
 2. `edgepad.exe` を起動します。タスクバーの通知領域（トレイ）に EdgePad のアイコンが出ます。
 3. やめる時は、トレイのアイコンを右クリックして「終了」を選びます。
 
+exe には署名がありません。初めて起動した時に、Microsoft Defender SmartScreen の「Windows によって PC が保護されました」が出ることがあります。その時は「詳細情報」を押してから「実行」を押してください。
+
 設定ファイル `edgepad.ini` は、exe と同じフォルダにあるものを先に読みます。なければ `%APPDATA%\EdgePad\edgepad.ini` を読みます。exe のフォルダに書き込めない場所（Program Files など）に置く時は、設定ファイルを `%APPDATA%\EdgePad` に置いてください。
 
 Windows の起動時に動かすには、トレイのメニューの「Windows起動時に自動起動」を選びます。
@@ -70,7 +72,7 @@ Windows の仕組み（UIPI）のため、ふつうの権限で動く EdgePad �
 key = 左右反転 | shortcut | F13   ; CLIP STUDIO PAINT 側で F13 を「左右反転」に割り当てる
 ```
 
-## ライセンスと署名
+## ライセンス
 
 - ライセンスは [MIT License](LICENSE) です。
-- exe の署名: Free code signing provided by SignPath.io, certificate by SignPath Foundation（[Code signing policy](docs/code-signing-policy.md)）
+- EdgePad はネットワークにつながず、どこにも何も送りません。読むのは設定ファイルだけで、書き込むのは設定画面で保存した時と、`--debug` で exe の隣にログを出す時だけです。
