@@ -45,6 +45,8 @@ struct PanelKey {
     label: Vec<u16>,
     /// In keys along the edge.
     width: usize,
+    /// Room after it along the edge, in quarter keys (Issue #139).
+    space: u8,
     /// Where it sits in a free layout (Issue #101).
     place: Option<Place>,
     /// Where it sits inside the panel; none while it does not fit.
@@ -55,7 +57,7 @@ struct PanelKey {
 impl PanelKey {
     fn of(k: &KeyDef) -> PanelKey {
         let label = k.label.encode_utf16().collect();
-        PanelKey { label, width: k.width as usize, place: k.place, rect: None, sends: Sends::of(&k.action) }
+        PanelKey { label, width: k.width as usize, space: k.space, place: k.place, rect: None, sends: Sends::of(&k.action) }
     }
 
     /// Whether it is on every page: it turns them.
@@ -998,13 +1000,15 @@ fn place_keys(panel: &mut Panel) {
         return;
     }
     let widths: Vec<usize> = panel.keys.iter().map(|k| k.width).collect();
+    let spaces: Vec<u8> = panel.keys.iter().map(|k| k.space).collect();
     let sticky: Vec<bool> = panel.keys.iter().map(PanelKey::turns_pages).collect();
-    let pages = layout::pages(panel.room, panel.edge, panel.key, panel.lines, &widths, &sticky);
+    let pages = layout::pages(panel.room, panel.edge, panel.key, panel.lines, &widths, &spaces, &sticky);
     panel.pages = pages.len().max(1);
     panel.page = panel.page.min(panel.pages - 1);
     let shown = pages.get(panel.page).map_or(&[][..], Vec::as_slice);
     let shown_widths: Vec<usize> = shown.iter().map(|&i| widths[i]).collect();
-    let (rect, rects) = layout::edge_panel(panel.room, panel.edge, panel.key, panel.lines, &shown_widths);
+    let shown_spaces: Vec<u8> = shown.iter().map(|&i| spaces[i]).collect();
+    let (rect, rects) = layout::edge_panel(panel.room, panel.edge, panel.key, panel.lines, &shown_widths, &shown_spaces);
     panel.rect = rect;
     for key in &mut panel.keys {
         key.rect = None;

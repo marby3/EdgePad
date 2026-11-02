@@ -31,30 +31,35 @@ impl Rect {
 /// Keys run along the edge (top to bottom on the left and right, left to
 /// right on the top and bottom), filling the line against the screen edge
 /// first. A key `widths[i]` cells long that the current line cannot take
-/// starts the next line. The panel is `lines` keys thick, as short as holds
-/// every key, and centred along the edge. Keys that do not fit within the
-/// edge's length are left out, along with every key after them.
+/// starts the next line. `spaces[i]` quarter keys of room follow key `i`
+/// (none where `spaces` is short), except where a line or the panel ends
+/// after it (Issue #139). The panel is `lines` keys thick, as short as
+/// holds every key, and centred along the edge. Keys that do not fit within
+/// the edge's length are left out, along with every key after them.
 ///
-/// No panel shorter than all the cells spread over `lines`, or than the
-/// longest key, can hold every key, so the search for the length starts
-/// there. `lines` is at least 1.
-pub fn edge_panel(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[usize]) -> (Rect, Vec<Rect>) {
+/// Lengths are in quarter keys. No panel shorter than all the keys and room
+/// spread over `lines`, or than the longest key, can hold every key, so the
+/// search for the length starts there. `lines` is at least 1.
+pub fn edge_panel(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[usize], spaces: &[u8]) -> (Rect, Vec<Rect>) {
     debug_assert!(lines >= 1, "a panel is at least one key thick");
     let side = edge.is_side();
     let edge_length = if side { monitor.h } else { monitor.w };
-    let room = (edge_length / key).max(0) as usize;
-    let total: usize = widths.iter().sum();
-    let widest = widths.iter().copied().max().unwrap_or(0);
+    let room = (edge_length * 4 / key.max(1)).max(0) as usize;
+    let between: usize = (0..widths.len().saturating_sub(1)).map(|i| spaces.get(i).copied().unwrap_or(0) as usize).sum();
+    let total: usize = 4 * widths.iter().sum::<usize>() + between;
+    let widest = 4 * widths.iter().copied().max().unwrap_or(0);
     let mut length = total.div_ceil(lines).max(widest).min(room);
     let cells = loop {
-        let cells = place(widths, lines, length);
+        let cells = place(widths, spaces, lines, length);
         if cells.len() == widths.len() || length >= room {
             break cells;
         }
         length += 1;
     };
 
-    let (thick, long) = (lines as i32 * key, length as i32 * key);
+    // Quarters to pixels, each edge rounded alike so keys meet.
+    let px = |q: usize| q as i32 * key / 4;
+    let (thick, long) = (lines as i32 * key, px(length));
     let panel = match edge {
         Edge::Left => Rect { x: monitor.x, y: monitor.y + (monitor.h - long) / 2, w: thick, h: long },
         Edge::Right => Rect { x: monitor.x + monitor.w - thick, y: monitor.y + (monitor.h - long) / 2, w: thick, h: long },
@@ -69,7 +74,7 @@ pub fn edge_panel(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[u
                 Edge::Left | Edge::Top => line,
                 Edge::Right | Edge::Bottom => lines - 1 - line,
             } as i32;
-            let (across, along, cells) = (line * key, at as i32 * key, cells as i32 * key);
+            let (across, along, cells) = (line * key, px(at), px(at + cells) - px(at));
             match side {
                 true => Rect { x: across, y: along, w: key, h: cells },
                 false => Rect { x: along, y: across, w: cells, h: key },
@@ -231,10 +236,11 @@ pub fn unturn(edge: Edge, wide: i32, tall: i32, q: Place) -> Place {
 /// and the others fill the pages in order, each taking as many as fit beside
 /// them. Should not even one fit beside them, the keys that fit in the order
 /// written make the only page.
-pub fn pages(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[usize], sticky: &[bool]) -> Vec<Vec<usize>> {
+pub fn pages(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[usize], spaces: &[u8], sticky: &[bool]) -> Vec<Vec<usize>> {
     let fits = |keys: &[usize]| {
         let w: Vec<usize> = keys.iter().map(|&i| widths[i]).collect();
-        edge_panel(monitor, edge, key, lines, &w).1.len() == w.len()
+        let s: Vec<u8> = keys.iter().map(|&i| spaces.get(i).copied().unwrap_or(0)).collect();
+        edge_panel(monitor, edge, key, lines, &w, &s).1.len() == w.len()
     };
     let all: Vec<usize> = (0..widths.len()).collect();
     if fits(&all) {
@@ -255,26 +261,32 @@ pub fn pages(monitor: Rect, edge: Edge, key: i32, lines: usize, widths: &[usize]
         at += n;
     }
     if pages.is_empty() {
-        let fitting = edge_panel(monitor, edge, key, lines, widths).1.len();
+        let fitting = edge_panel(monitor, edge, key, lines, widths, spaces).1.len();
         pages.push(all[..fitting].to_vec());
     }
     pages
 }
 
-/// (line, position along it, length) of each key, in cells, until the first
-/// key that does not fit into `lines` lines of `length` cells.
-fn place(widths: &[usize], lines: usize, length: usize) -> Vec<(usize, usize, usize)> {
-    let (mut line, mut at, mut cells) = (0, 0, Vec::new());
-    for &w in widths {
-        if at + w > length {
+/// (line, position along it, length) of each key, in quarter keys, until
+/// the first key that does not fit into `lines` lines of `length` quarters.
+/// The room after a key goes in before the next key on its line; where the
+/// next key starts a new line, it is left out.
+fn place(widths: &[usize], spaces: &[u8], lines: usize, length: usize) -> Vec<(usize, usize, usize)> {
+    let (mut line, mut at, mut room, mut cells) = (0, 0, 0, Vec::new());
+    for (i, &w) in widths.iter().enumerate() {
+        let w = 4 * w;
+        if at > 0 && at + room + w > length {
             line += 1;
             at = 0;
+        } else if at > 0 {
+            at += room;
         }
         if w > length || line >= lines {
             break;
         }
         cells.push((line, at, w));
         at += w;
+        room = spaces.get(i).copied().unwrap_or(0) as usize;
     }
     cells
 }

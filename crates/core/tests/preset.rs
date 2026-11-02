@@ -46,7 +46,6 @@ fn the_left_edge_has_the_csp_keys_in_order() {
     let keys = &config.set("csp").expect("[set.csp]").keys;
     let want = [
         "Esc | shortcut | Esc",
-        "\u{200b} | none | -",
         "P | shortcut | P",
         "B | shortcut | B",
         "E | shortcut | E",
@@ -57,7 +56,9 @@ fn the_left_edge_has_the_csp_keys_in_order() {
         "Ctrl | modifier | Ctrl",
         "Shift | modifier | Shift",
     ];
-    let want: Vec<KeyDef> = want.iter().map(|k| def(k)).collect();
+    let mut want: Vec<KeyDef> = want.iter().map(|k| def(k)).collect();
+    // Issue #139: a key's room after Esc, by a space line.
+    want[0].space = 4;
     assert_eq!(keys, &want);
 }
 

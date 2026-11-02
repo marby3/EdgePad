@@ -297,6 +297,46 @@ impl Document {
         true
     }
 
+    /// The space lines after key `index` of `set`, before its next key or
+    /// the end of the section (Issue #139).
+    fn spaces_after(&self, set: &str, index: usize) -> Vec<usize> {
+        let keys = self.settings(set, "key");
+        let (Some(&key), Some((_, end))) = (keys.get(index), self.section(set)) else { return Vec::new() };
+        let next = keys.get(index + 1).copied().unwrap_or(end);
+        self.settings(set, "space").into_iter().filter(|&i| i > key && i < next).collect()
+    }
+
+    /// The room after key `index` of `set`, as its first space line writes
+    /// it, if it has one.
+    pub fn space_after(&self, set: &str, index: usize) -> Option<&str> {
+        value(&self.lines[*self.spaces_after(set, index).first()?])
+    }
+
+    /// Leave room `space` after key `index` of `set`: one space line right
+    /// after the key's, or with none, no space line before the next key.
+    pub fn set_space(&mut self, set: &str, index: usize, space: Option<&str>) -> bool {
+        let Some(&key) = self.settings(set, "key").get(index) else { return false };
+        if space.is_some_and(|v| !writable(v)) {
+            return false;
+        }
+        let found = self.spaces_after(set, index);
+        match (found.first(), space) {
+            (Some(&i), Some(v)) => {
+                self.lines[i] = with_value(&self.lines[i], v);
+                for &extra in found[1..].iter().rev() {
+                    self.lines.remove(extra);
+                }
+            }
+            (_, None) => {
+                for &i in found.iter().rev() {
+                    self.lines.remove(i);
+                }
+            }
+            (None, Some(v)) => self.insert_line(key + 1, &format!("space = {v}")),
+        }
+        true
+    }
+
     /// Take key `index` out of `set`.
     pub fn remove_key(&mut self, set: &str, index: usize) -> bool {
         let Some(&i) = self.settings(set, "key").get(index) else { return false };

@@ -56,6 +56,7 @@ Keys in a row. A name is letters, digits, `-` and `_`.
 |---|---|
 | `key` | One key: `key = label \| kind \| content \| options`, as many lines as keys, in order |
 | `layout` | How the keys are laid out. Without it, along the edge; `free` places each key; `kle:file` takes a Keyboard Layout Editor layout |
+| `space` | Room left after the key of the key line before it, in keys: 0.25 to 2, in quarters. Only in key sets laid along the edge, between key lines. Left out where the keys wrap to the next line or a page ends |
 
 ### Kinds of key
 
