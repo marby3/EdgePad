@@ -115,12 +115,14 @@ fn with_value(line: &str, value: &str) -> String {
 }
 
 /// `line` with the content field of its key, `label | kind | content`,
-/// replaced by `content`.
-fn with_content(line: &str, content: &str) -> String {
+/// replaced by `content`; of a flick, `way | label | kind | content`, if
+/// `flick`.
+fn with_content(line: &str, content: &str, flick: bool) -> String {
     let Some((_, (from, to))) = value_spans(line) else { return line.into() };
     let bars: Vec<usize> = line[from..to].match_indices('|').map(|(i, _)| from + i).collect();
-    let Some(&start) = bars.get(1) else { return line.into() };
-    let end = bars.get(2).copied().unwrap_or(to);
+    let field = 1 + usize::from(flick);
+    let Some(&start) = bars.get(field) else { return line.into() };
+    let end = bars.get(field + 1).copied().unwrap_or(to);
     let field = &line[start + 1..end];
     let lead = start + 1 + (field.len() - field.trim_start().len());
     format!("{}{content}{}", &line[..lead], &line[lead + field.trim().len()..])
@@ -285,13 +287,17 @@ impl Document {
     }
 
     /// Put `key` in as key `index` of `set`: before the key there now, or
-    /// after the last.
+    /// after the last, past its flick lines: before them, they would be the
+    /// new key's (Issue #161).
     pub fn insert_key(&mut self, set: &str, index: usize, key: &str) -> bool {
         let Some((start, end)) = self.section(set).filter(|_| writable(key)) else { return false };
         let keys = self.settings(set, "key");
         let at = match keys.get(index) {
             Some(&i) => i,
-            None => keys.last().map_or_else(|| self.after_last_setting(start, end), |&i| i + 1),
+            None => keys.last().map_or_else(
+                || self.after_last_setting(start, end),
+                |&i| self.lines_after(set, keys.len() - 1, "flick").last().map_or(i + 1, |&f| f + 1),
+            ),
         };
         self.insert_line(at, &format!("key = {key}"));
         true
@@ -300,10 +306,60 @@ impl Document {
     /// The space lines after key `index` of `set`, before its next key or
     /// the end of the section (Issue #139).
     fn spaces_after(&self, set: &str, index: usize) -> Vec<usize> {
+        self.lines_after(set, index, "space")
+    }
+
+    /// The `name` lines after key `index` of `set`, before its next key or
+    /// the end of the section.
+    fn lines_after(&self, set: &str, index: usize, name: &str) -> Vec<usize> {
         let keys = self.settings(set, "key");
         let (Some(&key), Some((_, end))) = (keys.get(index), self.section(set)) else { return Vec::new() };
         let next = keys.get(index + 1).copied().unwrap_or(end);
-        self.settings(set, "space").into_iter().filter(|&i| i > key && i < next).collect()
+        self.settings(set, name).into_iter().filter(|&i| i > key && i < next).collect()
+    }
+
+    /// Key `index` of `set`'s flick `way` (Issue #161): the fields after
+    /// the way of its first flick line that names it, as written. A flick
+    /// line with no `|` after its way is none.
+    pub fn flick(&self, set: &str, index: usize, way: &str) -> Option<&str> {
+        self.flick_line(set, index, way).and_then(|i| value(&self.lines[i])?.split_once('|')).map(|(_, rest)| rest)
+    }
+
+    /// The line of key `index` of `set`'s flick `way`, as `flick` finds it.
+    fn flick_line(&self, set: &str, index: usize, way: &str) -> Option<usize> {
+        self.lines_after(set, index, "flick").into_iter().find(|&i| {
+            let named = value(&self.lines[i]).and_then(|v| v.split_once('|')).map(|(w, _)| w.trim());
+            named.is_some_and(|w| w.eq_ignore_ascii_case(way))
+        })
+    }
+
+    /// Make key `index` of `set`'s flick `way` `flick` (`label | kind |
+    /// content`), or take it away with none: false if there is none to take.
+    /// A new flick line goes after the key's others, or right after the
+    /// key's line.
+    pub fn set_flick(&mut self, set: &str, index: usize, way: &str, flick: Option<&str>) -> bool {
+        let Some(&key) = self.settings(set, "key").get(index) else { return false };
+        if flick.is_some_and(|f| !writable(f)) || !writable(way) || way.contains('|') {
+            return false;
+        }
+        match (self.flick_line(set, index, way), flick) {
+            (Some(i), Some(f)) => {
+                // The way as written, spaces and all.
+                let Some((_, (from, to))) = value_spans(&self.lines[i]) else { return false };
+                let Some(bar) = self.lines[i][from..to].find('|') else { return false };
+                let line = &self.lines[i];
+                self.lines[i] = format!("{}{f}{}", &line[..from + bar + 1], &line[to..]);
+            }
+            (Some(i), None) => {
+                self.lines.remove(i);
+            }
+            (None, Some(f)) => {
+                let at = self.lines_after(set, index, "flick").last().map_or(key + 1, |&i| i + 1);
+                self.insert_line(at, &format!("flick = {way} |{}{f}", if f.starts_with(' ') { "" } else { " " }));
+            }
+            (None, None) => return false,
+        }
+        true
     }
 
     /// The room after key `index` of `set`, as its first space line writes
@@ -337,33 +393,66 @@ impl Document {
         true
     }
 
-    /// Take key `index` out of `set`.
+    /// Take key `index` out of `set`, and its flick lines with it (Issue
+    /// #161): left, they would be the key's before it.
     pub fn remove_key(&mut self, set: &str, index: usize) -> bool {
         let Some(&i) = self.settings(set, "key").get(index) else { return false };
+        self.remove_flicks(set, index);
         self.lines.remove(i);
         true
     }
 
+    /// Take every flick line of key `index` of `set` away, those that do
+    /// not read too. Whether it had any.
+    pub fn remove_flicks(&mut self, set: &str, index: usize) -> bool {
+        let found = self.lines_after(set, index, "flick");
+        for &i in found.iter().rev() {
+            self.lines.remove(i);
+        }
+        !found.is_empty()
+    }
+
     /// Move key `from` of `set` to be key `to`, the keys between shifting
-    /// over to make room. Each key line moves with its comment; the lines
+    /// over to make room. Each key line moves with its comment, and its
+    /// flick lines with it, right after it (Issue #161); the other lines
     /// between the keys stay where they are.
     pub fn move_key(&mut self, set: &str, from: usize, to: usize) -> bool {
-        let slots = self.settings(set, "key");
-        if from >= slots.len() || to >= slots.len() {
+        let count = self.settings(set, "key").len();
+        if from >= count || to >= count {
             return false;
         }
         if from == to {
             return true;
         }
-        // A key on the last line, moved, may no longer be last.
-        if slots.last() == Some(&(self.lines.len() - 1)) {
+        // Each key's flick lines, found once: in order, after its key's.
+        let (Some((_, end)), slots) = (self.section(set), self.settings(set, "key")) else { return false };
+        let all = self.settings(set, "flick");
+        let ends = slots.iter().skip(1).copied().chain([end]);
+        let found: Vec<Vec<usize>> = slots.iter().zip(ends).map(|(&key, next)| all.iter().copied().filter(|&i| i > key && i < next).collect()).collect();
+        // A key's line or flick line on the last line, moved, may no longer
+        // be last.
+        let last = self.lines.len() - 1;
+        if slots.contains(&last) || found.iter().flatten().any(|&i| i == last) {
             self.end_last_line();
         }
+        // The flicks out, to go back in after their keys.
+        let mut flicks: Vec<Vec<String>> = found.iter().map(|lines| lines.iter().map(|&i| self.lines[i].clone()).collect()).collect();
+        for &i in found.iter().flatten().rev() {
+            self.lines.remove(i);
+        }
+        let slots = self.settings(set, "key");
         let mut keys: Vec<String> = slots.iter().map(|&i| self.lines[i].clone()).collect();
         let key = keys.remove(from);
         keys.insert(to, key);
+        let moved = flicks.remove(from);
+        flicks.insert(to, moved);
         for (&i, key) in slots.iter().zip(keys) {
             self.lines[i] = key;
+        }
+        for (&i, lines) in slots.iter().zip(flicks).rev() {
+            for (n, line) in lines.into_iter().enumerate() {
+                self.lines.insert(i + 1 + n, line);
+            }
         }
         true
     }
@@ -421,10 +510,10 @@ impl Document {
         true
     }
 
-    /// Key set `old` is called `new` now: so are the page, pie and layer keys that
-    /// open it and the edges of profiles that show it. A page key's `next`
-    /// and `prev` and an edge's `none` mean no set, whatever sets are
-    /// called.
+    /// Key set `old` is called `new` now: so are the page, pie and layer
+    /// keys that open it, the flicks that turn to it, and the edges of
+    /// profiles that show it. A page key's `next` and `prev` and an edge's
+    /// `none` mean no set, whatever sets are called.
     fn follow_rename(&mut self, old: &str, new: &str) {
         let headers: Vec<String> = self.lines.iter().filter_map(|l| header(l)).collect();
         for section in headers {
@@ -436,7 +525,7 @@ impl Document {
                 if !value_refers(kind, &name, value, old) {
                     continue;
                 }
-                self.lines[i] = if kind == "profile" { with_value(line, new) } else { with_content(line, new) };
+                self.lines[i] = if kind == "profile" { with_value(line, new) } else { with_content(line, new, name == "flick") };
             }
         }
     }
@@ -444,16 +533,22 @@ impl Document {
 
 /// Whether setting `name` = `value` in a section of `kind` names key set
 /// `old`: a profile's edge, unless `none`, or the content of a pie or
-/// layer key, or of a page key unless `next` or `prev`.
+/// layer key, or of a page key or flick unless `next` or `prev`.
 fn value_refers(kind: &str, name: &str, value: &str, old: &str) -> bool {
     let is = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
     if kind == "profile" {
         return ["left", "right", "top", "bottom"].contains(&name) && is(value, old) && !is(value, "none");
     }
-    let fields: Vec<&str> = value.split('|').map(str::trim).collect();
+    let mut fields: Vec<&str> = value.split('|').map(str::trim).collect();
+    // A flick's way goes before its fields (Issue #161).
+    let flick = name == "flick";
+    if flick {
+        fields.remove(0);
+    }
     let (Some(&key_kind), Some(&content)) = (fields.get(1), fields.get(2)) else { return false };
-    if name != "key" || !is(content, old) {
+    if !(name == "key" || flick) || !is(content, old) {
         return false;
     }
-    is(key_kind, "pie") || is(key_kind, "layer") || (is(key_kind, "page") && !is(content, "next") && !is(content, "prev"))
+    let page = is(key_kind, "page") && !is(content, "next") && !is(content, "prev");
+    page || is(key_kind, "pie") || is(key_kind, "layer")
 }

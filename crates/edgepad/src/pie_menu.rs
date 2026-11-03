@@ -429,7 +429,7 @@ unsafe fn draw(m: &Menu) -> bool {
             let (x, y) = (lx - left, ly - top);
             let mut cell = RECT { left: x - half_width, top: y - half_height, right: x + half_width, bottom: y + half_height };
             SetTextColor(mem, colorref(if m.pointing == Some(i) { c.held_text } else { c.text }));
-            DrawTextW(mem, label.as_ptr(), label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            panel::draw_label(mem, label, &mut cell);
         }
         SelectObject(mem, old_font);
         DeleteObject(font);
