@@ -182,6 +182,7 @@ fn reach(editor: HWND, part: HWND, at: POINT) {
 }
 
 /// Click the part `id` of `editor`.
+#[track_caller]
 fn click_id(editor: HWND, id: i32) {
     let hwnd = part(editor, id);
     assert!(visible(hwnd), "part {id} shown");
@@ -294,10 +295,12 @@ fn choose(editor: HWND, id: i32, option: &str) {
     panic!("{option} chosen in {id}");
 }
 
+#[track_caller]
 fn text(editor: HWND, id: i32) -> String {
     text_of(part(editor, id))
 }
 
+#[track_caller]
 fn shown(editor: HWND, id: i32) -> bool {
     visible(part(editor, id))
 }

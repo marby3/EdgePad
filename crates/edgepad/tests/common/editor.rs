@@ -113,7 +113,9 @@ pub fn child(parent: HWND, class: &str, text: &str) -> Option<HWND> {
     (!hwnd.is_null() && unsafe { IsWindowVisible(hwnd) } != 0).then_some(hwnd)
 }
 
-/// The part of `editor` with control id `id`.
+/// The part of `editor` with control id `id`. A part missing is told
+/// where the test asked for it.
+#[track_caller]
 pub fn part(editor: HWND, id: i32) -> HWND {
     let hwnd = unsafe { GetDlgItem(editor, id) };
     assert!(!hwnd.is_null(), "a part with id {id}");
