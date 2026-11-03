@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use edgepad_core::config::{Accent, Action, Edge, Handle, KeyDef, KeySet, Monitor, Page, Step, Theme};
+use edgepad_core::flick;
 use edgepad_core::gesture::{self, Swipe};
 use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Place, Rect};
@@ -31,7 +32,7 @@ use windows_sys::w;
 
 use crate::colors::{self, colorref};
 use crate::log::debug_log;
-use crate::{display, launch, pie_menu, send};
+use crate::{display, flick_guide, launch, pie_menu, send};
 use crate::settings::{EdgePanel, Panels};
 
 /// The handle: the accent, 30% opaque.
@@ -52,12 +53,21 @@ struct PanelKey {
     /// Where it sits inside the panel; none while it does not fit.
     rect: Option<Rect>,
     sends: Sends,
+    /// Its flicks, by `flick::Dir as usize` (Issue #159): each way's label
+    /// and what it sends.
+    flicks: [Option<(Vec<u16>, Sends)>; 4],
 }
 
 impl PanelKey {
     fn of(k: &KeyDef) -> PanelKey {
         let label = k.label.encode_utf16().collect();
-        PanelKey { label, width: k.width as usize, space: k.space, place: k.place, rect: None, sends: Sends::of(&k.action) }
+        let flicks = k.flicks.each_ref().map(|f| f.as_ref().map(|f| (f.label.encode_utf16().collect(), Sends::of(&f.action))));
+        let sends = Sends::of(&k.action);
+        PanelKey { label, width: k.width as usize, space: k.space, place: k.place, rect: None, sends, flicks }
+    }
+
+    fn has_flicks(&self) -> bool {
+        self.flicks.iter().any(Option::is_some)
     }
 
     /// Whether it is on every page: it turns them.
@@ -704,6 +714,7 @@ pub unsafe fn rebuild(panels: &Panels) -> bool {
         // Taken out first: messages sent while a window is destroyed (capture
         // lost, for one) then find no panel and change nothing.
         pie_menu::close_all();
+        flick_guide::close_all();
         for mut panel in PANELS.take() {
             undock(&mut panel);
             DestroyWindow(panel.hwnd);
@@ -891,6 +902,7 @@ unsafe fn apply_visibility() {
 /// shortcut still under a finger is dropped, not sent.
 unsafe fn let_go(panel: &mut Panel) {
     unsafe {
+        flick_guide::close(panel.hwnd, None);
         for (i, key) in panel.keys.iter_mut().enumerate() {
             let up = match &mut key.sends {
                 Sends::Hold(vk) => panel.presses.is_down(i).then_some(*vk),
@@ -1071,6 +1083,7 @@ unsafe fn back_to_base(panel: &mut Panel) {
 /// layer keys).
 unsafe fn show_keys(panel: &mut Panel, defs: &[KeyDef], page: usize) {
     unsafe {
+        flick_guide::close(panel.hwnd, None);
         let mut carried = std::mem::take(&mut panel.carried);
         for (i, key) in panel.keys.iter_mut().enumerate() {
             match &mut key.sends {
@@ -1119,11 +1132,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             WM_POINTERUP => {
                 pie_menu::point(pointer_id(wp), pointer_at(lp));
-                pointer_up(hwnd, wp, (wp >> 16) as u32 & POINTER_MESSAGE_FLAG_CANCELED != 0);
+                pointer_up(hwnd, wp, Some(pointer_at(lp)), (wp >> 16) as u32 & POINTER_MESSAGE_FLAG_CANCELED != 0);
                 0
             }
             WM_POINTERCAPTURECHANGED => {
-                pointer_up(hwnd, wp, true);
+                pointer_up(hwnd, wp, None, true);
                 0
             }
             WM_POINTERUPDATE => {
@@ -1226,7 +1239,9 @@ pub unsafe fn finger_or_mouse(id: u32) -> Option<POINTER_INPUT_TYPE> {
 /// A pointer moved on a panel: a quick flick toward the screen edge hides the
 /// panel, letting go of the key it pressed. A flick the other way is no
 /// gesture: the key stays pressed until the finger lifts. A finger holding a
-/// pie menu open slides to its items instead, and flicks nothing.
+/// pie menu open slides to its items instead, and flicks nothing. On a key
+/// with flicks, a finger slides to them instead, under their guide, and
+/// never hides the panel.
 unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     let (id, (x, y)) = (pointer_id(wp), pointer_at(lp));
     unsafe { pie_menu::point(id, (x, y)) };
@@ -1235,8 +1250,13 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     }
     let mut flick = None;
     with_panel(hwnd, |panel| {
-        if let Some(s) = panel.starts.iter().find(|s| s.id == id && s.at.elapsed() <= FLICK_TIME) {
-            let (dx, dy) = (x - s.x, y - s.y);
+        let Some(s) = panel.starts.iter().find(|s| s.id == id).copied() else { return };
+        let (dx, dy) = (x - s.x, y - s.y);
+        if let Some(key) = panel.presses.key_of(id).filter(|&k| panel.keys[k].has_flicks()) {
+            unsafe { guide(panel, id, key, dx, dy) };
+            return;
+        }
+        if s.at.elapsed() <= FLICK_TIME {
             let hide = panel.hide_distance((s.x, s.y));
             if gesture::swipe(panel.edge, dx, dy, hide) == Some(Swipe::Outward) {
                 flick = Some(panel.edge);
@@ -1247,6 +1267,28 @@ unsafe fn pointer_update(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     if let Some(edge) = flick {
         unsafe { set_hidden(edge, true) };
     }
+}
+
+/// The finger holding `key`, a key with flicks, is (`dx`, `dy`) from where it
+/// went down: once it is a quarter of a key away, show the key's ways around
+/// it, the one it points at lit.
+unsafe fn guide(panel: &Panel, pointer: u32, key: usize, dx: i32, dy: i32) {
+    let (x, y, size) = (i64::from(dx), i64::from(dy), i64::from(panel.key));
+    if 16 * (x * x + y * y) < size * size {
+        return;
+    }
+    let k = &panel.keys[key];
+    let Some(r) = k.rect else { return };
+    let showing = flick_guide::Showing {
+        panel: panel.hwnd,
+        pointer,
+        at: (panel.rect.x + r.x + r.w / 2, panel.rect.y + r.y + r.h / 2),
+        key: panel.key,
+        labels: k.flicks.each_ref().map(|f| f.as_ref().map(|(label, _)| label.as_slice())),
+        palette: palette(),
+        alpha: panel.alpha,
+    };
+    unsafe { flick_guide::show(showing, flick::direction(dx, dy, panel.key)) };
 }
 
 unsafe extern "system" fn handle_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1491,16 +1533,19 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
     }
 }
 
-/// A pointer lifted, or was taken away (`cancelled`): release its key if
-/// nobody else holds it. A modifier tapped briefly latches instead. A key
-/// that acts once acts now (see `act`), and so does the pie item a finger
-/// holding a pie key lets go on.
-unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
+/// A pointer lifted at `at`, or was taken away (`cancelled`): release its
+/// key if nobody else holds it. A modifier tapped briefly latches instead. A
+/// key that acts once acts now (see `act`); slid half a key or more, a key
+/// with flicks does its flick that way instead, or nothing if it has none
+/// there. So does the pie item a finger holding a pie key lets go on.
+unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, at: Option<(i32, i32)>, cancelled: bool) {
     unsafe {
         let id = pointer_id(wp);
         let pie = pie_menu::release(hwnd, id, cancelled);
+        flick_guide::close(hwnd, Some(id));
         with_panels(hwnd, |panels, i| {
             let panel = &mut panels[i];
+            let start = panel.starts.iter().find(|s| s.id == id).map(|s| (s.x, s.y));
             panel.starts.retain(|s| s.id != id);
             let ends_layer = matches!(panel.layer, Some(Layer::Held { pointer, .. }) if pointer == id);
             if let Some(c) = panel.carried.iter_mut().find(|c| c.pointer == Some(id)) {
@@ -1543,6 +1588,13 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, cancelled: bool) {
                 }
                 once => Some(once.clone()),
             });
+            // Slid, a key with flicks does the way it went instead.
+            let way = released.zip(start).zip(at).and_then(|((key, (x0, y0)), (x, y))| {
+                let k = &panel.keys[key];
+                let d = flick::direction(x - x0, y - y0, panel.key).filter(|_| k.has_flicks())?;
+                Some(k.flicks[d as usize].as_ref().map_or(Sends::Nothing, |(_, sends)| sends.clone()))
+            });
+            let once = once.map(|own| way.unwrap_or(own));
             if let Some(once) = once {
                 act(panels, i, &once);
             }

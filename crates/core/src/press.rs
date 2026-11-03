@@ -40,6 +40,11 @@ impl Presses {
         (self.holders[key] == 0).then_some(key)
     }
 
+    /// The key `pointer` holds, if any.
+    pub fn key_of(&self, pointer: u32) -> Option<usize> {
+        self.pointers.iter().flatten().find(|&&(p, _)| p == pointer).map(|&(_, k)| k)
+    }
+
     /// The pointers holding `key`.
     pub fn pointers_on(&self, key: usize) -> Vec<u32> {
         self.pointers.iter().flatten().filter(|&&(_, k)| k == key).map(|&(p, _)| p).collect()
