@@ -8,6 +8,7 @@ pub mod config;
 pub mod document;
 pub mod flick;
 pub mod gesture;
+pub mod kana;
 pub mod keys;
 pub mod kle;
 pub mod layout;

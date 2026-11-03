@@ -132,6 +132,7 @@ impl Sends {
                     .collect::<Rc<[_]>>(),
             ),
             Action::Text(text) => Sends::Text(text.clone()),
+            Action::Kana(_) => Sends::Nothing,
             Action::Run(command) => Sends::Run(command.clone()),
             Action::Page(page) => Sends::Page(page.clone()),
             Action::Pie(set) => Sends::Pie(set.clone()),

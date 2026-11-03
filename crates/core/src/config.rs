@@ -6,6 +6,7 @@
 //! mistake is collected with its line number, so one read reports them all.
 
 use crate::flick::Dir;
+use crate::kana::{self, Kana};
 use crate::keys::{Combo, Key};
 use crate::kle::{self, KleKey};
 use crate::layout::Place;
@@ -276,6 +277,9 @@ pub enum Action {
     Macro(Vec<Step>),
     /// Typed as Unicode characters.
     Text(String),
+    /// A kana typed as its romaji keys, or the kana sent last changed
+    /// (Issue #163).
+    Kana(Kana),
     /// A program or URL to start.
     Run(String),
     Page(Page),
@@ -301,6 +305,7 @@ impl Action {
             Action::Repeat { .. } => "repeat",
             Action::Macro(_) => "macro",
             Action::Text(_) => "text",
+            Action::Kana(_) => "kana",
             Action::Run(_) => "run",
             Action::Page(_) => "page",
             Action::Pie(_) => "pie",
@@ -316,7 +321,7 @@ impl Action {
     /// an item the settings window has just added is (Issue #113).
     pub fn is_pie_item(&self) -> bool {
         match self {
-            Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Run(_) | Action::Page(_) | Action::None => true,
+            Action::Shortcut(_) | Action::Macro(_) | Action::Text(_) | Action::Kana(_) | Action::Run(_) | Action::Page(_) | Action::None => true,
             Action::Modifier(_) | Action::Hold(_) | Action::Repeat { .. } | Action::Pie(_) | Action::Layer { .. } | Action::Trans => false,
         }
     }
@@ -1035,6 +1040,9 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
             Action::Macro(steps)
         }
         "text" => Action::Text(content.into()),
+        "kana" => Action::Kana(Kana::parse(content).ok_or_else(|| {
+            format!("kana の内容は、ひらがな 1 文字か、ー 、 。 ？ ！ のどれか、または {}（「{content}」）", kana::MARK)
+        })?),
         "run" => {
             if let Some(rest) = content.strip_prefix('"') {
                 match rest.split_once('"') {
