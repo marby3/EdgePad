@@ -2501,13 +2501,19 @@ left = pad\n";
     save(editor);
     let want = ["B", "b下", "C", "c左"];
     assert!(within_3s(|| labels_in_order(&file(&app), "pad") == want), "{}", file(&app));
+    // A key added after C, the last: C keeps its flick.
+    choose_key(editor, 1, "C");
+    click_id(editor, ADD_KEY);
+    save(editor);
+    let want = ["B", "b下", "C", "c左", "新しいキー"];
+    assert!(within_3s(|| labels_in_order(&file(&app), "pad") == want), "{}", file(&app));
     // C made a modifier: its flick goes, and it is said.
     to_page(editor, MAP_PAGE);
     choose_key(editor, 1, "C");
     click_id(editor, button_named(editor, MOD_KEYS, 4, "Shift"));
     assert!(within_3s(|| status(editor).contains("フリック")), "said: {:?}", status(editor));
     save(editor);
-    assert!(within_3s(|| labels_in_order(&file(&app), "pad") == ["B", "b下", "C"]), "{}", file(&app));
+    assert!(within_3s(|| labels_in_order(&file(&app), "pad") == ["B", "b下", "C", "新しいキー"]), "{}", file(&app));
     assert_eq!(key_of(&file(&app), "pad", "C"), ["C", "modifier", "Shift"]);
 }
 
