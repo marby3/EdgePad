@@ -101,6 +101,7 @@ A key pressed and slid up, down, left or right does another action that way, in 
 - Only keys of those kinds can have flicks
 - Slid half a key or more, it is a flick; that way with no action, nothing happens
 - On a key with flicks, a slide never hides the panel
+- Once a slide starts, a cross around the key shows each way's label
 
 ### Layers of a KLE key set: [set.name.layer]
 

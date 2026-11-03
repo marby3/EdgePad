@@ -111,6 +111,10 @@ name = "icon"
 required-features = ["desktop-tests"]
 
 [[test]]
+name = "key_flick"
+required-features = ["desktop-tests"]
+
+[[test]]
 name = "keymap"
 required-features = ["desktop-tests"]
 

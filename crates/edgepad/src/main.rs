@@ -12,6 +12,7 @@ mod instance;
 mod launch;
 mod log;
 mod panel;
+mod flick_guide;
 mod pie_menu;
 mod profile;
 mod send;
