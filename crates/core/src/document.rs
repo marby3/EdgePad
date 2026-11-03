@@ -287,13 +287,17 @@ impl Document {
     }
 
     /// Put `key` in as key `index` of `set`: before the key there now, or
-    /// after the last.
+    /// after the last, past its flick lines: before them, they would be the
+    /// new key's (Issue #161).
     pub fn insert_key(&mut self, set: &str, index: usize, key: &str) -> bool {
         let Some((start, end)) = self.section(set).filter(|_| writable(key)) else { return false };
         let keys = self.settings(set, "key");
         let at = match keys.get(index) {
             Some(&i) => i,
-            None => keys.last().map_or_else(|| self.after_last_setting(start, end), |&i| i + 1),
+            None => keys.last().map_or_else(
+                || self.after_last_setting(start, end),
+                |&i| self.lines_after(set, keys.len() - 1, "flick").last().map_or(i + 1, |&f| f + 1),
+            ),
         };
         self.insert_line(at, &format!("key = {key}"));
         true
@@ -419,8 +423,10 @@ impl Document {
         if from == to {
             return true;
         }
-        // A line of a key on the last line, moved, may no longer be last.
-        if self.section(set).is_some_and(|(_, end)| end == self.lines.len()) {
+        // A key's line or flick line on the last line, moved, may no longer
+        // be last.
+        let last = self.lines.len() - 1;
+        if (0..count).any(|k| self.settings(set, "key")[k] == last || self.lines_after(set, k, "flick").contains(&last)) {
             self.end_last_line();
         }
         // Each key's flicks out, to go back in after it.
@@ -500,11 +506,10 @@ impl Document {
         true
     }
 
-    /// Key set `old` is called `new` now: so are the page, pie and layer keys that
-    /// open it, the flicks that turn to it, and the edges of profiles that
-    /// show it. A page key's `next`
-    /// and `prev` and an edge's `none` mean no set, whatever sets are
-    /// called.
+    /// Key set `old` is called `new` now: so are the page, pie and layer
+    /// keys that open it, the flicks that turn to it, and the edges of
+    /// profiles that show it. A page key's `next` and `prev` and an edge's
+    /// `none` mean no set, whatever sets are called.
     fn follow_rename(&mut self, old: &str, new: &str) {
         let headers: Vec<String> = self.lines.iter().filter_map(|l| header(l)).collect();
         for section in headers {

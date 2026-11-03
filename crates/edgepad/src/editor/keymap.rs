@@ -597,8 +597,9 @@ pub(super) struct Keymap {
     /// The field whose value was turned away, and why, while it stands.
     wrong: Option<(usize, String)>,
     /// Whether the parts were last placed for a macro: its steps above the
-    /// keys sent.
+    /// keys sent; and for a cross, with no ＋.
     laid_macro: Cell<bool>,
+    laid_cross: Cell<bool>,
 }
 
 /// What the sample draws, kept apart from the window's state as the
@@ -1196,6 +1197,16 @@ fn is_trans(line: &Line) -> bool {
     line.kind.eq_ignore_ascii_case("trans")
 }
 
+/// The key setting `name` = `value` writes, if it is a key's or a flick's:
+/// a flick's fields after its way (Issue #161).
+fn key_or_flick(name: &str, value: &str) -> Option<Line> {
+    match name {
+        "key" => Some(Line::of(value)),
+        "flick" => value.split_once('|').map(|(_, rest)| Line::of(rest)),
+        _ => None,
+    }
+}
+
 /// Whether key set `set` is a pie's items: pie keys name it, and nothing
 /// else does, no edge, no page key and no layer key.
 fn is_items(doc: &Document, set: &str) -> bool {
@@ -1205,10 +1216,9 @@ fn is_items(doc: &Document, set: &str) -> bool {
             if section.starts_with("profile.") && Edge::parse(&name).is_some() && value.eq_ignore_ascii_case(set) {
                 return false;
             }
-            let line = Line::of(&value);
-            if !section.starts_with("set.") || name != "key" || !line.content.eq_ignore_ascii_case(set) {
+            let Some(line) = key_or_flick(&name, &value).filter(|l| section.starts_with("set.") && l.content.eq_ignore_ascii_case(set)) else {
                 continue;
-            }
+            };
             match line.kind() {
                 Some(PIE_KIND) => pie = true,
                 Some(PAGE_KIND | LAYER_KIND) => return false,
@@ -1241,15 +1251,13 @@ fn used_by(doc: &Document, set: &str) -> Vec<String> {
             }
         } else if section.starts_with("set.") {
             for (name, value) in doc.values(&section) {
-                let line = Line::of(&value);
-                if name != "key" || !line.content.eq_ignore_ascii_case(set) {
-                    continue;
-                }
+                let Some(line) = key_or_flick(&name, &value).filter(|l| l.content.eq_ignore_ascii_case(set)) else { continue };
+                let of = if name == "flick" { "フリック" } else { "キー" };
                 match line.kind() {
-                    Some(PIE_KIND) => places.push(format!("{}キーのパイ", line.label)),
-                    Some(LAYER_KIND) => places.push(format!("{}キーのレイヤー", line.label)),
+                    Some(PIE_KIND) => places.push(format!("{}{of}のパイ", line.label)),
+                    Some(LAYER_KIND) => places.push(format!("{}{of}のレイヤー", line.label)),
                     Some(PAGE_KIND) if PAGE_TURNS.iter().all(|(t, _)| !t.eq_ignore_ascii_case(set)) => {
-                        places.push(format!("{}キーのページ", line.label))
+                        places.push(format!("{}{of}のページ", line.label))
                     }
                     _ => {}
                 }
@@ -1388,7 +1396,7 @@ pub(super) unsafe fn make(parent: HWND) -> bool {
         // What is said ends in "…" if it is too long; a symbol's button
         // has two lines.
         let style = match id {
-            PIE_NOTE | SUMMARY => style | SS_ENDELLIPSIS,
+            PIE_NOTE | FLICK_NOTE | SUMMARY => style | SS_ENDELLIPSIS,
             _ if class == Toggle && text.contains('\n') => style | BS_MULTILINE as u32,
             _ => style,
         };
@@ -1729,9 +1737,14 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
         at(id, x, top + pitch, s(w), h);
         x -= gap;
     }
-    // Over a pie's fan, in the tabs' place: its buttons, and what is said.
+    // Over a pie's fan, in the tabs' place: its buttons, and what is said;
+    // over a cross, the same with no ＋.
     let mut x = left;
+    let cross = e.keymap.flick.is_some();
     for (id, w) in [(PIE_BACK, 104), (PIE_ADD, 40), (PIE_REMOVE, 56)] {
+        if id == PIE_ADD && cross {
+            continue;
+        }
         at(id, x, top + pitch, s(w), h);
         x += s(w) + gap;
     }
@@ -1743,7 +1756,9 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
         x += s(w) + gap;
     }
     at(CUT, x, yl, s(130), h);
-    // フリック at the row's end, what the key does before it.
+    // フリック at the row's end, what the key does before it: its room
+    // kept whether it shows or not, so the sentence does not jump as keys
+    // are chosen.
     let flick_w = s(96);
     at(SUMMARY, x + s(130) + gap, yl, (left + width - x - s(130) - 2 * gap - flick_w).max(0), h);
     at(FLICK, left + width - flick_w, yl, flick_w, h);
@@ -1823,6 +1838,7 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     }
 
     e.keymap.laid_macro.set(is_macro(e));
+    e.keymap.laid_cross.set(cross);
 
     // A text and a program; a page's target and パイにする.
     at(TITLE_CONTENT, rx, y1, s(120), h);
@@ -1955,9 +1971,9 @@ pub(super) unsafe fn refresh(e: &mut Editor) {
     }
     update_sample(e);
     unsafe { show(e) };
-    // A macro's steps go above the keys it sends: placed again, once the
-    // window is free.
-    if is_macro(e) != e.keymap.laid_macro.get() {
+    // A macro's steps go above the keys it sends, and a cross has no ＋:
+    // placed again, once the window is free.
+    if is_macro(e) != e.keymap.laid_macro.get() || e.keymap.flick.is_some() != e.keymap.laid_cross.get() {
         unsafe { PostMessageW(e.hwnd, super::WM_LAY_OUT, 0, 0) };
     }
 }
@@ -2157,6 +2173,7 @@ unsafe fn change(e: &mut Editor, field: usize, edit: impl FnOnce(&mut Line) -> R
     let items = line.content.clone().to_ascii_lowercase();
     let was_pie = line.kind() == Some(PIE_KIND) && is_items(&e.doc, &items);
     let (key, way) = (e.keymap.key, e.keymap.flick.flatten());
+    let could_flick = can_flick(&line);
     let mut dropped = false;
     let changed = edit(&mut line).and_then(|()| {
         if [&line.label, &line.content].iter().any(|f| f.contains('|')) {
@@ -2166,7 +2183,10 @@ unsafe fn change(e: &mut Editor, field: usize, edit: impl FnOnce(&mut Line) -> R
         let def = config::key_def(&text)?;
         // A way of the cross: its flick line (Issue #161).
         if let Some(way) = way {
-            if !def.action.is_pie_item() || !line.options.is_empty() {
+            if !line.options.is_empty() {
+                return Err("フリックにはオプションを書けない".into());
+            }
+            if !def.action.is_pie_item() {
                 return Err("フリックには、押している間・連打・修飾キー・レイヤー・パイは使えない".into());
             }
             let written = text == raw || e.doc.set_flick(&set, key, way.name(), Some(&text));
@@ -2175,8 +2195,8 @@ unsafe fn change(e: &mut Editor, field: usize, edit: impl FnOnce(&mut Line) -> R
         if text != raw && !e.doc.set_key(&set, key, &text) {
             return Err("この値はファイルに書けない".into());
         }
-        // A kind that cannot flick: its flicks go.
-        dropped = !can_flick(&line) && e.doc.remove_flicks(&set, key);
+        // A kind that cannot flick: its flicks go; said, if it was made so.
+        dropped = !can_flick(&line) && e.doc.remove_flicks(&set, key) && could_flick;
         Ok(())
     });
     // A pie of another kind now: its items go, unless named elsewhere.
@@ -3567,7 +3587,23 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
                 1
             }
             WM_KEYDOWN => {
-                let (chosen, count) = SAMPLE_VIEW.with_borrow(|v| (v.chosen, v.count));
+                let (chosen, count, cross) = SAMPLE_VIEW.with_borrow(|v| (v.chosen, v.count, v.cross));
+                // On a cross, an arrow chooses the way it points, and the
+                // other way back to the middle; Home or End the middle.
+                if cross {
+                    let (way, back) = match wp as u16 {
+                        VK_UP => (1, 2),
+                        VK_DOWN => (2, 1),
+                        VK_LEFT => (3, 4),
+                        VK_RIGHT => (4, 3),
+                        VK_HOME | VK_END => (0, usize::MAX),
+                        VK_RETURN | VK_SPACE => (chosen, usize::MAX),
+                        _ => return DefWindowProcW(hwnd, msg, wp, lp),
+                    };
+                    let to = if chosen == back { 0 } else { way };
+                    PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, to, 0);
+                    return 0;
+                }
                 // Enter or Space opens the chosen pie key's fan, as a click.
                 if matches!(wp as u16, VK_RETURN | VK_SPACE) {
                     PostMessageW(GetParent(hwnd), super::WM_CHOOSE_KEY, chosen, 1);
@@ -3784,6 +3820,11 @@ unsafe fn draw_fan(dc: HDC, look: super::Look, palette: Palette, v: &Sample, f: 
         for (i, (&(lx, ly), label)) in f.ring.labels(f.edge, f.items).iter().zip(&v.labels).enumerate() {
             let (x, y) = (f.middle.0 + lx, f.middle.1 + ly);
             let mut cell = RECT { left: x - half_width, top: y - half_height, right: x + half_width, bottom: y + half_height };
+            // An empty one is not handed to DrawTextW: an empty Vec's
+            // pointer is dangling.
+            if label.is_empty() {
+                continue;
+            }
             SetTextColor(mem, colorref(if i == v.chosen { palette.held_text } else { palette.text }));
             DrawTextW(mem, label.as_ptr(), label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
