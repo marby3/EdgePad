@@ -1041,7 +1041,7 @@ pub fn key_def(value: &str) -> Result<KeyDef, String> {
         }
         "text" => Action::Text(content.into()),
         "kana" => Action::Kana(Kana::parse(content).ok_or_else(|| {
-            format!("kana の内容は、ひらがな 1 文字か、ー 、 。 ？ ！ のどれか、または {}（「{content}」）", kana::MARK)
+            format!("kana の内容は、五十音のひらがな（が・ぱ・っ なども）1 文字か、ー 、 。 ？ ！ のどれか、または {}（「{content}」）", kana::MARK)
         })?),
         "run" => {
             if let Some(rest) = content.strip_prefix('"') {

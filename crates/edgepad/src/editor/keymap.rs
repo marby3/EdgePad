@@ -113,7 +113,6 @@ const TRANS: usize = 1016;
 const FLICK_NOTE: usize = 1017;
 /// On 文字・起動, a kana sent as its romaji (Issue #163).
 const KANA: usize = 1018;
-const TITLE_KANA: usize = 1112;
 const KINDS: usize = 1020;
 const MODS: usize = 1030;
 const GROUPS: usize = 1040;
@@ -179,6 +178,8 @@ const TITLE_STEPS: usize = 1107;
 const TITLE_WAIT: usize = 1108;
 const WAIT_NOTE: usize = 1109;
 const TITLE_CONTENT: usize = 1110;
+/// The title of the かな field, KANA (Issue #163).
+const TITLE_KANA: usize = 1112;
 const TITLE_TARGET: usize = 1111;
 const TITLE_LAYER: usize = 1113;
 const TITLE_ARRANGE: usize = 1114;
@@ -2039,6 +2040,7 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
         let about = match kind {
             Some(i) => ABOUTS[i],
             None if line.kind.eq_ignore_ascii_case("none") => "何も送りません。種類を選ぶと割り当てます",
+            None if is_kana(&line) => "かなをローマ字のキー操作で送ります。「゛゜小」は直前のかなを変えます",
             None => "この種類は読めません",
         };
         set_text(part_of(e, ABOUT), about);
@@ -3302,8 +3304,9 @@ pub(super) unsafe fn commit(id: usize) -> bool {
             }
             KANA => {
                 change(e, id, |line| {
-                    set_kind(line, TEXT);
                     line.kind = KANA_KIND.into();
+                    line.set_option("interval", None);
+                    line.set_option("mode", None);
                     line.content = typed;
                     Ok(())
                 });

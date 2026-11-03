@@ -1645,9 +1645,19 @@ thread_local! {
     static LAST_KANA: Cell<Option<char>> = const { Cell::new(None) };
 }
 
+/// Forget the kana sent last: another window is in front, and its text is
+/// not the one it was typed into (Issue #163).
+pub fn forget_last_kana() {
+    LAST_KANA.set(None);
+}
+
 /// Type kana `c` as its romaji keys, for the IME to read.
 unsafe fn type_kana(c: char) {
-    for combo in kana::romaji(c).unwrap_or_default() {
+    // The parser lets no other kana be written.
+    let Some(keys) = kana::romaji(c) else {
+        return debug_log!("かな「{c}」のローマ字がない");
+    };
+    for combo in keys {
         let (mods, key) = vks(&combo);
         unsafe { send::shortcut(&mods, key) };
     }
@@ -1665,8 +1675,9 @@ unsafe fn act(panels: &mut [Panel], i: usize, sends: &Sends) {
         if matches!(sends, Sends::Macro(_) | Sends::Text(_) | Sends::Kana(_)) {
             end_one_shot_latches(panels, mode);
         }
-        // The kana sent last is the last thing sent, or none.
-        if !matches!(sends, Sends::Kana(_)) {
+        // The kana sent last is the last thing sent, or none. A flick with
+        // nothing that way sends nothing, and leaves it be.
+        if !matches!(sends, Sends::Kana(_) | Sends::Nothing) {
             LAST_KANA.set(None);
         }
         match sends {
