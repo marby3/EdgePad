@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # A work branch before its PR: `gh workflow run ci.yml --ref <branch>`.
+  # The tests that drive the desktop run here only (Issue #153).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,4 +34,4 @@ jobs:
           # tests/tray.rs makes EdgePad panic on purpose: those are no failure.
           awk '/panicked at|^error(\[|:)/ { msg = $0; while ((getline line) > 0 && line != "" && line !~ /^note:/) msg = msg "%0A" line; if (msg !~ /fault injection|panicking\.rs/) print "::error::" msg }' test-output.txt | head -10
       - name: Release build checks (size, static CRT, GUI subsystem)
-        run: python -m unittest -v ci/test_build.py ci/test_measure.py ci/test_retry.py ci/test_release.py ci/test_docs.py
+        run: python -m unittest -v ci/test_build.py ci/test_measure.py ci/test_retry.py ci/test_release.py ci/test_docs.py ci/test_desktop.py
