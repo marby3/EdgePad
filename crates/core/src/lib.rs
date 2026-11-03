@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod document;
+pub mod flick;
 pub mod gesture;
 pub mod keys;
 pub mod kle;

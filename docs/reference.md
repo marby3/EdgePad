@@ -56,6 +56,7 @@ Keys in a row. A name is letters, digits, `-` and `_`.
 |---|---|
 | `key` | One key: `key = label \| kind \| content \| options`, as many lines as keys, in order |
 | `layout` | How the keys are laid out. Without it, along the edge; `free` places each key; `kle:file` takes a Keyboard Layout Editor layout |
+| `flick` | A flick of the key of the key line before it: `flick = way \| label \| kind \| content`, the way `up`, `down`, `left` or `right`. See Flicks below |
 | `space` | Room left after the key of the key line before it, in keys: 0.25 to 2, in quarters. Only in key sets laid along the edge, between key lines. Left out where the keys wrap to the next line or a page ends |
 
 ### Kinds of key
@@ -86,6 +87,20 @@ Keys in a row. A name is letters, digits, `-` and `_`.
 | `w` `h` | `layout = free` | The key's width and height, in keys, in quarters | 0.25 to 8 (default 1) |
 
 A `layout = kle:file` key set takes its places from the KLE file. Its keys go to the key lines one by one, from the top row down (left to right at the same height). Turned keys show at KLE's angle.
+
+### Flicks
+
+A key pressed and slid up, down, left or right does another action that way, in place of its own. Written after its key line:
+
+    key = C | shortcut | C
+    flick = up   | Copy  | shortcut | Ctrl+C
+    flick = down | Paste | shortcut | Ctrl+V
+
+- The way is `up`, `down`, `left` or `right`, the screen's. One of each way on a key
+- The kind is `shortcut`, `macro`, `text`, `run`, `page` or `none`, as a pie item's. No options
+- Only keys of those kinds can have flicks
+- Slid half a key or more, it is a flick; that way with no action, nothing happens
+- On a key with flicks, a slide never hides the panel
 
 ### Layers of a KLE key set: [set.name.layer]
 

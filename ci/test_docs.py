@@ -141,11 +141,14 @@ class DocsTest(unittest.TestCase):
                 for s in literal.findall(line):
                     self.assertNotIn("辺", s, f"{path.relative_to(ROOT)}:{n}: {s}")
 
-    # Issue #136, AC3: hiding a panel is a swipe; a flick is a key's.
+    # Issue #136, AC3: hiding a panel is a swipe; a flick is a key's. Since
+    # Issue #157, 4.5 names flicks where it points to them, in 4.7.
     def test_the_spec_calls_hiding_a_panel_a_swipe(self):
         spec = text(SPEC)
         for head in ("### 4.5", "### 4.6", "### 5.1"):
-            self.assertNotIn("フリック", section(spec, head), head)
+            for line in section(spec, head).splitlines():
+                if "4.7" not in line:
+                    self.assertNotIn("フリック", line, head)
         self.assertIn("スワイプ", section(spec, "### 4.5"))
 
     # Issue #136, AC5: the documents and the shipped settings say エッジ.
@@ -184,6 +187,19 @@ class DocsTest(unittest.TestCase):
         for lang, path in REFERENCES.items():
             doc = text(path)
             for must in ("`trans`", heads[lang], "kb.fn"):
+                self.assertIn(must, doc, f"{lang}: {must}")
+
+    # Issue #157, AC5: flicks in the spec, beside the pie menu, and in both
+    # references.
+    def test_flicks_are_written_up(self):
+        spec = text(SPEC)
+        flicks = section(spec, "### 4.7")
+        for must in ("フリック", "flick = up", "パイメニュー", "| "):
+            self.assertIn(must, flicks, must)
+        self.assertTrue(any("フリック" in l and "4.7" in l for l in section(spec, "### 4.5").splitlines()), "4.5 points to 4.7")
+        for lang, path in REFERENCES.items():
+            doc = text(path)
+            for must in ("`flick`", "`up`", "`down`", "`left`", "`right`"):
                 self.assertIn(must, doc, f"{lang}: {must}")
 
     # AC2
