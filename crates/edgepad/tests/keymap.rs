@@ -2381,7 +2381,11 @@ fn diagnose(editor: HWND, pid: u32) {
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     let mut code = 0u32;
     let got = !process.is_null() && unsafe { GetExitCodeProcess(process, &mut code) } != 0;
-    panic!("the window went: process {pid}, exit code read {got}, 0x{code:08X}");
+    let said = std::fs::read_to_string(std::env::temp_dir().join("edgepad-panic.txt")).unwrap_or_default();
+    let said: String = said.lines().take(60).collect::<Vec<_>>().join("
+");
+    panic!("the window went: process {pid}, exit code read {got}, 0x{code:08X}
+{said}");
 }
 
 /// Click the cross's key `dx`, `dy` keys from its middle, and wait for its
