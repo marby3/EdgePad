@@ -2330,3 +2330,203 @@ fn a_kle_file_imported_again_keeps_each_layers_key_lines() {
     assert_eq!(key_lines(&saved, "kb.fn"), key_lines(&before, "kb.fn"), "fn's keys kept");
     assert!(!section(&saved, "kb.fn").contains("layout"), "the layer has kb's layout: {saved}");
 }
+
+// Issue #161: a key's flicks assigned on a cross. Its parts: フリック 1089,
+// shown on キーマッピング for a key that can flick; over the cross,
+// パネルに戻る 1083 and 削除 1085, as over a pie's fan, and why some
+// buttons cannot be pressed 1017 (a Static). The cross is drawn in the
+// sample: the key in the sample's middle, each way a key from it, its keys
+// as large as the sample says ("key"). A way with nothing is chosen as
+// sending nothing, labelled with the way: 上, 下, 左 or 右.
+const FLICK: i32 = 1089;
+const FLICK_NOTE: i32 = 1017;
+
+/// コピー with 全選択 up, and a modifier, which cannot flick.
+const FLICKS: &str = "[general]\ntheme = light\naccent = #C00000\n\n\
+[set.pad]\n\
+key = コピー | shortcut | Ctrl+C\n\
+flick = up | 全選択 | shortcut | Ctrl+A\n\
+key = Ctrl | modifier | Ctrl\n\
+\n\
+[profile.default]\n\
+left = pad\n";
+
+/// A point of the cross's key `dx`, `dy` keys from its middle, on the
+/// screen: in its face, clear of its label.
+fn cross_cell(editor: HWND, dx: i32, dy: i32) -> POINT {
+    let r = client_rect(part(editor, SAMPLE));
+    let key = sample_key(editor);
+    POINT { x: (r.left + r.right) / 2 + dx * key - key / 3, y: (r.top + r.bottom) / 2 + dy * key - key / 3 }
+}
+
+/// Choose key `i`, `label`, and open its cross.
+fn open_cross(editor: HWND, i: i32, label: &str) {
+    choose_key(editor, i, label);
+    click_id(editor, FLICK);
+    assert!(within_3s(|| shown(editor, PIE_BACK)), "the cross of {label}");
+}
+
+/// Click the cross's key `dx`, `dy` keys from its middle, and wait for its
+/// label, `label`, to show.
+fn choose_way(editor: HWND, dx: i32, dy: i32, label: &str) {
+    for _ in 0..3 {
+        wait_in_front(editor);
+        click(cross_cell(editor, dx, dy));
+        if within_3s(|| text(editor, LABEL) == label) {
+            return;
+        }
+    }
+    panic!("the way {dx}, {dy}, {label}, chosen: {:?}", text(editor, LABEL));
+}
+
+/// The flick lines of set `name` in `saved`: the way and the fields of each.
+fn flick_lines(saved: &str, name: &str) -> Vec<Vec<String>> {
+    section(saved, name)
+        .lines()
+        .filter(|l| l.trim_start().starts_with("flick"))
+        .map(|l| l.split_once('=').unwrap().1.split('|').map(|f| f.trim().to_string()).collect())
+        .collect()
+}
+
+// Issue #161, AC1
+#[test]
+fn a_key_that_can_flick_opens_a_cross_of_its_ways_in_place_of_the_sample() {
+    let _desktop = desktop();
+    let app = launch_with(Some(FLICKS), None);
+    let editor = open_map(&app, "pad");
+    choose_key(editor, 1, "Ctrl");
+    assert!(within_3s(|| !shown(editor, FLICK)), "no フリック for a modifier");
+    choose_key(editor, 0, "コピー");
+    assert!(within_3s(|| shown(editor, FLICK)), "フリック for a shortcut");
+    assert!(!shown(editor, PIE_BACK), "no cross yet");
+    click_id(editor, FLICK);
+    assert!(within_3s(|| shown(editor, PIE_BACK)), "the cross");
+    assert!(!shown(editor, FLICK) && !shown(editor, LAYER_TABS), "no フリック nor layers' tabs over the cross");
+    assert_eq!(text(editor, LABEL), "コピー", "its middle chosen: the key itself");
+    let (face, held) = ([0xFA, 0xFA, 0xFA], [0xC0, 0x00, 0x00]);
+    let _ = within_3s(|| near(colour_at(cross_cell(editor, 0, 0)), held));
+    assert!(near(colour_at(cross_cell(editor, 0, 0)), held), "the key, chosen, as held: {:?}", colour_at(cross_cell(editor, 0, 0)));
+    assert!(near(colour_at(cross_cell(editor, 0, -1)), face), "up, a key face: {:?}", colour_at(cross_cell(editor, 0, -1)));
+    // Up: its flick.
+    choose_way(editor, 0, -1, "全選択");
+    assert!(within_3s(|| near(colour_at(cross_cell(editor, 0, -1)), held)), "up chosen, as held");
+    assert_eq!(text(editor, SUMMARY), "Ctrl+A を送る");
+    // Left: nothing yet.
+    choose_way(editor, -1, 0, "左");
+    assert_eq!(text(editor, SUMMARY), "何も送らない", "left has nothing");
+    // Back to the panel, コピー still chosen.
+    click_id(editor, PIE_BACK);
+    assert!(within_3s(|| !shown(editor, PIE_BACK) && text(editor, LABEL) == "コピー"), "the panel again: {:?}", text(editor, LABEL));
+    assert!(shown(editor, FLICK), "フリック again");
+}
+
+// Issue #161, AC2
+#[test]
+fn a_way_is_assigned_as_a_pie_item_is_its_line_added_with_it_and_removed() {
+    let _desktop = desktop();
+    let app = launch_with(Some(FLICKS), None);
+    let editor = open_map(&app, "pad");
+    open_cross(editor, 0, "コピー");
+    choose_way(editor, 0, -1, "全選択");
+    assert!(within_3s(|| checked(part(editor, MODS + CTRL_ON))), "Ctrl on, of Ctrl+A");
+    press_key(editor, "V");
+    let saved = save_until(&app, editor, "Ctrl+V");
+    assert_eq!(flick_lines(&saved, "pad"), [vec!["up", "全選択", "shortcut", "Ctrl+V"]]);
+    assert_eq!(key_of(&saved, "pad", "コピー"), ["コピー", "shortcut", "Ctrl+C"], "the key as it was");
+    // What a flick cannot be cannot be pressed, and why is said.
+    let shift = button_named(editor, MOD_KEYS, 4, "Shift");
+    for (id, what) in [(MOTIONS + 1, "押している間"), (MOTIONS + 2, "連打"), (shift, "a modifier key"), (GROUP_TABS + 2, "レイヤー")] {
+        assert!(!enabled(editor, id), "{what} not pressed for a flick");
+    }
+    assert!(shown(editor, FLICK_NOTE) && text(editor, FLICK_NOTE).contains("使えません"), "why: {:?}", text(editor, FLICK_NOTE));
+    // A way with nothing, assigned: its line comes, after the key's others.
+    choose_way(editor, -1, 0, "左");
+    press_key(editor, "B");
+    let saved = save_until(&app, editor, "| B");
+    assert_eq!(flick_lines(&saved, "pad"), [vec!["up", "全選択", "shortcut", "Ctrl+V"], vec!["left", "左", "shortcut", "B"]]);
+    assert_eq!(key_lines(&saved, "pad").len(), 2, "no key added: {saved}");
+    // 削除: up's line goes, and up has nothing.
+    choose_way(editor, 0, -1, "全選択");
+    click_id(editor, PIE_REMOVE);
+    assert!(within_3s(|| text(editor, LABEL) == "上"), "up empty now: {:?}", text(editor, LABEL));
+    save(editor);
+    assert!(within_3s(|| flick_lines(&file(&app), "pad") == [vec!["left", "左", "shortcut", "B"]]), "{}", file(&app));
+}
+
+/// The labels of set `name` in `saved`, in the order written: a key's, and
+/// a flick's after its way.
+fn labels_in_order(saved: &str, name: &str) -> Vec<String> {
+    section(saved, name)
+        .lines()
+        .filter_map(|l| {
+            let (setting, value) = l.split_once('=')?;
+            let fields: Vec<&str> = value.split('|').map(str::trim).collect();
+            match setting.trim() {
+                "key" => fields.first().map(|f| f.to_string()),
+                "flick" => fields.get(1).map(|f| f.to_string()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+// Issue #161, AC3
+#[test]
+fn a_keys_flicks_go_with_it_moved_removed_or_made_a_kind_that_cannot_flick() {
+    let _desktop = desktop();
+    let written = "[set.pad]\n\
+key = A | shortcut | A\n\
+flick = up | a上 | shortcut | 1\n\
+key = B | shortcut | B\n\
+flick = down | b下 | shortcut | 2\n\
+key = C | shortcut | C\n\
+flick = left | c左 | shortcut | 3\n\
+\n\
+[profile.default]\n\
+left = pad\n";
+    let app = launch_with(Some(written), None);
+    let editor = open_set(&app, "pad");
+    // A moved down: its flick with it.
+    choose_key(editor, 0, "A");
+    click_id(editor, KEY_DOWN);
+    save(editor);
+    let want = ["B", "b下", "A", "a上", "C", "c左"];
+    assert!(within_3s(|| labels_in_order(&file(&app), "pad") == want), "{}", file(&app));
+    // A removed: its flick too.
+    choose_key(editor, 1, "A");
+    click_id(editor, REMOVE_KEY);
+    save(editor);
+    let want = ["B", "b下", "C", "c左"];
+    assert!(within_3s(|| labels_in_order(&file(&app), "pad") == want), "{}", file(&app));
+    // C made a modifier: its flick goes, and it is said.
+    to_page(editor, MAP_PAGE);
+    choose_key(editor, 1, "C");
+    click_id(editor, button_named(editor, MOD_KEYS, 4, "Shift"));
+    assert!(within_3s(|| status(editor).contains("フリック")), "said: {:?}", status(editor));
+    save(editor);
+    assert!(within_3s(|| labels_in_order(&file(&app), "pad") == ["B", "b下", "C"]), "{}", file(&app));
+    assert_eq!(key_of(&file(&app), "pad", "C"), ["C", "modifier", "Shift"]);
+}
+
+// Issue #161, AC5: malformed input; a flick line comes from outside.
+#[test]
+fn flick_lines_that_do_not_read_leave_their_ways_empty_on_the_cross() {
+    let _desktop = desktop();
+    let written = "[set.pad]\n\
+key = コピー | shortcut | Ctrl+C\n\
+flick = upward | x | shortcut | A\n\
+flick = left\n\
+flick = | | |\n\
+flick = down | 下へ | shortcut | B\n\
+\n\
+[profile.default]\n\
+left = pad\n";
+    let app = launch_with(Some(written), None);
+    let editor = open_map(&app, "pad");
+    open_cross(editor, 0, "コピー");
+    choose_way(editor, 0, 1, "下へ");
+    choose_way(editor, 0, -1, "上");
+    choose_way(editor, -1, 0, "左");
+    choose_way(editor, 1, 0, "右");
+    assert!(unsafe { IsWindow(editor) } != 0, "the window is still open");
+}

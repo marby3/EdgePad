@@ -196,3 +196,18 @@ fn text_the_parser_cannot_read_makes_no_panic_and_broken_bytes_make_no_document(
         let _ = d.to_bytes();
     }
 }
+
+// Issue #161, AC4: a key set renamed takes its name along to the flicks
+// that turn to it, as to page keys.
+#[test]
+fn a_renamed_set_takes_its_name_along_to_the_flicks_that_turn_to_it() {
+    let mut d = doc("[set.pad]\nkey = A | shortcut | A\nflick = up   | 次 | page | more   ; 上\nflick = down | 戻 | page | next\nflick = left | 他 | text | more\n\
+         [set.more]\nkey = B | shortcut | B\n[profile.default]\nleft = pad\n");
+    assert!(d.rename_section("set.more", "set.extra"));
+    assert_eq!(
+        text(&d),
+        "[set.pad]\nkey = A | shortcut | A\nflick = up   | 次 | page | extra   ; 上\nflick = down | 戻 | page | next\nflick = left | 他 | text | more\n\
+         [set.extra]\nkey = B | shortcut | B\n[profile.default]\nleft = pad\n",
+        "the page flick follows; a page turn and a text stay"
+    );
+}
