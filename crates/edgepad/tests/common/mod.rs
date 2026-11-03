@@ -738,11 +738,24 @@ impl Touch {
         self.check();
     }
 
+    /// Take contact `id` away as the system does, cancelled rather than
+    /// lifted.
+    pub fn cancel(&mut self, id: u32) {
+        self.check();
+        self.end(id, POINTER_FLAG_UP | POINTER_FLAG_CANCELED).expect("InjectTouchInput (cancel)");
+        pump(150);
+        self.check();
+    }
+
     fn lift(&self, id: u32) -> std::io::Result<()> {
+        self.end(id, POINTER_FLAG_UP)
+    }
+
+    fn end(&self, id: u32, flags: POINTER_FLAGS) -> std::io::Result<()> {
         let mut active = lock(&self.contacts);
         let mut frame = moving(&active);
         for f in frame.iter_mut().filter(|f| f.pointerInfo.pointerId == id) {
-            f.pointerInfo.pointerFlags = POINTER_FLAG_UP;
+            f.pointerInfo.pointerFlags = flags;
         }
         // Forget the contact only once it is really lifted.
         inject(&frame)?;
