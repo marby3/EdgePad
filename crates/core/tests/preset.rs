@@ -108,3 +108,43 @@ fn the_shipped_settings_read_without_an_error() {
         panic!("{errors:?}");
     }
 }
+
+// Issue #163, AC4: the kana keys of a phone, shown on no edge; and a flick
+// of the CLIP STUDIO PAINT keys, beside its pie-menu advice.
+#[test]
+fn the_kana_set_is_a_phones_twelve_keys_and_csp_has_a_flick() {
+    use edgepad_core::flick::Dir;
+    use edgepad_core::kana::Kana;
+    let config = config();
+    let kana = config.set("kana").expect("[set.kana]");
+    assert_eq!(kana.keys.len(), 16, "four columns of four");
+    assert!(kana.keys.iter().all(|k| k.place.is_some()), "a free layout");
+    let at = |x: i32, y: i32| kana.keys.iter().find(|k| k.place.is_some_and(|p| (p.x, p.y) == (4 * x, 4 * y))).unwrap_or_else(|| panic!("no key at {x}, {y}"));
+    let rows = [["あ", "か", "さ"], ["た", "な", "は"], ["ま", "や", "ら"], ["゛゜小", "わ", "、"]];
+    for (y, row) in rows.iter().enumerate() {
+        for (x, label) in row.iter().enumerate() {
+            assert_eq!(at(x as i32, y as i32).label, *label, "column {x}, row {y}");
+        }
+    }
+    let flick = |k: &KeyDef, d: Dir| k.flicks[d as usize].as_ref().map(|f| f.action.clone());
+    let a = at(0, 0);
+    assert_eq!(a.action, Action::Kana(Kana::Char('あ')));
+    for (d, c) in [(Dir::Left, 'い'), (Dir::Up, 'う'), (Dir::Right, 'え'), (Dir::Down, 'お')] {
+        assert_eq!(flick(a, d), Some(Action::Kana(Kana::Char(c))), "あ {d:?}");
+    }
+    assert_eq!(flick(at(1, 0), Dir::Down), Some(Action::Kana(Kana::Char('こ'))), "か down");
+    assert_eq!(at(0, 3).action, Action::Kana(Kana::Mark));
+    // The column on the right: ⌫, space, enter and ←, → flicked right.
+    let shortcut = |k: Key| Action::Shortcut(edgepad_core::keys::Combo { mods: Mods::NONE, key: Some(k) });
+    assert_eq!(at(3, 0).action, shortcut(Key::Backspace));
+    assert_eq!(at(3, 1).action, shortcut(Key::Space));
+    assert_eq!(at(3, 2).action, shortcut(Key::Enter));
+    assert_eq!(at(3, 3).action, shortcut(Key::Left));
+    assert_eq!(flick(at(3, 3), Dir::Right), Some(shortcut(Key::Right)));
+    // On no edge.
+    let profile = config.profile_for(None);
+    assert!(profile.edges.iter().all(|e| e.as_deref() != Some("kana")), "{:?}", profile.edges);
+    // A flick among the CLIP STUDIO PAINT keys.
+    let csp = config.set("csp").expect("[set.csp]");
+    assert!(csp.keys.iter().any(|k| k.flicks.iter().any(Option::is_some)), "a flick in csp");
+}

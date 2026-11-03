@@ -2539,3 +2539,39 @@ left = pad\n";
     choose_way(editor, 1, 0, "右");
     assert!(unsafe { IsWindow(editor) } != 0, "the window is still open");
 }
+
+// Issue #163: kana keys on キーマッピング, said in a sentence, assigned on
+// 文字・起動's かな field, 1018 (an Edit), as a key or as a flick.
+const KANA: i32 = 1018;
+
+// Issue #163, AC3
+#[test]
+fn a_kana_key_is_said_as_romaji_typed_and_assigned_on_its_field_or_a_flick() {
+    let _desktop = desktop();
+    let written = "[set.pad]\n\
+key = か     | kana     | か\n\
+key = ゛゜小 | kana     | ゛゜小\n\
+key = A      | shortcut | A\n\
+\n\
+[profile.default]\n\
+left = pad\n";
+    let app = launch_with(Some(written), None);
+    let editor = open_map(&app, "pad");
+    choose_key(editor, 0, "か");
+    assert!(within_3s(|| text(editor, SUMMARY) == "「か」を入力する（ローマ字で送る）"), "{:?}", text(editor, SUMMARY));
+    choose_key(editor, 1, "゛゜小");
+    assert!(within_3s(|| text(editor, SUMMARY).contains("濁点")), "{:?}", text(editor, SUMMARY));
+    // A, made a kana key on 文字・起動.
+    choose_key(editor, 2, "A");
+    click_id(editor, GROUP_TABS + 4);
+    assert!(within_3s(|| shown(editor, KANA)), "the かな field");
+    enter(editor, KANA, "ぬ");
+    saved_as(&app, editor, "pad", "A", &["A", "kana", "ぬ"]);
+    // A kana key can flick, and its flick can be a kana.
+    open_cross(editor, 2, "A");
+    choose_way(editor, 0, -1, "上");
+    click_id(editor, GROUP_TABS + 4);
+    enter(editor, KANA, "ね");
+    save(editor);
+    assert!(within_3s(|| flick_lines(&file(&app), "pad") == [vec!["up", "上", "kana", "ね"]]), "{}", file(&app));
+}
