@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use edgepad_core::config::{Accent, Action, Edge, Handle, KeyDef, KeySet, Monitor, Page, Step, Theme};
 use edgepad_core::flick;
 use edgepad_core::gesture::{self, Swipe};
+use edgepad_core::kana::{self, Kana};
 use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Place, Rect};
 use edgepad_core::modifier::{LatchMode, Modifier};
@@ -92,6 +93,9 @@ enum Sends {
     Macro(Rc<[MacroStep]>),
     /// Typed as Unicode characters on release.
     Text(String),
+    /// A kana typed as its romaji keys on release, or the kana sent last
+    /// changed (Issue #163).
+    Kana(Kana),
     /// A program or URL started on release.
     Run(String),
     /// Turns the page, or switches to another key set, on release.
@@ -132,7 +136,7 @@ impl Sends {
                     .collect::<Rc<[_]>>(),
             ),
             Action::Text(text) => Sends::Text(text.clone()),
-            Action::Kana(_) => Sends::Nothing,
+            &Action::Kana(kana) => Sends::Kana(kana),
             Action::Run(command) => Sends::Run(command.clone()),
             Action::Page(page) => Sends::Page(page.clone()),
             Action::Pie(set) => Sends::Pie(set.clone()),
@@ -1479,6 +1483,10 @@ unsafe fn pointer_down(hwnd: HWND, wp: WPARAM, lp: LPARAM) {
             let chord = panels.iter().any(|p| (0..p.keys.len()).any(|k| p.presses.is_down(k)));
             let panel = &mut panels[i];
             let Some(key) = panel.presses.down(id, key) else { return };
+            // Another key between: the mark key has no kana to change.
+            if !matches!(panel.keys[key].sends, Sends::Kana(_)) {
+                LAST_KANA.set(None);
+            }
             // The key just pressed is up or latched, which this leaves alone.
             for k in panels.iter_mut().flat_map(|p| &mut p.keys) {
                 if let Sends::Modifier { state, .. } = &mut k.sends {
@@ -1631,6 +1639,20 @@ unsafe fn pointer_up(hwnd: HWND, wp: WPARAM, at: Option<(i32, i32)>, cancelled: 
     }
 }
 
+thread_local! {
+    /// The kana a kana key sent last, if nothing has been sent since: the
+    /// one the mark key changes (Issue #163).
+    static LAST_KANA: Cell<Option<char>> = const { Cell::new(None) };
+}
+
+/// Type kana `c` as its romaji keys, for the IME to read.
+unsafe fn type_kana(c: char) {
+    for combo in kana::romaji(c).unwrap_or_default() {
+        let (mods, key) = vks(&combo);
+        unsafe { send::shortcut(&mods, key) };
+    }
+}
+
 /// Do what a key that acts once does, on panel `i` of `panels`: send its
 /// shortcut, run its macro, type its text, start its program or turn its
 /// page. A shortcut ends the one-shot latches once sent; a macro or text
@@ -1640,8 +1662,12 @@ unsafe fn act(panels: &mut [Panel], i: usize, sends: &Sends) {
         let mode = panels[i].latch_mode;
         // A whole sequence under a latched Ctrl would go wrong: Esc would
         // open Start, and typed text would turn into shortcuts.
-        if matches!(sends, Sends::Macro(_) | Sends::Text(_)) {
+        if matches!(sends, Sends::Macro(_) | Sends::Text(_) | Sends::Kana(_)) {
             end_one_shot_latches(panels, mode);
+        }
+        // The kana sent last is the last thing sent, or none.
+        if !matches!(sends, Sends::Kana(_)) {
+            LAST_KANA.set(None);
         }
         match sends {
             Sends::Shortcut { mods, key } => {
@@ -1655,6 +1681,19 @@ unsafe fn act(panels: &mut [Panel], i: usize, sends: &Sends) {
                 run_macro(&mut panels[i]);
             }
             Sends::Text(text) => send::text(text),
+            Sends::Kana(Kana::Char(c)) => {
+                type_kana(*c);
+                LAST_KANA.set(Some(*c));
+            }
+            // Changed, the kana sent last is taken back and typed again.
+            Sends::Kana(Kana::Mark) => match LAST_KANA.get().and_then(kana::next) {
+                Some(next) => {
+                    send::shortcut(&[], Some(send::vk(Key::Backspace)));
+                    type_kana(next);
+                    LAST_KANA.set(Some(next));
+                }
+                None => debug_log!("゛゜小: 変えられるかながない"),
+            },
             Sends::Run(command) => launch::run(command),
             Sends::Page(page) => turn(&mut panels[i], page),
             Sends::Layer { set, toggle: true } => {

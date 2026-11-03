@@ -55,6 +55,7 @@ use std::ptr::{null, null_mut};
 use edgepad_core::config::{self, Accent, Edge, PIE_ITEMS, Theme};
 use edgepad_core::document::Document;
 use edgepad_core::flick::Dir;
+use edgepad_core::kana;
 use edgepad_core::keys::{Combo, Key, Mods};
 use edgepad_core::layout::{self, Place};
 use edgepad_core::pie;
@@ -110,6 +111,9 @@ const SPACE: usize = 1015;
 const TRANS: usize = 1016;
 /// Over a key's cross, why some buttons cannot be pressed (Issue #161).
 const FLICK_NOTE: usize = 1017;
+/// On 文字・起動, a kana sent as its romaji (Issue #163).
+const KANA: usize = 1018;
+const TITLE_KANA: usize = 1112;
 const KINDS: usize = 1020;
 const MODS: usize = 1030;
 const GROUPS: usize = 1040;
@@ -540,6 +544,8 @@ const PARTS: &[(usize, Class, &str)] = &[
     (CONTENT, Edit, ""),
     (TITLE_RUN, Text, "パスか URL"),
     (RUN_CONTENT, Edit, ""),
+    (TITLE_KANA, Text, "かな"),
+    (KANA, Edit, ""),
     (TITLE_TARGET, Text, "切り替え先"),
     (TARGET, Combo, ""),
     (PIE, Button, "パイにする"),
@@ -1370,7 +1376,16 @@ fn chosen_line(e: &Editor) -> Option<(String, Line)> {
 /// Whether a key `line` can have flicks: of a pie item's kinds, sending
 /// once as it lifts (Issue #161).
 fn can_flick(line: &Line) -> bool {
-    matches!(line.kind(), Some(SHORTCUT | MACRO | TEXT | RUN | PAGE_KIND)) || line.kind.eq_ignore_ascii_case("none")
+    matches!(line.kind(), Some(SHORTCUT | MACRO | TEXT | RUN | PAGE_KIND)) || line.kind.eq_ignore_ascii_case("none") || is_kana(line)
+}
+
+/// The kind of a kana key (Issue #163): of none of the ten, as `none` is
+/// not, assigned on 文字・起動's かな field.
+const KANA_KIND: &str = "kana";
+
+/// Whether `line` is a kana key.
+fn is_kana(line: &Line) -> bool {
+    line.kind.eq_ignore_ascii_case(KANA_KIND)
 }
 
 /// Whether the chosen key, itself, can have flicks.
@@ -1518,7 +1533,7 @@ fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab
         TITLE_LAYER | LAYER_SET | LAYER_HOLD | LAYER_TOGGLE => open(LAYER_TAB),
         TITLE_STEPS | STEPS | STEP_KEY | STEP_WAIT | STEP_REMOVE | STEP_UP | STEP_DOWN => open(MACRO_TAB),
         TITLE_WAIT | WAIT | WAIT_NOTE => open(MACRO_TAB) && kind == Some(MACRO) && wait,
-        TITLE_CONTENT | CONTENT | TITLE_RUN | RUN_CONTENT => open(TEXT_TAB),
+        TITLE_CONTENT | CONTENT | TITLE_RUN | RUN_CONTENT | TITLE_KANA | KANA => open(TEXT_TAB),
         TITLE_TARGET | TARGET | PIE => open(PAGE_TAB),
         _ => false,
     }
@@ -1585,6 +1600,8 @@ fn summary(line: &Line) -> String {
             format!("{content} に切り替える（{how}）")
         }
         _ if line.kind.eq_ignore_ascii_case("none") => "何も送らない".into(),
+        _ if is_kana(line) && content == kana::MARK => "直前に送ったかなを、濁点・半濁点・小さい文字に変える".into(),
+        _ if is_kana(line) => format!("「{content}」を入力する（ローマ字で送る）"),
         _ => "この種類は読めません".into(),
     }
 }
@@ -1602,6 +1619,7 @@ fn group_and_motion(line: &Line) -> (usize, Option<usize>) {
         Some(MACRO) => (MACRO_TAB, None),
         Some(TEXT | RUN) => (TEXT_TAB, None),
         Some(PAGE_KIND | PIE_KIND) => (PAGE_TAB, None),
+        _ if is_kana(line) => (TEXT_TAB, None),
         _ => (BASIC, None),
     }
 }
@@ -1849,6 +1867,8 @@ pub(super) unsafe fn place(e: &Editor, left: i32, top: i32, width: i32, bottom: 
     at(CONTENT, rx + s(124), y1, rw - s(124), h);
     at(TITLE_RUN, rx, y1 + pitch, s(120), h);
     at(RUN_CONTENT, rx + s(124), y1 + pitch, rw - s(124), h);
+    at(TITLE_KANA, rx, y1 + 2 * pitch, s(120), h);
+    at(KANA, rx + s(124), y1 + 2 * pitch, s(120), h);
     at(TITLE_TARGET, rx, y1, s(96), h);
     at(TARGET, rx + s(100), y1, s(200), s(LIST_H));
     at(PIE, rx + s(100), y1 + pitch, s(200), h);
@@ -2084,6 +2104,9 @@ unsafe fn show_key(e: &mut Editor, sets: &[String]) {
             set_text(field, if kind == Some(of) { &line.content } else { "" });
             SendMessageW(field, EM_SETMODIFY, 0, 0);
         }
+        let field = part_of(e, KANA);
+        set_text(field, if is_kana(&line) { &line.content } else { "" });
+        SendMessageW(field, EM_SETMODIFY, 0, 0);
         let set_named = |of: usize| sets.iter().position(|s| s.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(of));
         let turn = PAGE_TURNS.iter().position(|(t, _)| t.eq_ignore_ascii_case(&line.content)).filter(|_| kind == Some(PAGE_KIND));
         choose_item(part_of(e, TARGET), turn.or_else(|| set_named(PAGE_KIND).map(|i| i + PAGE_TURNS.len())), false);
@@ -3273,6 +3296,14 @@ pub(super) unsafe fn commit(id: usize) -> bool {
             CONTENT | RUN_CONTENT => {
                 change(e, id, |line| {
                     set_kind(line, if id == RUN_CONTENT { RUN } else { TEXT });
+                    line.content = typed;
+                    Ok(())
+                });
+            }
+            KANA => {
+                change(e, id, |line| {
+                    set_kind(line, TEXT);
+                    line.kind = KANA_KIND.into();
                     line.content = typed;
                     Ok(())
                 });

@@ -59,6 +59,10 @@ fn the_left_edge_has_the_csp_keys_in_order() {
     let mut want: Vec<KeyDef> = want.iter().map(|k| def(k)).collect();
     // Issue #139: a key's room after Esc, by a space line.
     want[0].space = 4;
+    // Issue #163: Esc's flicks, an example of them.
+    let flick = |label: &str, combo: &str| Some(Flick { label: label.into(), action: def(&format!("x | shortcut | {combo}")).action });
+    want[0].flicks[edgepad_core::flick::Dir::Up as usize] = flick("元に戻す", "Ctrl+Z");
+    want[0].flicks[edgepad_core::flick::Dir::Down as usize] = flick("やり直し", "Ctrl+Y");
     assert_eq!(keys, &want);
 }
 
