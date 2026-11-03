@@ -34,9 +34,6 @@ fn main() -> ExitCode {
     // the default hook report it. Runs even with panic = "abort".
     let report = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // TEMPORARY (Issue #161): where a panic was, for CI to read.
-        let _ = std::fs::write(std::env::temp_dir().join("edgepad-panic.txt"), format!("{info}
-{}", std::backtrace::Backtrace::force_capture()));
         unsafe { send::release_all() };
         report(info);
     }));

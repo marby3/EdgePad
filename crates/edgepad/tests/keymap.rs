@@ -2365,27 +2365,8 @@ fn cross_cell(editor: HWND, dx: i32, dy: i32) -> POINT {
 /// Choose key `i`, `label`, and open its cross.
 fn open_cross(editor: HWND, i: i32, label: &str) {
     choose_key(editor, i, label);
-    let pid = pid_of(editor);
     click_id(editor, FLICK);
-    diagnose(editor, pid);
     assert!(within_3s(|| shown(editor, PIE_BACK)), "the cross of {label}");
-}
-
-/// TEMPORARY: how the window went, if it did.
-fn diagnose(editor: HWND, pid: u32) {
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    pump(300);
-    if unsafe { IsWindow(editor) } != 0 {
-        return;
-    }
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    let mut code = 0u32;
-    let got = !process.is_null() && unsafe { GetExitCodeProcess(process, &mut code) } != 0;
-    let said = std::fs::read_to_string(std::env::temp_dir().join("edgepad-panic.txt")).unwrap_or_default();
-    let said: String = said.lines().take(60).collect::<Vec<_>>().join("
-");
-    panic!("the window went: process {pid}, exit code read {got}, 0x{code:08X}
-{said}");
 }
 
 /// Click the cross's key `dx`, `dy` keys from its middle, and wait for its
@@ -2421,9 +2402,7 @@ fn a_key_that_can_flick_opens_a_cross_of_its_ways_in_place_of_the_sample() {
     choose_key(editor, 0, "コピー");
     assert!(within_3s(|| shown(editor, FLICK)), "フリック for a shortcut");
     assert!(!shown(editor, PIE_BACK), "no cross yet");
-    let pid = pid_of(editor);
     click_id(editor, FLICK);
-    diagnose(editor, pid);
     assert!(within_3s(|| shown(editor, PIE_BACK)), "the cross");
     assert!(!shown(editor, FLICK) && !shown(editor, LAYER_TABS), "no フリック nor layers' tabs over the cross");
     assert_eq!(text(editor, LABEL), "コピー", "its middle chosen: the key itself");

@@ -3716,8 +3716,12 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
                 panel::turned(dc, cell, v.tilt(i), || {
                     RoundRect(dc, face.left, face.top, face.right + 1, face.bottom + 1, corner, corner);
                     SetTextColor(dc, colorref(ink));
+                    // An empty one, a way with no flick, is not handed to
+                    // DrawTextW: an empty Vec's pointer is dangling.
                     let label = &v.labels[i];
-                    DrawTextW(dc, label.as_ptr(), label.len() as i32, &mut face, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    if !label.is_empty() {
+                        DrawTextW(dc, label.as_ptr(), label.len() as i32, &mut face, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    }
                 });
                 SelectObject(dc, old_brush);
                 DeleteObject(brush);
