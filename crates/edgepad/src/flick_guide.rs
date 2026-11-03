@@ -18,7 +18,7 @@ use windows_sys::w;
 
 use crate::colors::colorref;
 use crate::log::debug_log;
-use crate::panel::{key_font, key_gap};
+use crate::panel::{draw_label, key_font, key_gap};
 use crate::tray;
 
 /// The guide on screen now.
@@ -225,12 +225,10 @@ unsafe fn draw(g: &Guide) -> bool {
         let old_font = SelectObject(mem, font);
         SetBkMode(mem, TRANSPARENT as i32);
         for (d, cell) in &cells {
-            // An empty one is not handed to DrawTextW: an empty Vec's
-            // pointer is dangling.
-            let Some(label) = g.labels[*d as usize].as_ref().filter(|l| !l.is_empty()) else { continue };
+            let Some(label) = &g.labels[*d as usize] else { continue };
             let mut cell = *cell;
             SetTextColor(mem, colorref(if g.pointing == Some(*d) { c.held_text } else { c.text }));
-            DrawTextW(mem, label.as_ptr(), label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            draw_label(mem, label, &mut cell);
         }
         SelectObject(mem, old_font);
         DeleteObject(font);

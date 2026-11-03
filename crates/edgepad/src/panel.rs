@@ -2232,6 +2232,15 @@ pub fn key_gap(key: i32) -> i32 {
     (key / 16).max(2)
 }
 
+/// Write `label` in the middle of `cell` on `dc`, on one line. An empty one
+/// is not handed to DrawTextW: an empty Vec's pointer is dangling, and the
+/// process was seen to go down with 0xC000041D for it (Issue #161).
+pub unsafe fn draw_label(dc: HDC, label: &[u16], cell: &mut RECT) {
+    if !label.is_empty() {
+        unsafe { DrawTextW(dc, label.as_ptr(), label.len() as i32, cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE) };
+    }
+}
+
 /// The font key labels are written in, keys `key` pixels across. The
 /// caller deletes it.
 pub unsafe fn key_font(key: i32) -> HFONT {
@@ -2293,7 +2302,7 @@ unsafe fn draw(panel: &Panel) -> bool {
             let whole = RECT { left: at.x, top: at.y, right: at.x + at.w, bottom: at.y + at.h };
             turned(mem, &whole, k.place.and_then(|p| p.tilt), || {
                 RoundRect(mem, cell.left, cell.top, cell.right + 1, cell.bottom + 1, corner, corner);
-                DrawTextW(mem, k.label.as_ptr(), k.label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                draw_label(mem, &k.label, &mut cell);
             });
         }
 

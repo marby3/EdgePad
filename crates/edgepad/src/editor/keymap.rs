@@ -597,8 +597,9 @@ pub(super) struct Keymap {
     /// The field whose value was turned away, and why, while it stands.
     wrong: Option<(usize, String)>,
     /// Whether the parts were last placed for a macro: its steps above the
-    /// keys sent; and for a cross, with no ＋.
+    /// keys sent.
     laid_macro: Cell<bool>,
+    /// Whether they were last placed for a cross, with no ＋ (Issue #161).
     laid_cross: Cell<bool>,
 }
 
@@ -1250,15 +1251,18 @@ fn used_by(doc: &Document, set: &str) -> Vec<String> {
                 }
             }
         } else if section.starts_with("set.") {
+            // A flick by the key it is on, the key line before it.
+            let mut key = String::new();
             for (name, value) in doc.values(&section) {
+                if name == "key" {
+                    key = Line::of(&value).label;
+                }
                 let Some(line) = key_or_flick(&name, &value).filter(|l| l.content.eq_ignore_ascii_case(set)) else { continue };
-                let of = if name == "flick" { "フリック" } else { "キー" };
+                let of = if name == "flick" { format!("{key}キーのフリック") } else { format!("{}キー", line.label) };
                 match line.kind() {
-                    Some(PIE_KIND) => places.push(format!("{}{of}のパイ", line.label)),
-                    Some(LAYER_KIND) => places.push(format!("{}{of}のレイヤー", line.label)),
-                    Some(PAGE_KIND) if PAGE_TURNS.iter().all(|(t, _)| !t.eq_ignore_ascii_case(set)) => {
-                        places.push(format!("{}{of}のページ", line.label))
-                    }
+                    Some(PIE_KIND) => places.push(format!("{of}のパイ")),
+                    Some(LAYER_KIND) => places.push(format!("{of}のレイヤー")),
+                    Some(PAGE_KIND) if PAGE_TURNS.iter().all(|(t, _)| !t.eq_ignore_ascii_case(set)) => places.push(format!("{of}のページ")),
                     _ => {}
                 }
             }
@@ -1501,7 +1505,7 @@ fn shows(id: usize, kind: Option<usize>, wait: bool, cut: bool, tabs: usize, tab
         PIE_BACK | PIE_REMOVE => over,
         PIE_ADD | PIE_NOTE => pie,
         FLICK_NOTE => cross.open,
-        FLICK => key && cross.offered,
+        FLICK => cross.offered,
         CUT => key && cut,
         TITLE_LABEL | LABEL | SUMMARY | CAPTURE => key,
         _ if (MODS..MODS + 4).contains(&id) || (MOTIONS..MOTIONS + 3).contains(&id) => key,
@@ -2195,8 +2199,8 @@ unsafe fn change(e: &mut Editor, field: usize, edit: impl FnOnce(&mut Line) -> R
         if text != raw && !e.doc.set_key(&set, key, &text) {
             return Err("この値はファイルに書けない".into());
         }
-        // A kind that cannot flick: its flicks go; said, if it was made so.
-        dropped = !can_flick(&line) && e.doc.remove_flicks(&set, key) && could_flick;
+        // Made a kind that cannot flick: its flicks go, and it is said.
+        dropped = could_flick && !can_flick(&line) && e.doc.remove_flicks(&set, key);
         Ok(())
     });
     // A pie of another kind now: its items go, unless named elsewhere.
@@ -2791,6 +2795,8 @@ unsafe fn choose_way(e: &mut Editor, way: Option<Dir>) {
     k.step = 0;
     k.wrong = None;
     k.capture = None;
+    k.naming = false;
+    k.naming_layer = false;
     follow_group(e);
     unsafe { refresh(e) };
 }
@@ -3597,7 +3603,8 @@ pub(super) unsafe extern "system" fn sample_proc(hwnd: HWND, msg: u32, wp: WPARA
                         VK_LEFT => (3, 4),
                         VK_RIGHT => (4, 3),
                         VK_HOME | VK_END => (0, usize::MAX),
-                        VK_RETURN | VK_SPACE => (chosen, usize::MAX),
+                        // Chosen already.
+                        VK_RETURN | VK_SPACE => return 0,
                         _ => return DefWindowProcW(hwnd, msg, wp, lp),
                     };
                     let to = if chosen == back { 0 } else { way };
@@ -3752,12 +3759,7 @@ unsafe fn draw_sample(hwnd: HWND, dc: HDC, look: super::Look) {
                 panel::turned(dc, cell, v.tilt(i), || {
                     RoundRect(dc, face.left, face.top, face.right + 1, face.bottom + 1, corner, corner);
                     SetTextColor(dc, colorref(ink));
-                    // An empty one, a way with no flick, is not handed to
-                    // DrawTextW: an empty Vec's pointer is dangling.
-                    let label = &v.labels[i];
-                    if !label.is_empty() {
-                        DrawTextW(dc, label.as_ptr(), label.len() as i32, &mut face, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                    }
+                    panel::draw_label(dc, &v.labels[i], &mut face);
                 });
                 SelectObject(dc, old_brush);
                 DeleteObject(brush);
@@ -3820,13 +3822,8 @@ unsafe fn draw_fan(dc: HDC, look: super::Look, palette: Palette, v: &Sample, f: 
         for (i, (&(lx, ly), label)) in f.ring.labels(f.edge, f.items).iter().zip(&v.labels).enumerate() {
             let (x, y) = (f.middle.0 + lx, f.middle.1 + ly);
             let mut cell = RECT { left: x - half_width, top: y - half_height, right: x + half_width, bottom: y + half_height };
-            // An empty one is not handed to DrawTextW: an empty Vec's
-            // pointer is dangling.
-            if label.is_empty() {
-                continue;
-            }
             SetTextColor(mem, colorref(if i == v.chosen { palette.held_text } else { palette.text }));
-            DrawTextW(mem, label.as_ptr(), label.len() as i32, &mut cell, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            panel::draw_label(mem, label, &mut cell);
         }
         SelectObject(mem, old_font);
         DeleteObject(font);
