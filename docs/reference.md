@@ -69,6 +69,7 @@ Keys in a row. A name is letters, digits, `-` and `_`.
 | `repeat` | Sent again and again while pressed | `[` |
 | `macro` | Key presses one after another; `wait milliseconds` waits | `Ctrl+S, wait 300, Esc` |
 | `text` | Types the text | `Thank you` |
+| `kana` | Sends a kana as its romaji keys, for the IME to turn into kanji; `゛゜小` changes the kana sent last. See Kana below (not the key name `Kana`) | `か` / `゛゜小` |
 | `run` | Opens a program, a file or a URL | `calc.exe` |
 | `page` | Turns the panel's page | `next` / `prev` / a key set's name |
 | `pie` | Opens a pie menu of the keys of the key set named (2 to 8) | a key set's name |
@@ -87,6 +88,14 @@ Keys in a row. A name is letters, digits, `-` and `_`.
 | `w` `h` | `layout = free` | The key's width and height, in keys, in quarters | 0.25 to 8 (default 1) |
 
 A `layout = kle:file` key set takes its places from the KLE file. Its keys go to the key lines one by one, from the top row down (left to right at the same height). Turned keys show at KLE's angle.
+
+### Kana
+
+A `kana` key sends one kana as its romaji keys (か: K, then A). Use it with the IME on, and Space turns it into kanji; with the IME off, ka is typed.
+
+- The gojūon's hiragana (が, ぱ, っ and the like too), ん, を, ー, 、, 。, ？ and ！
+- A key whose content is `゛゜小` changes the kana sent last to が, ぱ, っ and so on (on to the next at each press: か → が → か, は → ば → ぱ → は). After any other key, or once another app is in front, it does nothing. With the IME off it does not work: Backspace takes only one letter of the romaji
+- Flicks can be kana too. `[set.kana]` in the settings shipped is a phone's twelve kana keys; it is on no edge, for you to put on one on the settings window's アプリ別
 
 ### Flicks
 

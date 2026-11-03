@@ -115,6 +115,10 @@ name = "key_flick"
 required-features = ["desktop-tests"]
 
 [[test]]
+name = "key_kana"
+required-features = ["desktop-tests"]
+
+[[test]]
 name = "keymap"
 required-features = ["desktop-tests"]
 

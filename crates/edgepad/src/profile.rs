@@ -95,6 +95,8 @@ pub unsafe fn foreground_changed(hwnd: HWND) {
     }
     LAST.set(unsafe { process_name(hwnd) });
     send::set_out_of_reach(unsafe { out_of_reach(hwnd) });
+    // Another window's text: the kana sent last is not there to change.
+    panel::forget_last_kana();
     if !PINNED.get() {
         unsafe { follow() };
     }
